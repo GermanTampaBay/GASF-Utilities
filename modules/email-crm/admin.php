@@ -47,6 +47,19 @@ function gasf_crm_admin_tab() {
 			gasf_crm_save_cfg( $cfg );
 			delete_transient( 'gasf_crm_graph_token' ); // credentials may have changed
 			$notice = '<div class="notice notice-success"><p>Saved.</p></div>';
+
+			// Catch the GUID-in-the-secret-field mistake at save time rather than
+			// letting it surface later as an opaque AADSTS7000215 from Azure.
+			foreach ( array(
+				'client_secret' => 'Graph client secret',
+				'google_secret' => 'Google secret',
+				'ms_secret'     => 'Microsoft secret',
+			) as $f => $label ) {
+				if ( preg_match( '/^[0-9a-fA-F-]{36}$/', (string) $cfg[ $f ] ) ) {
+					$notice .= '<div class="notice notice-error"><p><strong>' . esc_html( $label )
+						. ':</strong> that is a GUID, so it is the Secret <em>ID</em> rather than the Secret <em>Value</em>. Authentication will fail with AADSTS7000215 until it is replaced.</p></div>';
+				}
+			}
 		}
 
 		if ( 'test' === $act ) {
@@ -84,10 +97,22 @@ function gasf_crm_admin_tab() {
 	$cfg = gasf_crm_cfg();
 	echo $notice; // phpcs:ignore WordPress.Security.EscapeOutput
 
+	/**
+	 * Secret status indicator.
+	 *
+	 * A plain "set" is not enough feedback: Azure's Certificates & secrets table
+	 * puts the Secret ID next to the Value, and once you leave that page the
+	 * Value is permanently masked while the Secret ID stays copyable — so the
+	 * GUID is the one that ends up pasted here, and the only symptom is
+	 * AADSTS7000215 from a completely different screen. Call it out at the point
+	 * of entry instead. Every real secret contains a '~'; no GUID does.
+	 */
 	$set = function ( $v ) {
-		return '' !== $v
-			? '<span style="color:#2c7a3f">&#10003; set</span>'
-			: '<span style="color:#d63638">not set</span>';
+		if ( '' === $v ) { return '<span style="color:#d63638">not set</span>'; }
+		if ( preg_match( '/^[0-9a-fA-F-]{36}$/', $v ) ) {
+			return '<span style="color:#d63638">&#9888; this is a GUID &mdash; you pasted the <strong>Secret ID</strong>, not the <strong>Value</strong></span>';
+		}
+		return '<span style="color:#2c7a3f">&#10003; set (' . strlen( $v ) . ' chars)</span>';
 	};
 	?>
 	<h2>Email CRM</h2>
@@ -108,12 +133,14 @@ function gasf_crm_admin_tab() {
 				<p class="description">Must be a shared mailbox, not an alias on a person's mailbox.</p></td></tr>
 			<tr><th scope="row">Tenant ID</th>
 				<td><input type="text" class="regular-text code" name="tenant_id" value="<?php echo esc_attr( $cfg['tenant_id'] ); ?>"></td></tr>
-			<tr><th scope="row">Client ID</th>
-				<td><input type="text" class="regular-text code" name="client_id" value="<?php echo esc_attr( $cfg['client_id'] ); ?>"></td></tr>
-			<tr><th scope="row">Client secret</th>
+			<tr><th scope="row">Application (client) ID</th>
+				<td><input type="text" class="regular-text code" name="client_id" value="<?php echo esc_attr( $cfg['client_id'] ); ?>">
+					<p class="description">App registration &rarr; Overview &rarr; <strong>Application (client) ID</strong>.</p></td></tr>
+			<tr><th scope="row">Client secret <em>Value</em></th>
 				<td><input type="password" class="regular-text" name="client_secret" autocomplete="new-password" placeholder="leave blank to keep">
 					<?php echo $set( $cfg['client_secret'] ); // phpcs:ignore WordPress.Security.EscapeOutput ?>
 					<label style="margin-left:12px"><input type="checkbox" name="client_secret_clear" value="1"> clear</label>
+					<p class="description">Certificates &amp; secrets &rarr; the <strong>Value</strong> column, <em>not</em> Secret ID. Roughly 40 characters and always contains a <code>~</code>; a 36-character GUID is the wrong column. The Value is only readable at the moment you create the secret &mdash; if you have navigated away, make a new one.</p>
 					<p class="description">Application permissions <code>Mail.ReadWrite</code> + <code>Mail.Send</code>, admin-consented, and restricted to this one mailbox by an Exchange Application Access Policy.</p></td></tr>
 		</table>
 
@@ -156,6 +183,7 @@ function gasf_crm_admin_tab() {
 	</form>
 
 	<h3>Maintenance</h3>
+	<p class="description">These act on <strong>saved</strong> settings &mdash; they are separate forms from the one above, so save any credential change before testing it.</p>
 	<p>
 		<?php
 		foreach ( array(
