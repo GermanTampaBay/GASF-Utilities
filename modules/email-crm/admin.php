@@ -21,6 +21,7 @@ function gasf_crm_admin_tab() {
 	if ( ! current_user_can( 'manage_options' ) ) { return; }
 
 	$notice = '';
+	$diag   = null;
 
 	if ( isset( $_POST['gasf_crm_action'] ) && check_admin_referer( 'gasf_crm' ) ) {
 		$act = sanitize_text_field( wp_unslash( $_POST['gasf_crm_action'] ) );
@@ -63,15 +64,7 @@ function gasf_crm_admin_tab() {
 		}
 
 		if ( 'test' === $act ) {
-			$r = gasf_crm_graph_test();
-			if ( is_wp_error( $r ) ) {
-				$notice = '<div class="notice notice-error"><p>' . esc_html( $r->get_error_message() ) . '</p></div>';
-			} else {
-				$notice = '<div class="notice notice-success"><p>Connected to <strong>'
-					. esc_html( gasf_crm_cfg()['mailbox'] ) . '</strong> — Inbox holds '
-					. (int) ( $r['totalItemCount'] ?? 0 ) . ' message(s), '
-					. (int) ( $r['unreadItemCount'] ?? 0 ) . ' unread.</p></div>';
-			}
+			$diag = gasf_crm_graph_diagnostics();
 		}
 
 		if ( 'sync' === $act ) {
@@ -191,7 +184,7 @@ function gasf_crm_admin_tab() {
 	<p>
 		<?php
 		foreach ( array(
-			'test'   => 'Test Graph connection',
+			'test'   => 'Check Graph status',
 			'sync'   => 'Sync now',
 			'corpus' => 'Rebuild AI corpus',
 		) as $act => $label ) : ?>
@@ -202,6 +195,7 @@ function gasf_crm_admin_tab() {
 		</form>
 		<?php endforeach; ?>
 	</p>
+	<?php if ( $diag ) { gasf_crm_render_diagnostics( $diag ); } ?>
 	<p class="description">
 		Last sync: <?php echo $cfg['last_sync']
 			? esc_html( human_time_diff( (int) $cfg['last_sync'] ) . ' ago' )
@@ -238,4 +232,72 @@ function gasf_crm_admin_tab() {
 		echo '</tbody></table>';
 		echo '<p class="description">Accounts are identified by provider + subject claim, not email address — the same person signing in with Google and with Microsoft appears twice and needs approving twice.</p>';
 	}
+}
+
+/**
+ * Render the layered Graph status panel.
+ *
+ * Ordered by dependency: credentials, then consent, then mailbox reach. The
+ * first red row is the one to fix — anything below it is untrustworthy, because
+ * each layer needs the one above it. This ordering is the whole point of the
+ * panel: Graph reports all three failures with overlapping 401/403 messages, so
+ * without it you cannot tell a bad secret from missing consent from a mailbox
+ * the access policy excludes.
+ */
+function gasf_crm_render_diagnostics( array $d ) {
+	$links = gasf_crm_entra_links();
+	$ok    = '<span style="color:#2c7a3f;font-weight:700">&#10003;</span> ';
+	$bad   = '<span style="color:#d63638;font-weight:700">&#10007;</span> ';
+
+	$row = function ( $label, $state, $detail, $fix = '' ) use ( $ok, $bad ) {
+		echo '<tr><td style="width:170px"><strong>' . esc_html( $label ) . '</strong></td><td>'
+			. ( $state ? $ok : $bad ) . $detail // phpcs:ignore WordPress.Security.EscapeOutput
+			. ( $fix ? '<div class="description" style="margin-top:4px">' . $fix . '</div>' : '' ) // phpcs:ignore WordPress.Security.EscapeOutput
+			. '</td></tr>';
+	};
+
+	echo '<table class="widefat striped" style="max-width:900px;margin:12px 0"><tbody>';
+
+	if ( ! $d['configured'] ) {
+		$row( 'Credentials', false, 'Tenant ID, client ID or client secret is missing.' );
+		echo '</tbody></table>';
+		return;
+	}
+
+	// 1 — credentials. A token proves the secret is the Value, not the Secret ID.
+	if ( $d['token'] ) {
+		$row( 'Credentials', true, 'Token issued'
+			. ( null !== $d['expires_in'] ? ' — valid for ' . (int) round( $d['expires_in'] / 60 ) . ' more minutes' : '' ) . '.' );
+	} else {
+		$row( 'Credentials', false, esc_html( $d['token_error'] ),
+			'<a href="' . esc_url( $links['secrets'] ) . '" target="_blank" rel="noopener">Certificates &amp; secrets</a> — copy the <strong>Value</strong> column, not Secret ID.' );
+		echo '</tbody></table>';
+		return; // nothing below this can be assessed without a token
+	}
+
+	// 2 — consent. Invisible in every API response: a role-less token is issued
+	// without complaint and only the mail call fails, with wording that points
+	// somewhere else entirely.
+	$missing = array_diff( gasf_crm_required_roles(), $d['roles'] );
+	if ( $missing ) {
+		$row( 'Admin consent', false,
+			'Token carries no application role for: <code>' . esc_html( implode( '</code>, <code>', $missing ) ) . '</code>'
+			. ( $d['roles'] ? ' (present: <code>' . esc_html( implode( '</code>, <code>', $d['roles'] ) ) . '</code>)' : '' ),
+			'<a href="' . esc_url( $links['permissions'] ) . '" target="_blank" rel="noopener">API permissions</a> &rarr; <strong>Grant admin consent</strong>. '
+			. 'The <em>Status</em> column must read "Granted" — the "Admin consent required" column saying Yes is a different thing and does not mean it was granted.' );
+	} else {
+		$row( 'Admin consent', true, 'Granted: <code>' . esc_html( implode( '</code>, <code>', $d['roles'] ) ) . '</code>' );
+	}
+
+	// 3 — mailbox reach, which is where the Application Access Policy shows up.
+	if ( true === $d['reach'] ) {
+		$row( 'Mailbox access', true, '<code>' . esc_html( $d['mailbox'] ) . '</code> — Inbox holds '
+			. (int) $d['counts']['total'] . ' message(s), ' . (int) $d['counts']['unread'] . ' unread.' );
+	} elseif ( false === $d['reach'] ) {
+		$row( 'Mailbox access', false, esc_html( $d['reach_error'] ),
+			'If consent above is green, this is the Application Access Policy. Confirm the mailbox is a member of the scope group, then: '
+			. '<code>Test-ApplicationAccessPolicy -Identity ' . esc_html( $d['mailbox'] ) . ' -AppId ' . esc_html( gasf_crm_cfg()['client_id'] ) . '</code>' );
+	}
+
+	echo '</tbody></table>';
 }

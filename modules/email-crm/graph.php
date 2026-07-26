@@ -119,6 +119,83 @@ function gasf_crm_mailbox_path() {
 	return '/users/' . rawurlencode( $c['mailbox'] );
 }
 
+/** Application roles this module needs on its Graph token. */
+function gasf_crm_required_roles() {
+	return array( 'Mail.ReadWrite', 'Mail.Send' );
+}
+
+/**
+ * Deep links into the Entra blades for this app registration.
+ *
+ * The Enterprise Application and the App registration are separate objects with
+ * separate menus, and secrets/permissions live only on the registration — so
+ * "find it in the portal" is genuinely ambiguous advice. Link the exact blades.
+ */
+function gasf_crm_entra_links() {
+	$id = rawurlencode( gasf_crm_cfg()['client_id'] );
+	$b  = 'https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationMenuBlade/~/';
+	return array(
+		'permissions' => $b . 'CallAnAPI/appId/' . $id,
+		'secrets'     => $b . 'Credentials/appId/' . $id,
+		'overview'    => $b . 'Overview/appId/' . $id,
+	);
+}
+
+/**
+ * Layered Graph health check.
+ *
+ * Credentials, consent and mailbox reach fail independently, but Graph's own
+ * errors conflate them — a token with no roles is issued perfectly happily, and
+ * the only symptom is a mail call returning "Access is denied", which reads
+ * exactly like an Application Access Policy problem. Reporting each layer
+ * separately is the difference between a one-click fix and an hour of guessing.
+ */
+function gasf_crm_graph_diagnostics() {
+	$cfg = gasf_crm_cfg();
+	$out = array(
+		'configured'  => gasf_crm_ready(),
+		'mailbox'     => $cfg['mailbox'],
+		'token'       => null,
+		'token_error' => '',
+		'roles'       => array(),
+		'expires_in'  => null,
+		'reach'       => null,
+		'reach_error' => '',
+		'counts'      => array(),
+	);
+	if ( ! $out['configured'] ) { return $out; }
+
+	// Never diagnose from a cached token — roles are fixed at issue time, so a
+	// stale one describes the permission state from up to an hour ago.
+	delete_transient( 'gasf_crm_graph_token' );
+	$token = gasf_crm_graph_token( true );
+	if ( is_wp_error( $token ) ) {
+		$out['token']       = false;
+		$out['token_error'] = $token->get_error_message();
+		return $out;
+	}
+	$out['token'] = true;
+
+	$parts  = explode( '.', $token );
+	$claims = isset( $parts[1] ) ? json_decode( base64_decode( strtr( $parts[1], '-_', '+/' ) ), true ) : array();
+	$out['roles'] = isset( $claims['roles'] ) ? (array) $claims['roles'] : array();
+	if ( ! empty( $claims['exp'] ) ) { $out['expires_in'] = max( 0, (int) $claims['exp'] - time() ); }
+
+	$r = gasf_crm_graph( 'GET', gasf_crm_mailbox_path()
+		. '/mailFolders/Inbox?$select=displayName,totalItemCount,unreadItemCount' );
+	if ( is_wp_error( $r ) ) {
+		$out['reach']       = false;
+		$out['reach_error'] = $r->get_error_message();
+	} else {
+		$out['reach']  = true;
+		$out['counts'] = array(
+			'total'  => (int) ( $r['totalItemCount'] ?? 0 ),
+			'unread' => (int) ( $r['unreadItemCount'] ?? 0 ),
+		);
+	}
+	return $out;
+}
+
 /**
  * Cheap reachability probe for the admin tab's Test button.
  *
