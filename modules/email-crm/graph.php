@@ -129,8 +129,30 @@ function gasf_crm_mailbox_path() {
  * a 403 that pointed at the access policy instead of at the wrong endpoint.
  */
 function gasf_crm_graph_test() {
-	return gasf_crm_graph( 'GET', gasf_crm_mailbox_path()
+	// Always take a fresh token. The reason anyone presses this button is that
+	// they just changed something in Entra — and roles are baked into the token
+	// at issue time, so a cached one keeps reporting the OLD permission state for
+	// most of an hour after the problem was actually fixed.
+	delete_transient( 'gasf_crm_graph_token' );
+
+	$r = gasf_crm_graph( 'GET', gasf_crm_mailbox_path()
 		. '/mailFolders/Inbox?$select=displayName,totalItemCount,unreadItemCount' );
+
+	// A 403 has two very different causes and Graph's message does not separate
+	// them. The token itself does: no roles claim means consent was never
+	// granted, which is a different fix from a mailbox the policy excludes.
+	if ( is_wp_error( $r ) && false !== strpos( $r->get_error_message(), 'HTTP 403' ) ) {
+		$token = gasf_crm_graph_token();
+		if ( ! is_wp_error( $token ) ) {
+			$parts  = explode( '.', $token );
+			$claims = isset( $parts[1] ) ? json_decode( base64_decode( strtr( $parts[1], '-_', '+/' ) ), true ) : array();
+			if ( empty( $claims['roles'] ) ) {
+				return new WP_Error( 'gasf_crm_noconsent',
+					'The access token carries no application roles, so admin consent has not been granted. In the app registration, open API permissions and click "Grant admin consent" — Mail.ReadWrite and Mail.Send must show Granted in the Status column. (The "Admin consent required" column saying Yes is not the same thing.)' );
+			}
+		}
+	}
+	return $r;
 }
 
 /**
