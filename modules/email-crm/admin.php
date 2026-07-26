@@ -64,10 +64,14 @@ function gasf_crm_admin_tab() {
 
 		if ( 'test' === $act ) {
 			$r = gasf_crm_graph_test();
-			$notice = is_wp_error( $r )
-				? '<div class="notice notice-error"><p>' . esc_html( $r->get_error_message() ) . '</p></div>'
-				: '<div class="notice notice-success"><p>Connected to <strong>'
-					. esc_html( $r['displayName'] ?? '?' ) . '</strong> (' . esc_html( $r['mail'] ?? '?' ) . ').</p></div>';
+			if ( is_wp_error( $r ) ) {
+				$notice = '<div class="notice notice-error"><p>' . esc_html( $r->get_error_message() ) . '</p></div>';
+			} else {
+				$notice = '<div class="notice notice-success"><p>Connected to <strong>'
+					. esc_html( gasf_crm_cfg()['mailbox'] ) . '</strong> — Inbox holds '
+					. (int) ( $r['totalItemCount'] ?? 0 ) . ' message(s), '
+					. (int) ( $r['unreadItemCount'] ?? 0 ) . ' unread.</p></div>';
+			}
 		}
 
 		if ( 'sync' === $act ) {

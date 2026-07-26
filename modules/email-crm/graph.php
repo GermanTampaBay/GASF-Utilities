@@ -101,7 +101,13 @@ function gasf_crm_graph( $method, $path, $body = null, $retry = true ) {
 	if ( $code < 200 || $code >= 300 ) {
 		$msg = $json['error']['message'] ?? substr( $raw, 0, 300 );
 		if ( 403 === $code ) {
-			$msg .= ' — check the Application Access Policy is applied and has propagated.';
+			// Two very different causes, and the Graph message does not
+			// distinguish them: either the app lacks the permission the endpoint
+			// needs, or the Application Access Policy is excluding this mailbox.
+			$msg .= ' — either the app is missing a permission this endpoint needs,'
+				. ' or the Application Access Policy is excluding the mailbox.'
+				. ' Confirm Mail.ReadWrite + Mail.Send are admin-consented, then run'
+				. ' Test-ApplicationAccessPolicy against ' . gasf_crm_cfg()['mailbox'] . '.';
 		}
 		return new WP_Error( 'gasf_crm_graph', 'Graph HTTP ' . $code . ': ' . $msg );
 	}
@@ -113,9 +119,18 @@ function gasf_crm_mailbox_path() {
 	return '/users/' . rawurlencode( $c['mailbox'] );
 }
 
-/** Cheap reachability probe for the admin tab's Test button. */
+/**
+ * Cheap reachability probe for the admin tab's Test button.
+ *
+ * Deliberately reads the Inbox FOLDER, not the user object. GET /users/{id}
+ * is a directory read requiring User.Read.All, which this app does not have
+ * and should not be given — it holds Mail.ReadWrite and Mail.Send and nothing
+ * else. Probing the user object made a correctly-configured install fail with
+ * a 403 that pointed at the access policy instead of at the wrong endpoint.
+ */
 function gasf_crm_graph_test() {
-	return gasf_crm_graph( 'GET', gasf_crm_mailbox_path() . '?$select=displayName,mail,userPrincipalName' );
+	return gasf_crm_graph( 'GET', gasf_crm_mailbox_path()
+		. '/mailFolders/Inbox?$select=displayName,totalItemCount,unreadItemCount' );
 }
 
 /**
