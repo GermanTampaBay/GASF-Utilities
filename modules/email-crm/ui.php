@@ -258,7 +258,7 @@ function gasf_crm_render_help() {
 			<br>&mdash; <strong>Your own computer.</strong> Pick the file and press <em>Attach this file</em>. If it is something we send often, tick the box first and it is saved to the shared library so nobody has to go looking for it again.
 			<br>&mdash; <strong>The shared library.</strong> Documents we send regularly &mdash; the membership form, for instance &mdash; are already there. Press <em>Attach</em> next to the one you want.
 			<br>Attached files show as small tags above the buttons; press the &times; on one to take it off again. Up to 3 MB per file.</li>
-		<li><strong>Ignore</strong> is for spam, junk and mailing lists. Nothing is sent and the sender hears nothing back.
+		<li><strong>Ignore</strong> is for anything that needs no reply at all &mdash; spam, junk, mailing lists, sales pitches, messages meant for somebody else. Nothing is sent and the sender hears nothing back.
 			<br>It asks you why first &mdash; <em>Spam</em>, <em>Sales pitch</em>, <em>Not relevant</em>, <em>Political</em>, or <em>Other</em> where you type a few words. Picking a reason ignores it straight away, so it takes two deliberate clicks and a stray one cannot bin a message.
 			<br>The reason is recorded in the message's History, so months later anyone can see not just that it was ignored but why.</li>
 		<li><strong>Mark answered</strong> is for when you handled it some other way — you rang them, or caught them at the club. Nothing is sent, it just clears it off the list.</li>
@@ -500,7 +500,13 @@ function gasf_crm_render_inbox() {
 					'<button class="btn sec" id="attopen">Attach…</button>' +
 					'<button class="btn sec" id="fwdopen">Forward…</button>' +
 					'<button class="btn sec" id="done">Mark answered</button>' +
-					'<button class="btn warn" id="ignore">Ignore (spam)</button>' +
+					// "Ignore…", not "Ignore (spam)". The parenthetical was a useful
+					// hint when the button just binned things, but the picker now
+					// offers four non-spam reasons and a label narrower than the
+					// action suppresses correct use: a volunteer looking at a
+					// vendor pitch decides it "isn't spam" and leaves it in Open.
+					// The ellipsis matches Attach… and Forward… — it opens something.
+					'<button class="btn warn" id="ignore">Ignore…</button>' +
 					'</div>' +
 					// The reason picker IS the confirmation — opening it is one
 					// deliberate click and choosing a reason is a second, so a
