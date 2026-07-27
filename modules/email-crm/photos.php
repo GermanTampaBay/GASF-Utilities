@@ -546,7 +546,13 @@ add_action( 'template_redirect', function () {
 	$token = (string) get_query_var( 'gasf_phototag' );
 	if ( '' === $token ) { return; }
 
+	// Same reasoning as /email: a cached tagging page would show one submitter
+	// another's photos, and a cached image is the exact thing the private
+	// folder exists to prevent.
+	if ( ! defined( 'DONOTCACHEPAGE' ) ) { define( 'DONOTCACHEPAGE', true ); }
 	nocache_headers();
+	header( 'Cache-Control: no-store, no-cache, must-revalidate, max-age=0, private', true );
+	header_remove( 'Expires' );
 	header( 'X-Robots-Tag: noindex, nofollow', true );
 
 	// Wrong or stale tokens are throttled per IP. Not because the token is

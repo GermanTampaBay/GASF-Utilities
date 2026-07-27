@@ -15,6 +15,28 @@ add_action( 'template_redirect', function () {
 	$route = get_query_var( 'gasf_crm' );
 	if ( ! $route ) { return; }
 
+	/*
+	 * Nothing under /email may be cached, by anyone, ever.
+	 *
+	 * This was not theoretical. The host's Endurance cache was stamping
+	 * "Cache-Control: max-age=7200" onto the OAuth start route — a 302 carrying
+	 * a one-time state parameter. A 302 with explicit freshness is cacheable,
+	 * so browsers dutifully kept it and replayed the SAME state on every later
+	 * attempt. A volunteer tapping "Continue with Google" was being sent
+	 * straight back with a state consumed hours earlier, never reaching Google
+	 * at all: three failures in sixteen seconds, and "that sign-in link has
+	 * expired" every time.
+	 *
+	 * Set before any route runs, and repeated with replace=true after
+	 * nocache_headers() because something downstream had been overwriting it.
+	 * DONOTCACHEPAGE is the convention the page caches on this host look for.
+	 */
+	if ( ! defined( 'DONOTCACHEPAGE' ) ) { define( 'DONOTCACHEPAGE', true ); }
+	nocache_headers();
+	header( 'Cache-Control: no-store, no-cache, must-revalidate, max-age=0, private', true );
+	header( 'Pragma: no-cache', true );
+	header_remove( 'Expires' );
+
 	$provider = sanitize_key( (string) get_query_var( 'gasf_crm_provider' ) );
 
 	switch ( $route ) {
