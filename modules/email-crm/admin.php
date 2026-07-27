@@ -262,6 +262,24 @@ function gasf_crm_admin_tab() {
 		<code>wp gasf-crm sync</code> is the reliable path on a low-traffic site.
 	</p>
 	<?php
+	$health = gasf_crm_health_state();
+	printf(
+		'<p class="description">Mailbox health: <strong style="color:%s">%s</strong>. %s</p>',
+		esc_attr( 'ok' === $health['state'] ? '#2c7a3f' : '#d63638' ),
+		esc_html( 'ok' === $health['state'] ? 'reachable' : strtoupper( $health['state'] ) ),
+		'ok' === $health['state']
+			? esc_html( $health['last_success']
+				? 'Last reached ' . human_time_diff( (int) $health['last_success'] ) . ' ago.'
+				: 'No sync has run yet.' )
+			: esc_html( sprintf(
+				'Failing for %s across %d attempt(s). After %d hours a banner appears on /email and the administrators are emailed. Last error: %s',
+				human_time_diff( (int) $health['first_fail'] ),
+				(int) $health['fail_count'],
+				(int) round( GASF_CRM_HEALTH_ALERT_AFTER / HOUR_IN_SECONDS ),
+				$health['last_error']
+			) )
+	);
+
 	$queued    = count( (array) get_option( 'gasf_crm_notify_queue', array() ) );
 	$last_note = (int) get_option( 'gasf_crm_notify_last', 0 );
 	?>

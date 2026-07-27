@@ -280,6 +280,22 @@ function gasf_crm_render_inbox() {
 	</div>
 </div></header>
 
+<?php
+	// Only at 'alert', never at 'failing'. A volunteer can do nothing about a
+	// transient Graph blip, and a banner that cries wolf over one failed hourly
+	// run is a banner people learn to read past.
+	$health = gasf_crm_health_state();
+	if ( 'alert' === $health['state'] ) :
+		$down_hours = (int) round( $health['down_for'] / HOUR_IN_SECONDS );
+		?>
+	<div class="wrap"><div class="note err" style="margin-top:16px">
+		<strong>New mail is not arriving.</strong>
+		The club mailbox has not been reachable for <?php echo (int) $down_hours; ?> hours, so anything sent to us
+		since then is not shown below. Nothing is lost &mdash; it is sitting in the mailbox and will appear as soon
+		as this is fixed &mdash; but nobody is seeing it, so nobody is replying. Please tell whoever looks after the website.
+	</div></div>
+	<?php endif; ?>
+
 <?php gasf_crm_render_help(); ?>
 
 <div class="wrap"><div class="layout">

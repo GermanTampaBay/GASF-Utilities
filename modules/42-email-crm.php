@@ -47,6 +47,7 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 	require_once GASF_CRM_DIR . '/graph.php';
 	require_once GASF_CRM_DIR . '/attachments.php';
 	require_once GASF_CRM_DIR . '/sync.php';
+	require_once GASF_CRM_DIR . '/health.php';
 	require_once GASF_CRM_DIR . '/auth.php';
 	require_once GASF_CRM_DIR . '/ai.php';
 	require_once GASF_CRM_DIR . '/notify.php';

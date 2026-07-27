@@ -50,11 +50,17 @@ function gasf_crm_sync() {
 		$started = time();
 
 		$inbox = gasf_crm_graph_messages( 'Inbox', $since );
+
+		// The inbox fetch IS the health check. Everything else in this function
+		// is bookkeeping; if this call fails, mail is not reaching the club and
+		// that is the only fact anybody needs.
 		if ( is_wp_error( $inbox ) ) {
 			$result['errors'][] = $inbox->get_error_message();
 			gasf_mec_log( 'CRM sync: inbox fetch failed — ' . $inbox->get_error_message() );
+			gasf_crm_health_fail( $inbox->get_error_message() );
 			return $result;
 		}
+		gasf_crm_health_ok();
 
 		$fresh   = array();
 		$touched = array();
