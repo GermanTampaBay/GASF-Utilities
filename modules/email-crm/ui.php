@@ -302,7 +302,8 @@ textarea{width:100%;min-height:150px;padding:10px;border:1px solid var(--gasf-bo
 .pfrom{font-size:12px;font-weight:600;color:var(--s-ink);margin-bottom:8px}
 .pf{display:block;margin:0 0 8px}
 .pf>span{display:block;font-size:11px;color:var(--gasf-muted);margin-bottom:2px}
-.pf input{width:100%;padding:6px 8px;border:1px solid var(--gasf-border);border-radius:4px;font:inherit;font-size:13px}
+.pf input,.pf select{width:100%;padding:6px 8px;border:1px solid var(--gasf-border);border-radius:4px;font:inherit;font-size:13px;background:var(--gasf-surface);color:var(--gasf-text)}
+.pf .p-placeother{margin-top:5px}
 .prow{display:flex;gap:8px;flex-wrap:wrap}
 .prow .pf{flex:1 1 130px}
 .pgeo{font-size:12px;color:var(--gasf-muted);margin:2px 0 8px}
@@ -657,6 +658,28 @@ function gasf_crm_render_inbox() {
 		}
 		echo wp_json_encode( $mine );
 	?>;
+	// The same places the submitter is offered, so a volunteer correcting an
+	// answer picks from the same vocabulary rather than retyping into a box and
+	// inventing a near-duplicate term. label is decoded for reading; name is the
+	// stored form, which is what has to go back.
+	var PLACES = <?php
+		$pl = array();
+		if ( function_exists( 'gasf_photo_place_tree' ) ) {
+			$names = array();
+			foreach ( gasf_photo_place_tree( 0 ) as $r ) { $names[ (int) $r['term']->term_id ] = $r['term']->name; }
+			foreach ( gasf_photo_place_tree( 0 ) as $r ) {
+				$pid = (int) $r['term']->parent;
+				$pl[] = array(
+					'name'   => $r['term']->name,
+					'label'  => gasf_photo_label( $r['term']->name ),
+					'depth'  => (int) $r['depth'],
+					'parent' => isset( $names[ $pid ] ) ? $names[ $pid ] : '',
+				);
+			}
+		}
+		echo wp_json_encode( $pl );
+	?>;
+
 	var stream = ''; // '' = every stream this user can see
 	var list = document.getElementById('list'), pane = document.getElementById('pane');
 	var status = 'open', current = null, currentStamp = null;
@@ -1098,6 +1121,53 @@ function gasf_crm_render_inbox() {
 		});
 	}
 
+	// Places as a dropdown, matching what the submitter was offered.
+	//
+	// A value that is NOT one of our places — a sender typed somewhere we do not
+	// have — selects "Somewhere else" and keeps their words in the box beside
+	// it, rather than being silently dropped for not matching a term.
+	function placeSelect(current){
+		current = current || '';
+		var known = false;
+		var opts = '<option value=""' + (current ? '' : ' selected') + '>— not sure —</option>';
+
+		PLACES.forEach(function(pl){
+			if (pl.name === current) { known = true; }
+			var pad = '';
+			for (var i = 0; i < Math.min(2, pl.depth); i++) { pad += '   '; }
+			opts += '<option value="' + esc(pl.name) + '"' + (pl.name === current ? ' selected' : '') + '>' +
+				pad + esc(pl.label || pl.name) + '</option>';
+		});
+
+		var other = current && !known;
+		opts += '<option value="__other"' + (other ? ' selected' : '') + '>Somewhere else…</option>';
+
+		return '<select class="p-place">' + opts + '</select>' +
+			'<input type="text" class="p-placeother" placeholder="Where was it?" value="' +
+			(other ? esc(current) : '') + '"' + (other ? '' : ' hidden') + '>';
+	}
+
+	// What to send for "place": the typed box wins when it is in use.
+	function placeValue(root){
+		var sel = root.querySelector('.p-place');
+		var oth = root.querySelector('.p-placeother');
+		if (!sel) { return ''; }
+		if ('__other' === sel.value) { return oth ? oth.value.trim() : ''; }
+		return sel.value;
+	}
+
+	// Reveal the free-text box only while "Somewhere else" is chosen.
+	function wirePlaceSelects(root){
+		Array.prototype.forEach.call(root.querySelectorAll('.p-place'), function(sel){
+			var box = sel.parentNode.querySelector('.p-placeother');
+			sel.onchange = function(){
+				if (!box) { return; }
+				box.hidden = ('__other' !== sel.value);
+				if (!box.hidden) { box.focus(); }
+			};
+		});
+	}
+
 	// The labelling form: identical whether the sender filled it in or nobody
 	// did. A volunteer working from scratch needs exactly the fields a
 	// volunteer checking somebody's answers needs, so there is one of them.
@@ -1107,7 +1177,7 @@ function gasf_crm_render_inbox() {
 			'<label class="pf"><span>What is happening</span>' +
 			'<input type="text" class="p-caption" maxlength="150" value="' + esc(q.caption||'') + '"></label>' +
 			'<div class="prow">' +
-			'<label class="pf"><span>Where</span><input type="text" class="p-place" value="' + esc(q.place||p.guess||'') + '"></label>' +
+			'<label class="pf"><span>Where</span>' + placeSelect(q.place || p.guess || '') + '</label>' +
 			'<label class="pf"><span>Occasion</span><input type="text" class="p-event" value="' + esc(q.event||'') + '"></label>' +
 			'<label class="pf"><span>Date</span><input type="date" class="p-taken" value="' + esc(q.taken||p.taken||'') + '"></label>' +
 			'</div>' +
@@ -1245,6 +1315,7 @@ function gasf_crm_render_inbox() {
 		});
 
 		wireEventPickers(pane);
+		wirePlaceSelects(pane);
 
 		Array.prototype.forEach.call(pane.querySelectorAll('.pcard'), function(card){
 			var ok = card.querySelector('.p-ok');
@@ -1259,7 +1330,7 @@ function gasf_crm_render_inbox() {
 					// Split on commas rather than asking the volunteer to manage
 					// separate boxes: they are correcting a list, not composing one.
 					people: v('.p-people').split(',').map(function(s){ return s.trim(); }).filter(Boolean),
-					place: v('.p-place'), event: v('.p-event'),
+					place: placeValue(card), event: v('.p-event'),
 					// Set only when the occasion was picked from the calendar, so
 					// a hand-typed name never claims to be a specific event.
 					event_id: parseInt(v('.p-evid'), 10) || 0,
@@ -1628,6 +1699,7 @@ function gasf_crm_render_inbox() {
 
 	function wirePhotoPane(id, p){
 		wireEventPickers(ppane);
+		wirePlaceSelects(ppane);
 
 		var ok = ppane.querySelector('.p-ok');
 		if (ok) {
@@ -1639,7 +1711,7 @@ function gasf_crm_render_inbox() {
 				api('/photos/save', { method:'POST', body: JSON.stringify({
 					photo: id,
 					people: v('.p-people').split(',').map(function(s){ return s.trim(); }).filter(Boolean),
-					place: v('.p-place'), event: v('.p-event'),
+					place: placeValue(ppane), event: v('.p-event'),
 					event_id: parseInt(v('.p-evid'), 10) || 0,
 					taken: v('.p-taken'), caption: v('.p-caption')
 				})}).then(function(){ loadPhotos(); openPhoto(id); })
