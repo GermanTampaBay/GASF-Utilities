@@ -144,9 +144,21 @@ function gasf_crm_photo_page( $state, $invite = null, $notice = '' ) {
 	// by every photo card — the vocabulary does not change between them.
 	$tree = gasf_photo_place_tree( $suggest_place );
 
+	// Parent names travel with the list so the form can tell a REFINEMENT of the
+	// geofence ("the grounds" -> "the Bierstube") from a contradiction of it
+	// ("the grounds" -> "England Brothers Park"). Only the second is a reason to
+	// keep the machine's answer.
+	$pl_names = array();
+	foreach ( $tree as $row ) { $pl_names[ (int) $row['term']->term_id ] = $row['term']->name; }
+
 	$pl_list = array();
 	foreach ( $tree as $row ) {
-		$pl_list[] = array( 'name' => $row['term']->name, 'depth' => (int) $row['depth'] );
+		$pid = (int) $row['term']->parent;
+		$pl_list[] = array(
+			'name'   => $row['term']->name,
+			'depth'  => (int) $row['depth'],
+			'parent' => isset( $pl_names[ $pid ] ) ? $pl_names[ $pid ] : '',
+		);
 	}
 
 	printf(
@@ -203,6 +215,9 @@ function gasf_crm_photo_page( $state, $invite = null, $notice = '' ) {
 
 		// Date. data-own marks a value that came from the photo itself, which
 		// the inheritance must not overwrite.
+		// data-orig records what the camera said, so a correction to photo one
+		// can be recognised as fixing a shared wrong clock and carried across,
+		// while a photo that genuinely came from another day keeps its own.
 		printf(
 			'<label class="f"><span>When was it taken?</span>' .
 			'<input type="date" class="f-date" name="photo[%d][taken]" value="%s" max="%s"%s>' .
@@ -210,7 +225,7 @@ function gasf_crm_photo_page( $state, $invite = null, $notice = '' ) {
 			(int) $id,
 			esc_attr( $own_date ),
 			esc_attr( gmdate( 'Y-m-d' ) ),
-			$own_date ? ' data-own="1"' : '',
+			$own_date ? ' data-orig="' . esc_attr( $own_date ) . '"' : '',
 			$own_date ? 'Read from the photo itself — change it if it looks wrong.' : 'A rough date is much better than none.'
 		);
 
@@ -224,7 +239,11 @@ function gasf_crm_photo_page( $state, $invite = null, $notice = '' ) {
 		// forty-eight rows of form; the hierarchy survives as indentation in the
 		// option text, which is what it was there to convey.
 		if ( $tree ) {
-			printf( '<select class="f-place" name="photo[%d][place]"%s>', (int) $id, $place_val ? ' data-own="1"' : '' );
+			printf(
+				'<select class="f-place" name="photo[%d][place]"%s>',
+				(int) $id,
+				$place_val ? ' data-own="' . esc_attr( $place_val ) . '"' : ''
+			);
 			echo '<option value="">— not sure —</option>';
 			foreach ( $tree as $row ) {
 				$term = $row['term'];
@@ -459,12 +478,40 @@ function gasf_crm_photo_script() {
 		} else {
 			list = EV.slice(0, 8);
 		}
+
+		// One event on that day: choose it. Somebody who reads "World Cup Watch
+		// Party, 29 Jun" and moves on has answered the question in their head —
+		// leaving it unticked collects a blank from someone who thought they had
+		// told us. With SEVERAL on that day it stays unticked, because picking
+		// one of three would be inventing an answer rather than saving a click.
+		if (!q && date && date.value && 1 === list.length && !touched(card, 'event')) {
+			chosen = list[0].title;
+			card.querySelector('.f-event').value = list[0].title;
+			card.querySelector('.f-eventid').value = list[0].id;
+		}
+
 		evRender(box, list, chosen);
 	}
 
 	/* -------- photo 1's answers flow down, until touched -------- */
 	function touch(card, what){ card.dataset['touched' + what] = '1'; }
 	function touched(card, what){ return card.dataset['touched' + what] === '1'; }
+
+	// Are two places on the same branch — one inside the other, either way up?
+	// "German-American Society" and "Bierstube" are; "Bierstube" and "England
+	// Brothers Park" are not.
+	var PL = {};
+	(typeof GASF_PLACES !== 'undefined' ? GASF_PLACES : []).forEach(function(p){ PL[p.name] = p; });
+
+	function lineage(name){
+		var out = [], cur = PL[name], guard = 0;
+		while (cur && guard++ < 12) { out.push(cur.name); cur = cur.parent ? PL[cur.parent] : null; }
+		return out;
+	}
+	function sameBranch(a, b){
+		if (!a || !b || a === b) { return true; }
+		return lineage(a).indexOf(b) !== -1 || lineage(b).indexOf(a) !== -1;
+	}
 
 	var cards = Array.prototype.slice.call(document.querySelectorAll('.photo'));
 	var first = cards[0];
@@ -478,18 +525,32 @@ function gasf_crm_photo_script() {
 		var o = first.querySelector('.f-placeother');
 
 		cards.slice(1).forEach(function(c){
-			// A value the photo itself carried is evidence about THIS picture and
-			// outranks anything copied from a different one.
+			// Dates: a photo that came from another day keeps its own. But when
+			// this photo's camera said the same thing photo one's did, a
+			// correction to photo one is fixing a clock they share, so it
+			// carries across.
 			var cd = c.querySelector('.f-date');
-			if (cd && !cd.dataset.own && !touched(c, 'date') && d) { cd.value = d.value; }
+			if (cd && d && !touched(c, 'date')) {
+				var sameClock = !cd.dataset.orig || (d.dataset.orig && cd.dataset.orig === d.dataset.orig);
+				if (sameClock) { cd.value = d.value; }
+			}
 
+			// Places: a human choice beats a machine guess whenever the two are
+			// on the same branch. GPS can say "the grounds" and can never say
+			// "the Bierstube", so picking the room REFINES the guess rather than
+			// contradicting it — and refusing to inherit there was the bug that
+			// left five photos stuck on the geofence's answer. A genuinely
+			// different place, on another branch, still keeps its own.
 			var cp = c.querySelector('.f-place');
-			if (p && cp && !cp.dataset.own && !touched(c, 'place')) {
-				cp.value = p.value;
-				var co = c.querySelector('.f-placeother');
-				if (co) {
-					co.hidden = ('__other' !== p.value);
-					if (o) { co.value = o.value; }
+			if (p && cp && !touched(c, 'place')) {
+				var own = cp.dataset.own || '';
+				if (!own || sameBranch(p.value, own)) {
+					cp.value = p.value;
+					var co = c.querySelector('.f-placeother');
+					if (co) {
+						co.hidden = ('__other' !== p.value);
+						if (o) { co.value = o.value; }
+					}
 				}
 			}
 
