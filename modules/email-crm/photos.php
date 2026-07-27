@@ -106,9 +106,29 @@ function gasf_crm_photo_approve( array $thread, $graph_message_id, $graph_attach
 		'graph_msg'   => (string) $graph_message_id,
 	) );
 
+	// One exact key per Graph attachment, so "have we already got this?" is an
+	// indexed equality rather than a LIKE against serialised data. Without it
+	// the automatic intake happily made a second copy of a photo a volunteer
+	// had already kept by hand.
+	update_post_meta( $id, '_gasf_photo_key', gasf_crm_photo_key( $graph_message_id, $graph_attachment_id ) );
+
 	gasf_crm_log_event( (int) $thread['id'], 'photo_approved', $name . ' → media #' . $id );
 
 	return (int) $id;
+}
+
+/** Stable identity for one attachment on one message. */
+function gasf_crm_photo_key( $graph_message_id, $graph_attachment_id ) {
+	return sha1( (string) $graph_message_id . '|' . (string) $graph_attachment_id );
+}
+
+/** Have we already taken this exact attachment in? Returns the attachment ID or 0. */
+function gasf_crm_photo_already_kept( $graph_message_id, $graph_attachment_id ) {
+	global $wpdb;
+	return (int) $wpdb->get_var( $wpdb->prepare(
+		"SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key = '_gasf_photo_key' AND meta_value = %s LIMIT 1",
+		gasf_crm_photo_key( $graph_message_id, $graph_attachment_id )
+	) );
 }
 
 /** Photos already taken from a thread, newest first. */
@@ -450,31 +470,55 @@ function gasf_crm_photo_autoprocess() {
 
 	$taken = 0;
 	foreach ( $rows as $row ) {
-		// Marked before the work, not after. A Graph timeout halfway through
-		// must not leave this message eligible again next hour and hand the
-		// sender a second copy of everything.
-		$wpdb->update( gasf_crm_table( 'messages' ), array( 'photos_done' => 1 ), array( 'id' => (int) $row['id'] ), array( '%d' ), array( '%d' ) );
-
 		$thread = gasf_crm_get_thread( (int) $row['thread_id'] );
 		if ( ! $thread ) { continue; }
 
-		$kept = array();
+		$kept   = array();  // everything on this message, new or already here
+		$fresh  = 0;        // how many this run actually fetched
+		$failed = false;
+
 		foreach ( gasf_crm_graph_attachments( $row['graph_message_id'], (string) $thread['stream'] ) as $a ) {
 			$type = strtolower( (string) ( $a['contentType'] ?? '' ) );
 			$kind = (string) ( $a['@odata.type'] ?? '' );
 			if ( 0 !== strpos( $type, 'image/' ) ) { continue; }
 			if ( false !== strpos( $kind, 'referenceAttachment' ) || false !== strpos( $kind, 'itemAttachment' ) ) { continue; }
 
+			// Already here — from a previous run, or because a volunteer kept it
+			// by hand before this got to it. Either way it is not fetched twice.
+			$have = gasf_crm_photo_already_kept( $row['graph_message_id'], (string) ( $a['id'] ?? '' ) );
+			if ( $have ) { $kept[] = $have; continue; }
+
 			$id = gasf_crm_photo_approve( $thread, (string) $row['graph_message_id'], (string) ( $a['id'] ?? '' ) );
 			if ( is_wp_error( $id ) ) {
 				gasf_mec_log( 'CRM photos: auto-keep failed for ' . ( $a['name'] ?? '?' ) . ' — ' . $id->get_error_message() );
+				$failed = true;
 				continue;
 			}
 			$kept[] = (int) $id;
+			$fresh++;
 		}
 
+		// Marked only once every image on the message is in. The first version
+		// marked it BEFORE the work, to stop a retry sending a second email —
+		// but a run killed halfway then abandoned the remaining photos for good,
+		// silently. Per-attachment keys make a retry harmless, so the flag can
+		// wait until there is genuinely nothing left to fetch.
+		if ( ! $failed ) {
+			$wpdb->update( gasf_crm_table( 'messages' ), array( 'photos_done' => 1 ), array( 'id' => (int) $row['id'] ), array( '%d' ), array( '%d' ) );
+		}
+
+		$taken += $fresh;
 		if ( ! $kept ) { continue; }
-		$taken += count( $kept );
+
+		// One ask per submission. A retry, or more photos arriving on the same
+		// thread later, must not start the clock again on somebody who is
+		// already holding a live link.
+		$live = (int) $wpdb->get_var( $wpdb->prepare(
+			'SELECT COUNT(*) FROM ' . gasf_crm_table( 'photo_invites' ) . '
+			  WHERE thread_id = %d AND submitted_at IS NULL AND expires_at > %s',
+			(int) $thread['id'], current_time( 'mysql', true )
+		) );
+		if ( $live ) { continue; }
 
 		$inv = gasf_crm_photo_invite_create(
 			(int) $thread['id'],
