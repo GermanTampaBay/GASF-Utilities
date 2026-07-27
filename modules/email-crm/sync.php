@@ -56,16 +56,25 @@ function gasf_crm_sync() {
 			return $result;
 		}
 
-		$fresh = array();
+		$fresh   = array();
+		$touched = array();
+
 		foreach ( $inbox as $m ) {
 			$r = gasf_crm_ingest( $m, 'in' );
-			if ( $r['inserted'] ) { $result['new']++; }
-			if ( $r['reopened'] ) { $result['reopened']++; }
-			if ( $r['inserted'] && $r['thread_id'] ) { $fresh[ $r['thread_id'] ] = true; }
+			if ( ! $r['thread_id'] ) { continue; }
+			$touched[ $r['thread_id'] ] = true;
+
+			if ( $r['inserted'] ) {
+				$result['new']++;
+				$fresh[ $r['thread_id'] ] = true;
+				gasf_crm_log_event( $r['thread_id'], 'received', 'Message from ' . $r['from'], 0 );
+			}
+			if ( $r['reopened'] ) {
+				$result['reopened']++;
+				gasf_crm_log_event( $r['thread_id'], 'reopened', 'New message arrived on an answered thread', 0 );
+			}
 		}
 
-		// Sent Items second, so a reply sent since the last run closes the very
-		// thread the loop above may have just reopened.
 		$sent = gasf_crm_graph_messages( 'SentItems', $since );
 		if ( is_wp_error( $sent ) ) {
 			// Non-fatal: inbound already landed, and this only affects whether a
@@ -75,17 +84,33 @@ function gasf_crm_sync() {
 		} else {
 			foreach ( $sent as $m ) {
 				$r = gasf_crm_ingest( $m, 'out' );
-				if ( $r['thread_id'] ) {
-					gasf_crm_set_status( $r['thread_id'], 'addressed' );
-					unset( $fresh[ $r['thread_id'] ] ); // answered already; don't page anyone
+				if ( ! $r['thread_id'] ) { continue; }
+				$touched[ $r['thread_id'] ] = true;
+
+				// Inserted rather than adopted means no placeholder matched, so
+				// nothing in the CRM sent it — somebody answered from Outlook.
+				if ( $r['inserted'] ) {
+					gasf_crm_log_event( $r['thread_id'], 'replied_outlook', 'Answered from Outlook rather than the CRM', 0 );
+					unset( $fresh[ $r['thread_id'] ] );
 				}
 			}
+		}
+
+		// Status is decided here, from the newest message in each thread, rather
+		// than by whichever loop happened to run last.
+		foreach ( array_keys( $touched ) as $thread_id ) {
+			gasf_crm_settle_thread( $thread_id );
 		}
 
 		gasf_crm_expire_locks();
 
 		foreach ( array_keys( $fresh ) as $thread_id ) {
-			if ( gasf_crm_notify_thread( $thread_id ) ) { $result['notified']++; }
+			$t = gasf_crm_get_thread( $thread_id );
+			// Re-check after settling: no point paging anyone about a thread that
+			// turned out to have been answered in the same sync.
+			if ( $t && 'new' === $t['status'] && gasf_crm_notify_thread( $thread_id ) ) {
+				$result['notified']++;
+			}
 		}
 
 		$cfg              = gasf_crm_cfg();
@@ -113,7 +138,7 @@ function gasf_crm_sync() {
  * singleton thread that never groups with its own replies.
  */
 function gasf_crm_ingest( array $m, $direction ) {
-	$none = array( 'inserted' => false, 'reopened' => false, 'thread_id' => 0 );
+	$none = array( 'inserted' => false, 'adopted' => false, 'reopened' => false, 'thread_id' => 0, 'from' => '' );
 
 	$conversation_id = (string) ( $m['conversationId'] ?? '' );
 	$graph_id        = (string) ( $m['id'] ?? '' );
@@ -140,7 +165,14 @@ function gasf_crm_ingest( array $m, $direction ) {
 		'in' === $direction
 	);
 
-	$inserted = gasf_crm_insert_message( array(
+	// An outbound message is usually the CRM's own reply coming back around via
+	// Sent Items. Adopt the placeholder the send path wrote instead of inserting
+	// a second copy — and use that as the signal for where the reply came from.
+	$adopted = ( 'out' === $direction )
+		? gasf_crm_adopt_placeholder( $thread['id'], $graph_id, $sent_at )
+		: false;
+
+	$inserted = $adopted ? false : gasf_crm_insert_message( array(
 		'thread_id'        => $thread['id'],
 		'graph_message_id' => $graph_id,
 		'direction'        => $direction,
@@ -154,11 +186,53 @@ function gasf_crm_ingest( array $m, $direction ) {
 		'sent_by_user_id'  => 0,
 	) );
 
+	// File the sender only on a genuinely new message. The overlap window
+	// re-reads the same messages every run, and counting those would inflate the
+	// address book with phantom traffic.
+	if ( $inserted && 'in' === $direction && $from_addr ) {
+		gasf_crm_touch_contact( $from_addr, $from_name, 'in', (string) ( $m['subject'] ?? '' ) );
+	}
+
 	return array(
 		'inserted'  => $inserted,
+		'adopted'   => $adopted,
 		'reopened'  => $thread['reopened'],
 		'thread_id' => $thread['id'],
+		'from'      => $from_name ? $from_name : $from_addr,
 	);
+}
+
+/**
+ * Set a thread's status from the direction of its newest message.
+ *
+ * Loop ordering cannot decide this correctly. A thread can take a reply and
+ * then a fresh inbound message inside the same overlap window, and whichever
+ * loop runs last would win regardless of which message is actually newer —
+ * leaving a thread with an unanswered question sitting in the answered pile.
+ * Deciding from the data is the only version that holds.
+ *
+ * Ignored threads are never touched: that status is a human judgement about
+ * spam, and no amount of incoming mail should overturn it.
+ */
+function gasf_crm_settle_thread( $thread_id ) {
+	global $wpdb;
+
+	$thread = gasf_crm_get_thread( $thread_id );
+	if ( ! $thread || 'ignored' === $thread['status'] ) { return; }
+
+	$last = $wpdb->get_var( $wpdb->prepare(
+		'SELECT direction FROM ' . gasf_crm_table( 'messages' ) . '
+		  WHERE thread_id = %d ORDER BY sent_at DESC, id DESC LIMIT 1', (int) $thread_id
+	) );
+	if ( ! $last ) { return; }
+
+	$want = ( 'out' === $last ) ? 'addressed' : 'new';
+	if ( $thread['status'] === $want ) { return; }
+
+	// Never yank a thread away from someone who has it open and is mid-reply.
+	if ( 'claimed' === $thread['status'] && 'new' === $want ) { return; }
+
+	gasf_crm_set_status( $thread_id, $want );
 }
 
 /**

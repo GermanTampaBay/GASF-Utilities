@@ -285,6 +285,33 @@ function gasf_crm_graph_reply( $graph_message_id, $html ) {
 	);
 }
 
+/**
+ * Forward a message to one or more addresses.
+ *
+ * Same reasoning as the reply path: Graph's own /forward action assembles the
+ * forwarded body and headers, so the recipient gets a properly-formed forward
+ * with the original and its attachments intact — rather than a fresh message
+ * that merely quotes something and arrives detached from the conversation.
+ */
+function gasf_crm_graph_forward( $graph_message_id, $to, $comment ) {
+	$recipients = array();
+	foreach ( (array) $to as $addr ) {
+		$addr = sanitize_email( $addr );
+		if ( is_email( $addr ) ) {
+			$recipients[] = array( 'emailAddress' => array( 'address' => $addr ) );
+		}
+	}
+	if ( ! $recipients ) {
+		return new WP_Error( 'gasf_crm_norecip', 'No valid forwarding address was given.' );
+	}
+
+	return gasf_crm_graph(
+		'POST',
+		gasf_crm_mailbox_path() . '/messages/' . rawurlencode( $graph_message_id ) . '/forward',
+		array( 'comment' => $comment, 'toRecipients' => $recipients )
+	);
+}
+
 function gasf_crm_graph_attachments( $graph_message_id ) {
 	$res = gasf_crm_graph( 'GET', gasf_crm_mailbox_path() . '/messages/' . rawurlencode( $graph_message_id )
 		. '/attachments?$select=id,name,contentType,size' );

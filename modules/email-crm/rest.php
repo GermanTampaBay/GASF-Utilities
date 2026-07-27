@@ -84,6 +84,14 @@ add_action( 'rest_api_init', function () {
 				'can_reply' => (bool) $mine,
 				'locked_by' => ( ! $mine && $holder ) ? $holder->display_name : null,
 				'messages'  => $messages,
+				'events'    => array_map( function ( $e ) {
+					return array(
+						'actor'  => (string) $e['actor'],
+						'action' => (string) $e['action'],
+						'detail' => (string) $e['detail'],
+						'at'     => (string) $e['created_at'],
+					);
+				}, gasf_crm_thread_events( $id ) ),
 			);
 		},
 	) );
@@ -97,11 +105,40 @@ add_action( 'rest_api_init', function () {
 		},
 	) );
 
+	// Closing a thread by hand, three ways. Separate routes rather than one
+	// taking a status parameter, so the audit log records the operator's actual
+	// intent — "answered elsewhere" and "this is spam" are different claims
+	// about the same thread and should not be collapsed into one entry.
 	register_rest_route( 'gasf/v1', '/crm/threads/(?P<id>\d+)/addressed', array(
 		'methods'             => 'POST',
 		'permission_callback' => $guard,
 		'callback'            => function ( WP_REST_Request $req ) {
-			gasf_crm_set_status( (int) $req['id'], 'addressed' );
+			$id = (int) $req['id'];
+			gasf_crm_set_status( $id, 'addressed' );
+			gasf_crm_log_event( $id, 'addressed', 'Marked answered without sending a reply' );
+			return array( 'ok' => true );
+		},
+	) );
+
+	register_rest_route( 'gasf/v1', '/crm/threads/(?P<id>\d+)/ignore', array(
+		'methods'             => 'POST',
+		'permission_callback' => $guard,
+		'callback'            => function ( WP_REST_Request $req ) {
+			$id     = (int) $req['id'];
+			$reason = sanitize_text_field( (string) $req->get_param( 'reason' ) );
+			gasf_crm_set_status( $id, 'ignored' );
+			gasf_crm_log_event( $id, 'ignored', $reason ? $reason : 'Spam or no reply needed' );
+			return array( 'ok' => true );
+		},
+	) );
+
+	register_rest_route( 'gasf/v1', '/crm/threads/(?P<id>\d+)/restore', array(
+		'methods'             => 'POST',
+		'permission_callback' => $guard,
+		'callback'            => function ( WP_REST_Request $req ) {
+			$id = (int) $req['id'];
+			gasf_crm_set_status( $id, 'new' );
+			gasf_crm_log_event( $id, 'restored', 'Returned to the open queue' );
 			return array( 'ok' => true );
 		},
 	) );
@@ -134,12 +171,103 @@ add_action( 'rest_api_init', function () {
 		'callback'            => 'gasf_crm_rest_reply',
 	) );
 
+	register_rest_route( 'gasf/v1', '/crm/threads/(?P<id>\d+)/forward', array(
+		'methods'             => 'POST',
+		'permission_callback' => $guard,
+		'callback'            => 'gasf_crm_rest_forward',
+	) );
+
+	register_rest_route( 'gasf/v1', '/crm/contacts', array(
+		'methods'             => 'GET',
+		'permission_callback' => $guard,
+		'callback'            => function ( WP_REST_Request $req ) {
+			$rows = gasf_crm_contacts( sanitize_text_field( (string) $req->get_param( 'q' ) ), 200 );
+			return array_map( function ( $c ) {
+				return array(
+					'email' => (string) $c['email'],
+					'name'  => (string) $c['name'],
+					'sent'  => (int) $c['sent_count'],
+					'recv'  => (int) $c['recv_count'],
+					'last'  => (string) $c['last_seen'],
+				);
+			}, $rows );
+		},
+	) );
+
 	register_rest_route( 'gasf/v1', '/crm/attachment', array(
 		'methods'             => 'GET',
 		'permission_callback' => $guard,
 		'callback'            => 'gasf_crm_rest_attachment',
 	) );
 } );
+
+/**
+ * Forward the newest message in a thread to somebody else.
+ *
+ * Deliberately does NOT close the thread. Forwarding is usually "can you deal
+ * with this" or "you should see this" — the original sender still has an
+ * unanswered question, and silently marking it answered would drop it.
+ */
+function gasf_crm_rest_forward( WP_REST_Request $req ) {
+	global $wpdb;
+
+	$thread_id = (int) $req['id'];
+	$user_id   = get_current_user_id();
+
+	$to = array_filter( array_map( 'trim', preg_split( '/[,;\s]+/', (string) $req->get_param( 'to' ) ) ) );
+	if ( ! $to ) {
+		return new WP_Error( 'gasf_crm_norecip', 'Enter at least one address to forward to.', array( 'status' => 400 ) );
+	}
+	foreach ( $to as $addr ) {
+		if ( ! is_email( $addr ) ) {
+			return new WP_Error( 'gasf_crm_bademail', 'That does not look like an email address: ' . $addr, array( 'status' => 400 ) );
+		}
+	}
+
+	$thread = gasf_crm_get_thread( $thread_id );
+	if ( ! $thread ) {
+		return new WP_Error( 'gasf_crm_404', 'Thread not found.', array( 'status' => 404 ) );
+	}
+
+	// Forward the newest message, whichever direction it came from — that is the
+	// one carrying whatever prompted the forward.
+	$target = $wpdb->get_var( $wpdb->prepare(
+		'SELECT graph_message_id FROM ' . gasf_crm_table( 'messages' ) . '
+		  WHERE thread_id = %d AND graph_message_id NOT LIKE %s
+		  ORDER BY sent_at DESC, id DESC LIMIT 1',
+		$thread_id, 'local-%'
+	) );
+
+	// Placeholders are excluded above: they are rows the CRM wrote for its own
+	// replies and carry synthetic ids Graph has never heard of.
+	if ( ! $target ) {
+		return new WP_Error( 'gasf_crm_nomsg',
+			'Nothing in this conversation can be forwarded yet. If you just sent a reply, wait for the next sync.',
+			array( 'status' => 400 ) );
+	}
+
+	$cfg     = gasf_crm_cfg();
+	$name    = get_user_meta( $user_id, 'gasf_crm_name', true );
+	$name    = $name ? $name : wp_get_current_user()->display_name;
+	$note    = trim( (string) $req->get_param( 'comment' ) );
+	$comment = ( '' !== $note ? wpautop( esc_html( $note ) ) : '' )
+		. '<p>--<br>Forwarded by ' . esc_html( $name ) . '<br>' . esc_html( $cfg['signature_org'] ) . '</p>';
+
+	$sent = gasf_crm_graph_forward( $target, $to, $comment );
+	if ( is_wp_error( $sent ) ) {
+		gasf_mec_log( 'CRM forward failed (thread ' . $thread_id . '): ' . $sent->get_error_message() );
+		return new WP_Error( 'gasf_crm_send', $sent->get_error_message(), array( 'status' => 502 ) );
+	}
+
+	foreach ( $to as $addr ) {
+		gasf_crm_touch_contact( $addr, '', 'out', (string) $thread['subject'] );
+	}
+
+	gasf_crm_log_event( $thread_id, 'forwarded', 'Forwarded to ' . implode( ', ', $to ) );
+	gasf_mec_log( 'CRM: thread ' . $thread_id . ' forwarded to ' . implode( ', ', $to ) . ' by user ' . $user_id );
+
+	return array( 'ok' => true, 'to' => $to );
+}
 
 /**
  * Send a reply, then mark the thread addressed.
@@ -216,7 +344,9 @@ function gasf_crm_rest_reply( WP_REST_Request $req ) {
 		'sent_by_user_id'  => $user_id,
 	) );
 
+	gasf_crm_touch_contact( $thread['last_from_addr'], $thread['last_from_name'], 'out', (string) $thread['subject'] );
 	gasf_crm_set_status( $thread_id, 'addressed' );
+	gasf_crm_log_event( $thread_id, 'replied', 'Replied to ' . $thread['last_from_addr'] );
 	gasf_mec_log( 'CRM: thread ' . $thread_id . ' answered by user ' . $user_id );
 
 	return array( 'ok' => true );

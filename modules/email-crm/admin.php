@@ -204,6 +204,25 @@ function gasf_crm_admin_tab() {
 		<code>wp gasf-crm sync</code> is the reliable path on a low-traffic site.
 	</p>
 
+	<h3>Address book</h3>
+	<?php
+	$contacts = gasf_crm_contacts( '', 50 );
+	if ( ! $contacts ) {
+		echo '<p class="description">Empty. It fills itself in as mail is received, replied to and forwarded — there is nothing to maintain by hand.</p>';
+	} else {
+		echo '<table class="widefat striped"><thead><tr><th>Email</th><th>Name</th><th>Sent to</th><th>Received from</th><th>Last seen</th></tr></thead><tbody>';
+		foreach ( $contacts as $c ) {
+			echo '<tr><td><code>' . esc_html( $c['email'] ) . '</code></td>';
+			echo '<td>' . esc_html( (string) $c['name'] ) . '</td>';
+			echo '<td>' . (int) $c['sent_count'] . '</td>';
+			echo '<td>' . (int) $c['recv_count'] . '</td>';
+			echo '<td>' . esc_html( $c['last_seen'] ? human_time_diff( strtotime( $c['last_seen'] . ' UTC' ) ) . ' ago' : '—' ) . '</td></tr>';
+		}
+		echo '</tbody></table>';
+		echo '<p class="description">Newest 50. Every address the club has written to or heard from; the forward box on <code>/email</code> autocompletes from this list.</p>';
+	}
+	?>
+
 	<h3>Accounts</h3>
 	<?php
 	$users = gasf_crm_all_users();

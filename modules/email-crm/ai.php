@@ -64,30 +64,64 @@ function gasf_crm_corpus( $force = false ) {
 	return $out;
 }
 
+/** Collapse stored HTML to a length-capped single line of plain text. */
+function gasf_crm_flatten( $html, $cap ) {
+	$t = trim( preg_replace( '/\s+/', ' ', wp_strip_all_tags( (string) $html ) ) );
+	return mb_strlen( $t ) > $cap ? mb_substr( $t, 0, $cap ) . '…' : $t;
+}
+
 /**
- * Past replies sent from the CRM, as tone examples.
+ * Answers we have already given, each paired with the question that prompted it.
  *
- * Thin at launch — the mailbox is new, so there is no back catalogue to learn
- * from and early drafts will read as generic-helpful. It fills in on its own as
- * volunteers answer mail. Seeding it from exported historical info@ replies
- * would skip that warm-up.
+ * This carries more than tone. A volunteer's reply routinely contains facts that
+ * appear nowhere on the website — what the hall costs on a Saturday, which door
+ * to use, who runs the choir — and pairing every answer with its question is
+ * what lets the model reuse those facts rather than merely imitate the cadence
+ * of the sentences around them.
+ *
+ * Only replies a person actually wrote count (sent_by_user_id > 0). Drafts the
+ * model produced are excluded on purpose: training it on its own output would
+ * compound its mistakes into house style over time.
+ *
+ * Thin at launch, since the mailbox is new. It thickens on its own as mail gets
+ * answered, and every reply written from here makes the next draft better.
  */
-function gasf_crm_tone_examples( $limit = 8 ) {
+function gasf_crm_reply_corpus( $limit = 25 ) {
 	global $wpdb;
-	$rows = $wpdb->get_results( $wpdb->prepare(
-		'SELECT body_preview FROM ' . gasf_crm_table( 'messages' ) . "
-		  WHERE direction = 'out' AND sent_by_user_id > 0 AND body_preview <> ''
+	$m = gasf_crm_table( 'messages' );
+
+	$replies = $wpdb->get_results( $wpdb->prepare(
+		"SELECT thread_id, body_html, sent_at FROM {$m}
+		  WHERE direction = 'out' AND sent_by_user_id > 0
 		  ORDER BY sent_at DESC LIMIT %d", (int) $limit
 	), ARRAY_A );
 
-	if ( ! $rows ) { return ''; }
+	if ( ! $replies ) { return ''; }
 
-	$out = "Previous replies this club has sent, as a guide to tone and length:\n\n";
-	foreach ( $rows as $r ) {
-		$t = trim( preg_replace( '/\s+/', ' ', (string) $r['body_preview'] ) );
-		if ( mb_strlen( $t ) > 400 ) { $t = mb_substr( $t, 0, 400 ) . '…'; }
-		$out .= "---\n" . $t . "\n";
+	$out = "=== ANSWERS THE CLUB HAS ALREADY GIVEN ===\n"
+		. "Real questions sent to the club, with the replies volunteers wrote back.\n"
+		. "Follow this tone, and reuse any fact here that the website above does not cover.\n\n";
+
+	foreach ( $replies as $r ) {
+		// Drop the auto-appended signature block, or the model learns to write
+		// its own sign-off and every draft arrives with two.
+		$body   = preg_replace( '#<p>--<br\s*/?>.*$#is', '', (string) $r['body_html'] );
+		$answer = gasf_crm_flatten( $body, 900 );
+		if ( '' === $answer ) { continue; }
+
+		// The inbound message immediately preceding the reply is what it answered.
+		$question = $wpdb->get_var( $wpdb->prepare(
+			"SELECT body_html FROM {$m}
+			  WHERE thread_id = %d AND direction = 'in' AND sent_at <= %s
+			  ORDER BY sent_at DESC LIMIT 1",
+			(int) $r['thread_id'], $r['sent_at']
+		) );
+
+		$out .= "---\n";
+		if ( $question ) { $out .= 'THEY ASKED: ' . gasf_crm_flatten( $question, 600 ) . "\n"; }
+		$out .= 'WE REPLIED: ' . $answer . "\n";
 	}
+
 	return $out . "\n";
 }
 
@@ -121,8 +155,14 @@ function gasf_crm_draft_reply( $thread_id ) {
 		. "Warm but brief: a few short paragraphs at most. Plain text, no markdown.\n"
 		. "Answer only from the club information below. If it does not cover what they asked, say plainly that you will check and come back to them — never invent hours, prices, dates, or policies.\n"
 		. "If the message is spam, a newsletter, or an automated notice, reply with exactly: NO_REPLY_NEEDED\n\n"
-		. "=== CLUB INFORMATION ===\n" . gasf_crm_corpus() . "\n"
-		. gasf_crm_tone_examples();
+		. "=== CLUB INFORMATION ===\n" . gasf_crm_corpus();
+
+	// Kept out of the cached block above on purpose. The site corpus is stable
+	// for a week at a time and worth caching; this one changes the moment
+	// anybody sends a reply, and folding it in would invalidate the cached
+	// prefix on every send — paying full price for the large half to append the
+	// small one.
+	$recent = gasf_crm_reply_corpus();
 
 	$r = wp_remote_post( 'https://api.anthropic.com/v1/messages', array(
 		'timeout' => 45,
@@ -137,13 +177,14 @@ function gasf_crm_draft_reply( $thread_id ) {
 			// cache_control on the system block: the corpus is tens of thousands
 			// of characters and identical on every draft, so caching it keeps the
 			// per-draft cost to roughly the size of the email itself.
-			'system'     => array(
+			'system'     => array_values( array_filter( array(
 				array(
 					'type'          => 'text',
 					'text'          => $system,
 					'cache_control' => array( 'type' => 'ephemeral' ),
 				),
-			),
+				'' !== $recent ? array( 'type' => 'text', 'text' => $recent ) : null,
+			) ) ),
 			'messages'   => array(
 				array(
 					'role'    => 'user',
