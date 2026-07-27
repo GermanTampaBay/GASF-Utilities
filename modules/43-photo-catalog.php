@@ -692,7 +692,10 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 		$terms = array();
 		foreach ( array( 'person' => 'gasf_photo_person', 'place' => 'gasf_photo_place', 'event' => 'gasf_photo_event' ) as $k => $tax ) {
 			$t = wp_get_object_terms( $id, $tax, array( 'fields' => 'names' ) );
-			$terms[ $k ] = is_wp_error( $t ) ? array() : $t;
+			// Decoded here because everything downstream of this is display:
+			// panels, the CRM cards, filenames. The taxonomy keeps the stored
+			// form, which is what writes still match against.
+			$terms[ $k ] = is_wp_error( $t ) ? array() : array_map( 'gasf_photo_label', $t );
 		}
 
 		$guess = (int) get_post_meta( $id, '_gasf_photo_place_guess', true );
@@ -744,7 +747,24 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 	 * is the difference between a correct filename and a subtly wrong one, so
 	 * the German pairs are handled first and remove_accents() takes the rest.
 	 */
+	/**
+	 * A term name as a human should read it.
+	 *
+	 * WordPress stores an ampersand in a term name as the entity: type "Welton
+	 * Brewing Co & Oyster Bar" into the Places screen and wp_filter_kses saves
+	 * "Welton Brewing Co &amp; Oyster Bar". Escaping that for output encodes it
+	 * a second time and the reader sees the entity itself; a filename built from
+	 * it says "Co-amp-Oyster".
+	 *
+	 * Decode for DISPLAY only. The stored form remains what gets submitted back,
+	 * so a term still matches itself exactly and no near-duplicate is created.
+	 */
+	function gasf_photo_label( $name ) {
+		return html_entity_decode( (string) $name, ENT_QUOTES, 'UTF-8' );
+	}
+
 	function gasf_photo_translit( $s ) {
+		$s = gasf_photo_label( $s );
 		$s = strtr( (string) $s, array(
 			'ä' => 'ae', 'ö' => 'oe', 'ü' => 'ue', 'ß' => 'ss',
 			'Ä' => 'Ae', 'Ö' => 'Oe', 'Ü' => 'Ue',
@@ -816,10 +836,10 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 		$info  = gasf_photo_info( $id );
 		$place = gasf_photo_deepest_place( $id );
 
-		$who   = array_slice( (array) $info['people'], 0, 3 );
+		$who   = array_map( 'gasf_photo_label', array_slice( (array) $info['people'], 0, 3 ) );
 		$where = array_filter( array(
-			$place ? $place->name : '',
-			! empty( $info['events'] ) ? $info['events'][0] : '',
+			$place ? gasf_photo_label( $place->name ) : '',
+			! empty( $info['events'] ) ? gasf_photo_label( $info['events'][0] ) : '',
 			$info['taken'] ? mysql2date( get_option( 'date_format' ), $info['taken'] . ' 00:00:00' ) : '',
 		) );
 

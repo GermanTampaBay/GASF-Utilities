@@ -233,7 +233,7 @@ function gasf_crm_photo_page( $state, $invite = null, $notice = '' ) {
 		// but never in a particular room.
 		echo '<div class="f"><span>Where?</span>';
 		if ( $place_val ) {
-			printf( '<p class="hint">The camera put this at <strong>%s</strong>. Say which part if you know.</p>', esc_html( $place_val ) );
+			printf( '<p class="hint">The camera put this at <strong>%s</strong>. Say which part if you know.</p>', esc_html( gasf_photo_label( $place_val ) ) );
 		}
 		// A dropdown, not a stack of radios. Eight places times six photos was
 		// forty-eight rows of form; the hierarchy survives as indentation in the
@@ -248,11 +248,13 @@ function gasf_crm_photo_page( $state, $invite = null, $notice = '' ) {
 			foreach ( $tree as $row ) {
 				$term = $row['term'];
 				printf(
+					// value keeps the STORED form so the term matches itself on
+					// the way back; only the label is decoded for reading.
 					'<option value="%s"%s>%s%s%s</option>',
 					esc_attr( $term->name ),
 					selected( $term->name, $place_val, false ),
 					esc_html( str_repeat( "\xC2\xA0", 4 * min( 2, (int) $row['depth'] ) ) ),
-					esc_html( $term->name ),
+					esc_html( gasf_photo_label( $term->name ) ),
 					// Only where it distinguishes something. On the grounds, which
 					// contain rooms, "anywhere" separates it from "the Bierstube".
 					// On England Brothers Park it answered a question nobody asked.
