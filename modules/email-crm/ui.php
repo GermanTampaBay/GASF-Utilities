@@ -103,6 +103,17 @@ header.bar .hbtn{background:#2271b1;color:#fff;border:0;padding:5px 12px;border-
 .msg:last-of-type{border-bottom:0}
 .msg .hd{font-size:12px;color:#787c82;margin-bottom:8px}
 .msg .hd b{color:#1d2327;font-size:13px}
+/* Revealed on hover, but it is real selectable text the whole time — opacity
+   keeps it in the layout so nothing shifts, and the reveal is triggered by the
+   whole message block so it stays visible while you drag across it to select. */
+.msg .addr{opacity:0;transition:opacity .12s;font-weight:400}
+.msg:hover .addr,.msg .addr:focus-within{opacity:1}
+.msg .addr code{background:#f0f0f1;padding:1px 5px;border-radius:3px;font-size:12px;user-select:all}
+.copy{border:1px solid #dcdcde;background:#fff;border-radius:3px;cursor:pointer;font:inherit;font-size:11px;padding:1px 6px;margin-left:4px;color:#2271b1}
+.copy:hover{background:#f0f6fc}
+.copy.done{color:#2c7a3f;border-color:#2c7a3f}
+/* Touch devices have no hover at all — never hide it there. */
+@media(hover:none){.msg .addr{opacity:1}}
 .msg.out{background:#f6faf6;border-left:3px solid #2c7a3f;padding:12px;border-radius:4px}
 .msg .body{overflow-wrap:anywhere}
 .msg .body table{max-width:100%;border-collapse:collapse}
@@ -213,6 +224,9 @@ function gasf_crm_render_help() {
 		<li><strong>Ignore</strong> is for spam, junk and mailing lists. Nothing is sent and the sender hears nothing back.</li>
 		<li><strong>Mark answered</strong> is for when you handled it some other way — you rang them, or caught them at the club. Nothing is sent, it just clears it off the list.</li>
 	</ul>
+
+	<h3>Seeing who really sent something</h3>
+	<p>The sender's name is shown at the top of each message. Hover over the message and their actual email address appears next to it — you can select it, or press <strong>Copy</strong> to put it on the clipboard. Handy when a name looks familiar but the address does not.</p>
 
 	<h3>Who did what</h3>
 	<p>At the bottom of every message you will find a <strong>History</strong> list showing who replied, who ignored it, and when. It also records messages answered from Outlook instead of this page, so the two never disagree.</p>
@@ -353,8 +367,14 @@ function gasf_crm_render_inbox() {
 				var atts = (m.attachments||[]).map(function(a){
 					return '<a class="att" href="' + esc(a.url) + '">📎 ' + esc(a.name) + '</a>';
 				}).join('');
+				// Only on inbound: outbound is always the club mailbox, so showing
+				// it on every reply would be noise rather than information.
+				var addr = (m.direction === 'in' && m.from_addr)
+					? ' <span class="addr"><code>' + esc(m.from_addr) + '</code>' +
+					  '<button type="button" class="copy" data-addr="' + esc(m.from_addr) + '">Copy</button></span>'
+					: '';
 				html += '<div class="msg ' + (m.direction === 'out' ? 'out' : '') + '">' +
-					'<div class="hd"><b>' + esc(m.from) + '</b> &middot; ' + esc(when(m.sent_at)) + '</div>' +
+					'<div class="hd"><b>' + esc(m.from) + '</b>' + addr + ' &middot; ' + esc(when(m.sent_at)) + '</div>' +
 					'<div class="body">' + m.body + '</div>' + atts + '</div>';
 			});
 
@@ -398,6 +418,7 @@ function gasf_crm_render_inbox() {
 			html += history(t.events);
 			pane.innerHTML = html;
 			wire(id, t.status);
+			wireCopy();
 
 			// Remember where this conversation was, so the minute refresh can
 			// tell whether it has moved on since.
@@ -445,6 +466,37 @@ function gasf_crm_render_inbox() {
 			var text = ((ev.clipboardData || window.clipboardData).getData('text/plain') || '');
 			document.execCommand('insertText', false, text);
 		});
+	}
+
+	// Copy-to-clipboard for sender addresses. navigator.clipboard needs a secure
+	// context and can still be refused by permissions policy, so the old
+	// select-and-execCommand route stays as a fallback rather than leaving the
+	// button silently doing nothing.
+	function wireCopy(){
+		Array.prototype.forEach.call(document.querySelectorAll('.copy'), function(b){
+			b.onclick = function(){
+				var value = b.getAttribute('data-addr');
+				var flash = function(){
+					b.textContent = 'Copied'; b.classList.add('done');
+					setTimeout(function(){ b.textContent = 'Copy'; b.classList.remove('done'); }, 1500);
+				};
+				if(navigator.clipboard && navigator.clipboard.writeText){
+					navigator.clipboard.writeText(value).then(flash, function(){ copyFallback(value, flash); });
+				} else {
+					copyFallback(value, flash);
+				}
+			};
+		});
+	}
+
+	function copyFallback(value, done){
+		var i = document.createElement('input');
+		i.value = value;
+		i.style.position = 'fixed'; i.style.opacity = '0';
+		document.body.appendChild(i);
+		i.select();
+		try { document.execCommand('copy'); done(); } catch(e){ /* selection stays; copy by hand */ }
+		document.body.removeChild(i);
 	}
 
 	function edText(ed){ return (ed.textContent || '').trim(); }
