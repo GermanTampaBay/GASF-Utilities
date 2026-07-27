@@ -64,8 +64,13 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 			'labels' => gasf_photo_labels( __( 'Person', 'gasf' ), __( 'People', 'gasf' ) ),
 		) ) );
 
+		// Places nest, unlike people and events: Welton Brewing is inside the
+		// club's property, and saying so is both true and useful — "everything
+		// on our property" then includes the brewery without listing it twice.
+		// It also gives the geofence a tie-break that means something.
 		register_taxonomy( 'gasf_photo_place', array( 'attachment' ), array_merge( $common, array(
-			'labels' => gasf_photo_labels( __( 'Place', 'gasf' ), __( 'Places', 'gasf' ) ),
+			'labels'       => gasf_photo_labels( __( 'Place', 'gasf' ), __( 'Places', 'gasf' ) ),
+			'hierarchical' => true,
 		) ) );
 
 		register_taxonomy( 'gasf_photo_event', array( 'attachment' ), array_merge( $common, array(
@@ -240,22 +245,32 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 	}
 
 	/**
-	 * Closest place whose radius contains this point, or 0.
+	 * Every place whose geofence contains this point, MOST SPECIFIC FIRST.
 	 *
-	 * Closest rather than first-match: two venues can overlap once radii are
-	 * generous, and the nearer one is the better guess.
+	 * Ranking by nearest centre — the obvious rule, and the one this started
+	 * with — falls apart exactly where it matters. Welton Brewing sits in the
+	 * middle of the club's own property, so the two centres are nearly the same
+	 * point and "nearest" decides a 150 m venue against a 20 m one on a metre or
+	 * two of noise. It is a coin toss wearing the clothes of an answer.
+	 *
+	 * So the tightest geofence wins. Being inside a 20 m circle is a far more
+	 * specific claim than being inside a 150 m one, and specificity is precisely
+	 * what "which place is this?" means when one place contains another.
+	 *
+	 * Remaining ties break on hierarchy depth (a child is the more specific
+	 * answer), then distance, then term ID — the last purely so the same photo
+	 * never lands somewhere different on a re-run.
 	 */
-	function gasf_photo_place_for( $lat, $lon ) {
-		if ( ! is_numeric( $lat ) || ! is_numeric( $lon ) ) { return 0; }
+	function gasf_photo_place_candidates( $lat, $lon ) {
+		if ( ! is_numeric( $lat ) || ! is_numeric( $lon ) ) { return array(); }
 
 		$terms = get_terms( array(
 			'taxonomy'   => 'gasf_photo_place',
 			'hide_empty' => false,
 		) );
-		if ( is_wp_error( $terms ) ) { return 0; }
+		if ( is_wp_error( $terms ) ) { return array(); }
 
-		$best = 0;
-		$best_d = null;
+		$hits = array();
 		foreach ( $terms as $t ) {
 			$plat = get_term_meta( $t->term_id, 'gasf_lat', true );
 			$plon = get_term_meta( $t->term_id, 'gasf_lon', true );
@@ -265,13 +280,31 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 			if ( $radius <= 0 ) { $radius = GASF_PHOTO_DEFAULT_RADIUS_M; }
 
 			$d = gasf_photo_distance_m( (float) $lat, (float) $lon, (float) $plat, (float) $plon );
-			if ( $d <= $radius && ( null === $best_d || $d < $best_d ) ) {
-				$best   = (int) $t->term_id;
-				$best_d = $d;
-			}
+			if ( $d > $radius ) { continue; }
+
+			$hits[] = array(
+				'term_id' => (int) $t->term_id,
+				'name'    => $t->name,
+				'radius'  => $radius,
+				'depth'   => count( (array) get_ancestors( $t->term_id, 'gasf_photo_place', 'taxonomy' ) ),
+				'dist'    => $d,
+			);
 		}
 
-		return $best;
+		usort( $hits, function ( $a, $b ) {
+			if ( $a['radius'] !== $b['radius'] ) { return $a['radius'] < $b['radius'] ? -1 : 1; }
+			if ( $a['depth'] !== $b['depth'] )   { return $b['depth'] - $a['depth']; }
+			if ( $a['dist'] !== $b['dist'] )     { return $a['dist'] < $b['dist'] ? -1 : 1; }
+			return $a['term_id'] - $b['term_id'];
+		} );
+
+		return $hits;
+	}
+
+	/** The single best guess, or 0. */
+	function gasf_photo_place_for( $lat, $lon ) {
+		$hits = gasf_photo_place_candidates( $lat, $lon );
+		return $hits ? $hits[0]['term_id'] : 0;
 	}
 
 	/* ---------------------------------------------------------------------
@@ -289,7 +322,9 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 		<div class="form-field">
 			<label for="gasf_radius">Radius (metres)</label>
 			<input type="number" name="gasf_radius" id="gasf_radius" min="10" max="20000" placeholder="<?php echo (int) GASF_PHOTO_DEFAULT_RADIUS_M; ?>">
-			<p>How far from that point still counts as here. Blank uses <?php echo (int) GASF_PHOTO_DEFAULT_RADIUS_M; ?> m. Phone GPS is often 20–50 m out and much worse indoors, so err generous.</p>
+			<p>How far from that point still counts as here. Blank uses <?php echo (int) GASF_PHOTO_DEFAULT_RADIUS_M; ?> m.</p>
+			<p>Where two places overlap, <strong>the smaller radius wins</strong> — so a venue inside the club's grounds beats the grounds themselves. Set the <em>Parent</em> above as well and it reads correctly in lists too.</p>
+			<p><strong>Below about 50 m the geofence starts guessing.</strong> Phone GPS is commonly 20–50 m out in the open and considerably worse indoors or under a roof, so a radius tighter than the error can put a photo in the wrong one of two places that sit inside each other. It still pre-fills the form and a person can still correct it — but treat a tight radius as a hint, not a fact.</p>
 		</div>
 		<?php
 	} );
@@ -311,7 +346,10 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 			<th scope="row"><label for="gasf_radius">Radius (metres)</label></th>
 			<td>
 				<input type="number" name="gasf_radius" id="gasf_radius" min="10" max="20000" value="<?php echo esc_attr( $rad ); ?>" placeholder="<?php echo (int) GASF_PHOTO_DEFAULT_RADIUS_M; ?>">
-				<p class="description">Blank uses <?php echo (int) GASF_PHOTO_DEFAULT_RADIUS_M; ?> m.</p>
+				<p class="description">Blank uses <?php echo (int) GASF_PHOTO_DEFAULT_RADIUS_M; ?> m. Where two places overlap the <strong>smaller radius wins</strong>, so a venue inside the club's grounds beats the grounds themselves.</p>
+				<?php if ( $rad && (int) $rad < 50 ) : ?>
+					<p class="description" style="color:#b32d2e"><strong>This radius is smaller than typical GPS error.</strong> Phone GPS is commonly 20–50&nbsp;m out in the open and worse indoors, so photos taken here will sometimes fall outside it, and photos taken nearby will sometimes fall inside it. The match becomes a hint rather than a fact — which is fine, because a person confirms it, but do not expect it to separate two places that sit inside one another.</p>
+				<?php endif; ?>
 			</td>
 		</tr>
 		<?php
@@ -365,8 +403,16 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 		$lat = get_term_meta( $term_id, 'gasf_lat', true );
 		$lon = get_term_meta( $term_id, 'gasf_lon', true );
 		if ( '' === $lat || '' === $lon ) { return '<span style="color:#8c8f94">not set</span>'; }
+
 		$rad = (int) get_term_meta( $term_id, 'gasf_radius', true );
-		return esc_html( sprintf( '%.5f, %.5f · %d m', (float) $lat, (float) $lon, $rad ?: GASF_PHOTO_DEFAULT_RADIUS_M ) );
+		$out = esc_html( sprintf( '%.5f, %.5f · %d m', (float) $lat, (float) $lon, $rad ?: GASF_PHOTO_DEFAULT_RADIUS_M ) );
+
+		// A radius under typical GPS error is not wrong, but it is a guess — say
+		// so on the row rather than only in the edit screen nobody reopens.
+		if ( $rad && $rad < 50 ) {
+			$out .= ' <span style="color:#b32d2e" title="Tighter than typical GPS error — treat matches as a hint">&#9888;</span>';
+		}
+		return $out;
 	}, 10, 3 );
 
 	/* ---------------------------------------------------------------------
@@ -396,9 +442,23 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 			// The geofence guess is recorded separately from any place a human
 			// later assigns, so "the camera said here" and "somebody decided
 			// here" never get confused for one another.
-			$place = gasf_photo_place_for( $exif['lat'], $exif['lon'] );
-			if ( $place ) {
-				update_post_meta( $attachment_id, '_gasf_photo_place_guess', $place );
+			//
+			// The runners-up are kept too. Where places overlap, the winner is
+			// the most specific one that CONTAINED the point — but consumer GPS
+			// is routinely less accurate than a tight geofence is wide, so the
+			// alternatives are real possibilities rather than noise. Keeping
+			// them lets the tagging form offer "or was it…?" instead of quietly
+			// presenting one guess as fact.
+			$hits = gasf_photo_place_candidates( $exif['lat'], $exif['lon'] );
+			if ( $hits ) {
+				update_post_meta( $attachment_id, '_gasf_photo_place_guess', $hits[0]['term_id'] );
+
+				$alts = array_slice( wp_list_pluck( $hits, 'term_id' ), 1 );
+				if ( $alts ) {
+					update_post_meta( $attachment_id, '_gasf_photo_place_alts', $alts );
+				} else {
+					delete_post_meta( $attachment_id, '_gasf_photo_place_alts' );
+				}
 			}
 		}
 	}
@@ -418,6 +478,15 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 
 		$guess = (int) get_post_meta( $id, '_gasf_photo_place_guess', true );
 
+		// Other places the point also fell inside — offered as alternatives
+		// rather than hidden, because a tight geofence and a loose GPS fix
+		// disagree often enough that one answer would be overconfident.
+		$alts = array();
+		foreach ( (array) get_post_meta( $id, '_gasf_photo_place_alts', true ) as $tid ) {
+			$t = get_term( (int) $tid, 'gasf_photo_place' );
+			if ( $t && ! is_wp_error( $t ) ) { $alts[] = $t; }
+		}
+
 		return array(
 			'id'          => $id,
 			'taken'       => (string) get_post_meta( $id, '_gasf_photo_taken', true ),
@@ -425,6 +494,7 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 			'lat'         => get_post_meta( $id, '_gasf_photo_lat', true ),
 			'lon'         => get_post_meta( $id, '_gasf_photo_lon', true ),
 			'place_guess' => $guess ? get_term( $guess, 'gasf_photo_place' ) : null,
+			'place_alts'  => $alts,
 			'caption'     => (string) get_post_field( 'post_excerpt', $id ),
 			'people'      => $terms['person'],
 			'places'      => $terms['place'],
@@ -466,6 +536,15 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 			$where = sprintf( '%.5f, %.5f', (float) $info['lat'], (float) $info['lon'] );
 			if ( $info['place_guess'] && ! is_wp_error( $info['place_guess'] ) ) {
 				$where .= ' — ' . sprintf( __( 'inside %s', 'gasf' ), $info['place_guess']->name );
+				// Naming the runners-up matters most where it is least certain:
+				// two places inside one another, told apart by a GPS fix that
+				// may well be wider than the gap between them.
+				if ( $info['place_alts'] ) {
+					$where .= ' (' . sprintf(
+						__( 'also inside %s', 'gasf' ),
+						implode( ', ', wp_list_pluck( $info['place_alts'], 'name' ) )
+					) . ')';
+				}
 			} else {
 				$where .= ' — ' . __( 'not inside any place you have mapped', 'gasf' );
 			}
