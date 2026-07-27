@@ -648,7 +648,15 @@ function gasf_crm_render_inbox() {
 		if(!current) return;
 		var url = API + '/threads/' + current + '/release';
 		if(navigator.sendBeacon){
-			navigator.sendBeacon(url + '?_wpnonce=' + encodeURIComponent(NONCE));
+			// The payload exists to carry a Content-Type. sendBeacon with no data
+			// sends a bodyless POST with no content type, which this host's WAF
+			// rejects outright — and a beacon reports no errors, so the release
+			// was failing silently and every abandoned thread sat locked for the
+			// full 15 minutes instead of freeing up immediately.
+			navigator.sendBeacon(
+				url + '?_wpnonce=' + encodeURIComponent(NONCE),
+				new Blob(['{}'], {type: 'application/json'})
+			);
 		}
 	});
 
