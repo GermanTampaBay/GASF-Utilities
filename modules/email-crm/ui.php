@@ -392,7 +392,12 @@ function gasf_crm_render_signin() {
 	// host's caching is configured next.
 	foreach ( $providers as $key => $p ) {
 		printf(
-			'<form method="post" action="%s"><button class="btn block" type="submit">Continue with %s</button></form>',
+			// The hidden field is insurance, not decoration. This host's
+			// ModSecurity rejects a POST it considers empty, and a form whose
+			// only control is a submit button posts nothing but the
+			// Content-Type. One field guarantees a body.
+			'<form method="post" action="%s"><input type="hidden" name="go" value="1">'
+				. '<button class="btn block" type="submit">Continue with %s</button></form>',
 			esc_url( home_url( '/email/auth/' . $key ) ),
 			esc_html( $p['label'] )
 		);
