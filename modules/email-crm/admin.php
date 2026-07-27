@@ -30,6 +30,7 @@ function gasf_crm_admin_tab() {
 			$cfg = gasf_crm_cfg();
 
 			$cfg['mailbox']        = sanitize_email( wp_unslash( $_POST['mailbox'] ?? $cfg['mailbox'] ) );
+			$cfg['mailbox_photos'] = sanitize_email( wp_unslash( $_POST['mailbox_photos'] ?? '' ) );
 			$cfg['tenant_id']      = sanitize_text_field( wp_unslash( $_POST['tenant_id'] ?? '' ) );
 			$cfg['client_id']      = sanitize_text_field( wp_unslash( $_POST['client_id'] ?? '' ) );
 			$cfg['google_id']      = sanitize_text_field( wp_unslash( $_POST['google_id'] ?? '' ) );
@@ -121,6 +122,22 @@ function gasf_crm_admin_tab() {
 				$notice = '<div class="notice notice-success"><p>Account updated.</p></div>';
 			}
 		}
+
+		if ( 'user_streams' === $act ) {
+			$uid = (int) ( $_POST['user_id'] ?? 0 );
+			// Unchecking every box submits nothing, which is a real answer here:
+			// no streams means an approved account that can see nothing. That is
+			// the correct way to suspend somebody without deleting their history.
+			$streams = array_map( 'sanitize_key', (array) ( $_POST['streams'] ?? array() ) );
+			if ( $uid ) {
+				$set    = gasf_crm_set_user_streams( $uid, $streams );
+				$notice = '<div class="notice notice-success"><p>' . esc_html(
+					$set
+						? 'Access set to: ' . implode( ', ', array_map( 'gasf_crm_stream_label', $set ) )
+						: 'Access removed — that account is approved but can now see nothing.'
+				) . '</p></div>';
+			}
+		}
 	}
 
 	$cfg = gasf_crm_cfg();
@@ -183,7 +200,10 @@ function gasf_crm_admin_tab() {
 		<table class="form-table" role="presentation">
 			<tr><th scope="row">Shared mailbox</th>
 				<td><input type="email" class="regular-text" name="mailbox" value="<?php echo esc_attr( $cfg['mailbox'] ); ?>">
-				<p class="description">Must be a shared mailbox, not an alias on a person's mailbox.</p></td></tr>
+				<p class="description">The <strong>General</strong> stream. Must be a shared mailbox, not an alias on a person's mailbox.</p></td></tr>
+			<tr><th scope="row">Photo submissions mailbox</th>
+				<td><input type="email" class="regular-text" name="mailbox_photos" value="<?php echo esc_attr( $cfg['mailbox_photos'] ); ?>" placeholder="photos@germantampabay.com">
+				<p class="description">The <strong>Photo submissions</strong> stream. Leave blank to switch it off entirely. Any mailbox added here must also be a member of the <code>gasf-crm-scope</code> group, or Graph will refuse it — that group is what the Application Access Policy is scoped to. Volunteers are granted streams individually in Accounts below.</p></td></tr>
 			<tr><th scope="row">Tenant ID</th>
 				<td><input type="text" class="regular-text code" name="tenant_id" value="<?php echo esc_attr( $cfg['tenant_id'] ); ?>"></td></tr>
 			<tr><th scope="row">Application (client) ID</th>
@@ -368,14 +388,41 @@ function gasf_crm_admin_tab() {
 	if ( ! $users ) {
 		echo '<p class="description">Nobody has signed in yet.</p>';
 	} else {
-		echo '<table class="widefat striped"><thead><tr><th>Name</th><th>Email</th><th>Provider</th><th>Status</th><th>Action</th></tr></thead><tbody>';
+		$all_streams = gasf_crm_active_streams();
+		echo '<table class="widefat striped"><thead><tr><th>Name</th><th>Email</th><th>Provider</th><th>Status</th><th>Can see</th><th>Action</th></tr></thead><tbody>';
 		foreach ( $users as $u ) {
 			$st = get_user_meta( $u->ID, 'gasf_crm_status', true );
 			$colour = 'approved' === $st ? '#2c7a3f' : ( 'denied' === $st ? '#d63638' : '#dba617' );
 			echo '<tr><td>' . esc_html( get_user_meta( $u->ID, 'gasf_crm_name', true ) ?: $u->display_name ) . '</td>';
 			echo '<td>' . esc_html( get_user_meta( $u->ID, 'gasf_crm_email', true ) ) . '</td>';
 			echo '<td>' . esc_html( get_user_meta( $u->ID, 'gasf_crm_provider', true ) ) . '</td>';
-			echo '<td><strong style="color:' . esc_attr( $colour ) . '">' . esc_html( $st ?: 'pending' ) . '</strong></td><td>';
+			echo '<td><strong style="color:' . esc_attr( $colour ) . '">' . esc_html( $st ?: 'pending' ) . '</strong></td>';
+
+			// Access grants. Only meaningful on an approved account, and shown as
+			// a live form so granting is one click rather than a separate screen.
+			echo '<td>';
+			if ( 'approved' !== $st ) {
+				echo '<span class="description">&mdash;</span>';
+			} elseif ( user_can( $u->ID, 'manage_options' ) ) {
+				echo '<span class="description">Everything (administrator)</span>';
+			} else {
+				$has = gasf_crm_user_streams( $u->ID );
+				echo '<form method="post" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">';
+				wp_nonce_field( 'gasf_crm' );
+				echo '<input type="hidden" name="gasf_crm_action" value="user_streams">';
+				echo '<input type="hidden" name="user_id" value="' . (int) $u->ID . '">';
+				foreach ( $all_streams as $key => $s ) {
+					printf(
+						'<label style="white-space:nowrap"><input type="checkbox" name="streams[]" value="%s" %s> %s</label>',
+						esc_attr( $key ),
+						checked( in_array( $key, $has, true ), true, false ),
+						esc_html( $s['label'] )
+					);
+				}
+				echo '<button class="button button-small">Save access</button></form>';
+			}
+			echo '</td><td>';
+
 			foreach ( array( 'approved' => 'Approve', 'denied' => 'Deny' ) as $to => $label ) {
 				if ( $st === $to ) { continue; }
 				echo '<form method="post" style="display:inline-block;margin-right:6px">';
@@ -388,6 +435,7 @@ function gasf_crm_admin_tab() {
 			echo '</td></tr>';
 		}
 		echo '</tbody></table>';
+		echo '<p class="description"><strong>Approval</strong> says this is a real person; <strong>Can see</strong> says which inbox. A newly approved volunteer with no boxes ticked can sign in and sees nothing at all — that is deliberate, so adding a future mailbox never opens itself to everyone already approved. Accounts approved before this existed keep their General access.</p>';
 		echo '<p class="description">Accounts are identified by provider + subject claim, not email address — the same person signing in with Google and with Microsoft appears twice and needs approving twice.</p>';
 	}
 }
@@ -447,14 +495,21 @@ function gasf_crm_render_diagnostics( array $d ) {
 		$row( 'Admin consent', true, 'Granted: <code>' . esc_html( implode( '</code>, <code>', $d['roles'] ) ) . '</code>' );
 	}
 
-	// 3 — mailbox reach, which is where the Application Access Policy shows up.
-	if ( true === $d['reach'] ) {
-		$row( 'Mailbox access', true, '<code>' . esc_html( $d['mailbox'] ) . '</code> — Inbox holds '
-			. (int) $d['counts']['total'] . ' message(s), ' . (int) $d['counts']['unread'] . ' unread.' );
-	} elseif ( false === $d['reach'] ) {
-		$row( 'Mailbox access', false, esc_html( $d['reach_error'] ),
-			'If consent above is green, this is the Application Access Policy. Confirm the mailbox is a member of the scope group, then: '
-			. '<code>Test-ApplicationAccessPolicy -Identity ' . esc_html( $d['mailbox'] ) . ' -AppId ' . esc_html( gasf_crm_cfg()['client_id'] ) . '</code>' );
+	// 3 — mailbox reach, per mailbox. Reported one row each, because a scope
+	// group membership that never propagated shows up as exactly one mailbox
+	// failing while the other is fine, and a single combined verdict would hide
+	// which.
+	foreach ( (array) ( $d['mailboxes'] ?? array() ) as $key => $mb ) {
+		$label = gasf_crm_stream_label( $key ) . ' mailbox';
+		if ( ! empty( $mb['ok'] ) ) {
+			$row( $label, true, '<code>' . esc_html( $mb['address'] ) . '</code> — Inbox holds '
+				. (int) $mb['total'] . ' message(s), ' . (int) $mb['unread'] . ' unread.' );
+		} else {
+			$row( $label, false, '<code>' . esc_html( $mb['address'] ) . '</code> is not reachable.',
+				'If consent above is green, this is the Application Access Policy — the mailbox is almost certainly not in the scope group. '
+				. '<code>Add-DistributionGroupMember -Identity gasf-crm-scope@germantampabay.com -Member ' . esc_html( $mb['address'] ) . '</code>, then '
+				. '<code>Test-ApplicationAccessPolicy -Identity ' . esc_html( $mb['address'] ) . ' -AppId ' . esc_html( gasf_crm_cfg()['client_id'] ) . '</code>' );
+		}
 	}
 
 	echo '</tbody></table>';

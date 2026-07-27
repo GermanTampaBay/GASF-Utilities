@@ -329,6 +329,49 @@ function gasf_crm_user_approved( $user_id = 0 ) {
 	return 'approved' === gasf_crm_user_status( $user_id );
 }
 
+/**
+ * Which streams this user may see.
+ *
+ * Administrators get everything — they configure the thing and can read the
+ * mailboxes in Outlook regardless, so withholding here would be theatre.
+ *
+ * Everyone else gets exactly what was granted on the approval screen. An
+ * approved volunteer with no grants sees NOTHING, deliberately: approval says
+ * "this is a real person", the grant says "and this is their inbox". Defaulting
+ * an ungranted account to the general stream would mean every future stream
+ * silently opened itself to everybody already approved.
+ */
+function gasf_crm_user_streams( $user_id = 0 ) {
+	$user_id = $user_id ? (int) $user_id : get_current_user_id();
+	if ( ! $user_id || ! gasf_crm_user_approved( $user_id ) ) { return array(); }
+
+	$active = array_keys( gasf_crm_active_streams() );
+	if ( user_can( $user_id, 'manage_options' ) ) { return $active; }
+
+	$granted = (array) get_user_meta( $user_id, 'gasf_crm_streams', true );
+
+	// Accounts approved before streams existed keep working: an empty grant on
+	// a pre-existing account means general, which is all there was to see.
+	if ( ! $granted && (int) get_user_meta( $user_id, 'gasf_crm_streams_set', true ) !== 1 ) {
+		$granted = array( 'general' );
+	}
+
+	return array_values( array_intersect( $active, array_map( 'strval', $granted ) ) );
+}
+
+function gasf_crm_user_can_stream( $stream, $user_id = 0 ) {
+	return in_array( (string) $stream, gasf_crm_user_streams( $user_id ), true );
+}
+
+/** Set a user's stream grants. Records that they were set, even if empty. */
+function gasf_crm_set_user_streams( $user_id, array $streams ) {
+	$valid = array_values( array_intersect( array_keys( gasf_crm_streams() ), array_map( 'strval', $streams ) ) );
+	update_user_meta( (int) $user_id, 'gasf_crm_streams', $valid );
+	update_user_meta( (int) $user_id, 'gasf_crm_streams_set', 1 );
+	gasf_mec_log( 'CRM: user ' . (int) $user_id . ' stream grants set to [' . implode( ',', $valid ) . '] by ' . get_current_user_id() );
+	return $valid;
+}
+
 /** Every CRM account, for the approval screen. */
 function gasf_crm_all_users() {
 	return get_users( array(

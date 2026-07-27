@@ -104,6 +104,9 @@ header.bar .hbtn{background:#2271b1;color:#fff;border:0;padding:5px 12px;border-
 .tabs{display:flex;border-bottom:1px solid #dcdcde}
 .tabs button{flex:1;padding:10px 6px;border:0;background:none;cursor:pointer;font:inherit;font-size:13px;color:#50575e;border-bottom:2px solid transparent}
 .tabs button.on{color:#2271b1;border-bottom-color:#2271b1;font-weight:600}
+.tabs.streams{background:#f6f7f7}
+.tabs.streams button{font-size:12px;padding:8px 6px}
+.streamtag{display:inline-block;font-size:10px;padding:1px 6px;border-radius:9px;background:#e8eef5;color:#2271b1;margin-left:6px;vertical-align:middle}
 .item{padding:12px 14px;border-bottom:1px solid #f0f0f1;cursor:pointer}
 .item:hover{background:#f6f7f7}
 .item.on{background:#f0f6fc;border-left:3px solid #2271b1;padding-left:11px}
@@ -319,6 +322,19 @@ function gasf_crm_render_inbox() {
 
 <div class="wrap"><div class="layout">
 	<div class="card">
+		<?php
+		// The mailbox switcher only appears for somebody who holds more than one
+		// stream. A volunteer granted photos alone sees no switcher at all — the
+		// existence of a general inbox is not their business.
+		$my_streams = gasf_crm_user_streams();
+		if ( count( $my_streams ) > 1 ) : ?>
+		<div class="tabs streams">
+			<button class="on" data-stream="">All</button>
+			<?php foreach ( $my_streams as $k ) : ?>
+				<button data-stream="<?php echo esc_attr( $k ); ?>"><?php echo esc_html( gasf_crm_stream_label( $k ) ); ?></button>
+			<?php endforeach; ?>
+		</div>
+		<?php endif; ?>
 		<div class="tabs">
 			<button class="on" data-status="open">Open</button>
 			<button data-status="addressed">Answered</button>
@@ -339,6 +355,16 @@ function gasf_crm_render_inbox() {
 	var NONCE = <?php echo wp_json_encode( wp_create_nonce( 'wp_rest' ) ); ?>;
 	var BOARD = <?php echo wp_json_encode( (string) gasf_crm_cfg()['board_address'] ); ?>;
 	var IGNORE_REASONS = <?php echo wp_json_encode( array_values( gasf_crm_ignore_reasons() ) ); ?>;
+	// Only the streams THIS user may see. The server intersects anyway, so this
+	// is for rendering, not for security.
+	var STREAMS = <?php
+		$mine = array();
+		foreach ( gasf_crm_user_streams() as $k ) {
+			$mine[] = array( 'key' => $k, 'label' => gasf_crm_stream_label( $k ), 'mailbox' => gasf_crm_stream_mailbox( $k ) );
+		}
+		echo wp_json_encode( $mine );
+	?>;
+	var stream = ''; // '' = every stream this user can see
 	var list = document.getElementById('list'), pane = document.getElementById('pane');
 	var status = 'open', current = null, currentStamp = null;
 
@@ -378,7 +404,7 @@ function gasf_crm_render_inbox() {
 	}
 
 	function loadList(){
-		return api('/threads?status=' + status).then(function(rows){
+		return api('/threads?status=' + status + (stream ? '&stream=' + encodeURIComponent(stream) : '')).then(function(rows){
 			// If the thread on screen has grown a newer message, say so rather
 			// than reloading underneath someone who is mid-reply.
 			if(current){
@@ -393,10 +419,19 @@ function gasf_crm_render_inbox() {
 			list.innerHTML = rows.map(function(t){
 				var lock = t.locked_by && !t.locked_mine
 					? '<div class="meta">🔒 ' + esc(t.locked_by) + ' is replying</div>' : '';
+				// Which inbox a thread came from, but only when the reader can see
+				// more than one — otherwise every row would carry a label that
+				// never varies.
+				var tag = '';
+				if (STREAMS.length > 1 && !stream) {
+					for (var s = 0; s < STREAMS.length; s++) {
+						if (STREAMS[s].key === t.stream) { tag = '<span class="streamtag">' + esc(STREAMS[s].label) + '</span>'; }
+					}
+				}
 				return '<div class="item' + (current === t.id ? ' on' : '') + '" data-id="' + t.id + '">' +
 					'<div class="who"><span>' + (t.status === 'new' ? '<span class="dot"></span>' : '') +
 					esc(t.from) + '</span><span class="meta">' + esc(when(t.last)) + '</span></div>' +
-					'<div class="subj">' + esc(t.subject || '(no subject)') + '</div>' + lock + '</div>';
+					'<div class="subj">' + esc(t.subject || '(no subject)') + tag + '</div>' + lock + '</div>';
 			}).join('');
 			Array.prototype.forEach.call(list.querySelectorAll('.item'), function(el){
 				el.onclick = function(){ open(parseInt(el.dataset.id, 10)); };
@@ -918,10 +953,20 @@ function gasf_crm_render_inbox() {
 		}).catch(function(){});
 	}
 
-	Array.prototype.forEach.call(document.querySelectorAll('.tabs button'), function(b){
+	// Status tabs and stream tabs are independent rows, so each only clears the
+	// selection within its own row.
+	Array.prototype.forEach.call(document.querySelectorAll('.tabs:not(.streams) button'), function(b){
 		b.onclick = function(){
-			Array.prototype.forEach.call(document.querySelectorAll('.tabs button'), function(x){ x.classList.remove('on'); });
+			Array.prototype.forEach.call(document.querySelectorAll('.tabs:not(.streams) button'), function(x){ x.classList.remove('on'); });
 			b.classList.add('on'); status = b.dataset.status; current = null; currentStamp = null;
+			pane.innerHTML = '<p class="muted">Select a message on the left.</p>';
+			loadList();
+		};
+	});
+	Array.prototype.forEach.call(document.querySelectorAll('.tabs.streams button'), function(b){
+		b.onclick = function(){
+			Array.prototype.forEach.call(document.querySelectorAll('.tabs.streams button'), function(x){ x.classList.remove('on'); });
+			b.classList.add('on'); stream = b.dataset.stream || ''; current = null; currentStamp = null;
 			pane.innerHTML = '<p class="muted">Select a message on the left.</p>';
 			loadList();
 		};

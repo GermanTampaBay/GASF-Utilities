@@ -125,9 +125,25 @@ function gasf_crm_graph( $method, $path, $body = null, $retry = true ) {
 	return is_array( $json ) ? $json : array();
 }
 
-function gasf_crm_mailbox_path() {
-	$c = gasf_crm_cfg();
-	return '/users/' . rawurlencode( $c['mailbox'] );
+/**
+ * /users/{mailbox} path segment.
+ *
+ * $mailbox may be an address or a stream key; omitted, it falls back to the
+ * general mailbox so existing single-mailbox callers keep working. Passing a
+ * thread's stream is what makes a reply leave from the address the sender
+ * originally wrote to.
+ */
+function gasf_crm_mailbox_path( $mailbox = '' ) {
+	if ( '' === $mailbox ) {
+		$mailbox = gasf_crm_cfg()['mailbox'];
+	} elseif ( false === strpos( $mailbox, '@' ) ) {
+		// A stream key. An unknown one must not silently fall back to the
+		// general mailbox — that would send a photos reply from info@.
+		$resolved = gasf_crm_stream_mailbox( $mailbox );
+		if ( '' === $resolved ) { return ''; }
+		$mailbox = $resolved;
+	}
+	return '/users/' . rawurlencode( $mailbox );
 }
 
 /**
@@ -238,17 +254,34 @@ function gasf_crm_graph_diagnostics() {
 	$out['roles'] = isset( $claims['roles'] ) ? (array) $claims['roles'] : array();
 	if ( ! empty( $claims['exp'] ) ) { $out['expires_in'] = max( 0, (int) $claims['exp'] - time() ); }
 
-	$r = gasf_crm_graph( 'GET', gasf_crm_mailbox_path()
-		. '/mailFolders/Inbox?$select=displayName,totalItemCount,unreadItemCount' );
-	if ( is_wp_error( $r ) ) {
-		$out['reach']       = false;
-		$out['reach_error'] = $r->get_error_message();
-	} else {
-		$out['reach']  = true;
-		$out['counts'] = array(
-			'total'  => (int) ( $r['totalItemCount'] ?? 0 ),
-			'unread' => (int) ( $r['unreadItemCount'] ?? 0 ),
+	// Every configured mailbox, not just the first. A scope-group membership
+	// that never propagated shows up as one stream unreachable while the other
+	// is fine — a single-mailbox probe would report all-clear and the photo
+	// team would simply never receive anything.
+	$out['mailboxes'] = array();
+	$out['reach']     = true;
+	foreach ( gasf_crm_active_streams() as $key => $stream ) {
+		$r = gasf_crm_graph( 'GET', gasf_crm_mailbox_path( $stream['mailbox'] )
+			. '/mailFolders/Inbox?$select=displayName,totalItemCount,unreadItemCount' );
+
+		if ( is_wp_error( $r ) ) {
+			$out['reach']             = false;
+			$out['reach_error']       = $stream['mailbox'] . ' — ' . $r->get_error_message();
+			$out['mailboxes'][ $key ] = array( 'address' => $stream['mailbox'], 'ok' => false );
+			continue;
+		}
+		$out['mailboxes'][ $key ] = array(
+			'address' => $stream['mailbox'],
+			'ok'      => true,
+			'total'   => (int) ( $r['totalItemCount'] ?? 0 ),
+			'unread'  => (int) ( $r['unreadItemCount'] ?? 0 ),
 		);
+		if ( 'general' === $key ) {
+			$out['counts'] = array(
+				'total'  => (int) ( $r['totalItemCount'] ?? 0 ),
+				'unread' => (int) ( $r['unreadItemCount'] ?? 0 ),
+			);
+		}
 	}
 	return $out;
 }
@@ -262,14 +295,14 @@ function gasf_crm_graph_diagnostics() {
  * else. Probing the user object made a correctly-configured install fail with
  * a 403 that pointed at the access policy instead of at the wrong endpoint.
  */
-function gasf_crm_graph_test() {
+function gasf_crm_graph_test( $mailbox = '' ) {
 	// Always take a fresh token. The reason anyone presses this button is that
 	// they just changed something in Entra — and roles are baked into the token
 	// at issue time, so a cached one keeps reporting the OLD permission state for
 	// most of an hour after the problem was actually fixed.
 	delete_transient( 'gasf_crm_graph_token' );
 
-	$r = gasf_crm_graph( 'GET', gasf_crm_mailbox_path()
+	$r = gasf_crm_graph( 'GET', gasf_crm_mailbox_path( $mailbox )
 		. '/mailFolders/Inbox?$select=displayName,totalItemCount,unreadItemCount' );
 
 	// A 403 has two very different causes and Graph's message does not separate
@@ -304,12 +337,12 @@ function gasf_crm_graph_test() {
  * advanced to "now" over an incomplete read un-exists the tail permanently,
  * with nothing anywhere to say so.
  */
-function gasf_crm_graph_messages( $folder, $since, $max_pages = 10 ) {
+function gasf_crm_graph_messages( $folder, $since, $max_pages = 10, $mailbox = '' ) {
 	$select = 'id,conversationId,subject,from,sender,toRecipients,receivedDateTime,sentDateTime,bodyPreview,body,hasAttachments';
 	$field  = ( 'SentItems' === $folder ) ? 'sentDateTime' : 'receivedDateTime';
 	$iso    = gmdate( 'Y-m-d\TH:i:s\Z', strtotime( $since . ' UTC' ) );
 
-	$url = gasf_crm_mailbox_path() . '/mailFolders/' . rawurlencode( $folder ) . '/messages?' . http_build_query( array(
+	$url = gasf_crm_mailbox_path( $mailbox ) . '/mailFolders/' . rawurlencode( $folder ) . '/messages?' . http_build_query( array(
 		'$select'  => $select,
 		'$filter'  => $field . ' ge ' . $iso,
 		'$orderby' => $field . ' asc',
@@ -342,10 +375,10 @@ function gasf_crm_graph_messages( $folder, $since, $max_pages = 10 ) {
  * The sent copy lands in the shared mailbox's Sent Items, which is also how the
  * next sync learns the thread was answered.
  */
-function gasf_crm_graph_reply( $graph_message_id, $html ) {
+function gasf_crm_graph_reply( $graph_message_id, $html, $mailbox = '' ) {
 	return gasf_crm_graph(
 		'POST',
-		gasf_crm_mailbox_path() . '/messages/' . rawurlencode( $graph_message_id ) . '/reply',
+		gasf_crm_mailbox_path( $mailbox ) . '/messages/' . rawurlencode( $graph_message_id ) . '/reply',
 		array( 'comment' => $html )
 	);
 }
@@ -370,8 +403,8 @@ function gasf_crm_graph_reply( $graph_message_id, $html ) {
  * failure would leave a half-assembled reply sitting in the shared mailbox's
  * Drafts folder for someone to find later and wonder about.
  */
-function gasf_crm_graph_reply_with_attachments( $graph_message_id, $html, array $attachments ) {
-	$mb = gasf_crm_mailbox_path();
+function gasf_crm_graph_reply_with_attachments( $graph_message_id, $html, array $attachments, $mailbox = '' ) {
+	$mb = gasf_crm_mailbox_path( $mailbox );
 
 	$draft = gasf_crm_graph( 'POST', $mb . '/messages/' . rawurlencode( $graph_message_id ) . '/createReply',
 		array( 'comment' => $html ) );
@@ -393,7 +426,7 @@ function gasf_crm_graph_reply_with_attachments( $graph_message_id, $html, array 
 	return gasf_crm_graph( 'POST', $mb . '/messages/' . rawurlencode( $draft_id ) . '/send' );
 }
 
-function gasf_crm_graph_forward( $graph_message_id, $to, $comment ) {
+function gasf_crm_graph_forward( $graph_message_id, $to, $comment, $mailbox = '' ) {
 	$recipients = array();
 	foreach ( (array) $to as $addr ) {
 		$addr = sanitize_email( $addr );
@@ -407,7 +440,7 @@ function gasf_crm_graph_forward( $graph_message_id, $to, $comment ) {
 
 	return gasf_crm_graph(
 		'POST',
-		gasf_crm_mailbox_path() . '/messages/' . rawurlencode( $graph_message_id ) . '/forward',
+		gasf_crm_mailbox_path( $mailbox ) . '/messages/' . rawurlencode( $graph_message_id ) . '/forward',
 		array( 'comment' => $comment, 'toRecipients' => $recipients )
 	);
 }
@@ -450,8 +483,8 @@ function gasf_crm_graph_send( $to, $subject, $text ) {
  * that have no bytes to download: an email forwarded AS an attachment
  * (itemAttachment) and a OneDrive/SharePoint link (referenceAttachment).
  */
-function gasf_crm_graph_attachments( $graph_message_id ) {
-	$res = gasf_crm_graph( 'GET', gasf_crm_mailbox_path() . '/messages/' . rawurlencode( $graph_message_id )
+function gasf_crm_graph_attachments( $graph_message_id, $mailbox = '' ) {
+	$res = gasf_crm_graph( 'GET', gasf_crm_mailbox_path( $mailbox ) . '/messages/' . rawurlencode( $graph_message_id )
 		. '/attachments?$select=id,name,contentType,size,isInline' );
 	if ( is_wp_error( $res ) ) { return $res; }
 
@@ -469,8 +502,8 @@ function gasf_crm_graph_attachments( $graph_message_id ) {
  * memory just to read its filename is how a photo submission takes the site
  * down. The bytes come separately, streamed.
  */
-function gasf_crm_graph_attachment_meta( $graph_message_id, $attachment_id ) {
-	return gasf_crm_graph( 'GET', gasf_crm_mailbox_path() . '/messages/' . rawurlencode( $graph_message_id )
+function gasf_crm_graph_attachment_meta( $graph_message_id, $attachment_id, $mailbox = '' ) {
+	return gasf_crm_graph( 'GET', gasf_crm_mailbox_path( $mailbox ) . '/messages/' . rawurlencode( $graph_message_id )
 		. '/attachments/' . rawurlencode( $attachment_id ) . '?$select=id,name,contentType,size' );
 }
 
@@ -486,12 +519,12 @@ function gasf_crm_graph_attachment_meta( $graph_message_id, $attachment_id ) {
  *
  * Returns true, or WP_Error.
  */
-function gasf_crm_graph_attachment_stream( $graph_message_id, $attachment_id, $dest ) {
+function gasf_crm_graph_attachment_stream( $graph_message_id, $attachment_id, $dest, $mailbox = '' ) {
 	$token = gasf_crm_graph_token();
 	if ( is_wp_error( $token ) ) { return $token; }
 
 	$r = wp_remote_get(
-		GASF_CRM_GRAPH . gasf_crm_mailbox_path() . '/messages/' . rawurlencode( $graph_message_id )
+		GASF_CRM_GRAPH . gasf_crm_mailbox_path( $mailbox ) . '/messages/' . rawurlencode( $graph_message_id )
 			. '/attachments/' . rawurlencode( $attachment_id ) . '/$value',
 		array(
 			// Generous: a large file over a slow link is the whole point here.
@@ -523,15 +556,15 @@ function gasf_crm_graph_attachment_stream( $graph_message_id, $attachment_id, $d
  * signed in with Google will hit a Microsoft sign-in wall — so callers must
  * gate it on capability rather than showing it to everyone.
  */
-function gasf_crm_graph_message_weblink( $graph_message_id ) {
-	$r = gasf_crm_graph( 'GET', gasf_crm_mailbox_path() . '/messages/'
+function gasf_crm_graph_message_weblink( $graph_message_id, $mailbox = '' ) {
+	$r = gasf_crm_graph( 'GET', gasf_crm_mailbox_path( $mailbox ) . '/messages/'
 		. rawurlencode( $graph_message_id ) . '?$select=webLink' );
 	return is_wp_error( $r ) ? '' : (string) ( $r['webLink'] ?? '' );
 }
 
 /** Raw attachment bytes. Returns array( name, type, bytes ) or WP_Error. */
-function gasf_crm_graph_attachment( $graph_message_id, $attachment_id ) {
-	$res = gasf_crm_graph( 'GET', gasf_crm_mailbox_path() . '/messages/' . rawurlencode( $graph_message_id )
+function gasf_crm_graph_attachment( $graph_message_id, $attachment_id, $mailbox = '' ) {
+	$res = gasf_crm_graph( 'GET', gasf_crm_mailbox_path( $mailbox ) . '/messages/' . rawurlencode( $graph_message_id )
 		. '/attachments/' . rawurlencode( $attachment_id ) );
 	if ( is_wp_error( $res ) ) { return $res; }
 

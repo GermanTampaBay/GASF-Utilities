@@ -33,7 +33,7 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 	// upgrade check below runs dbDelta and flushes rules on any change. This
 	// plugin runs as an mu-plugin on the main site, where activation hooks
 	// never fire, so a version-compare on every load is the only reliable hook.
-	define( 'GASF_CRM_SCHEMA', '1.3.0' );
+	define( 'GASF_CRM_SCHEMA', '1.4.0' );
 
 	/**
 	 * How far ahead to start warning that the Graph client secret is running
@@ -64,9 +64,57 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 	 * autoload is off (see gasf_crm_save_cfg) so the secret is not loaded into
 	 * every single page request just to render the front page.
 	 */
+	/**
+	 * The mailboxes this CRM watches, keyed by stream.
+	 *
+	 * A "stream" is which inbox a thread belongs to. It exists because access is
+	 * per-stream: the photo team can be granted photos@ without seeing general
+	 * enquiries. That boundary is enforced HERE, in application code — the CRM
+	 * is app-only, volunteers never authenticate to Microsoft, so no Exchange
+	 * mailbox permission applies to them and none can be relied on.
+	 *
+	 * 'general' must keep the key it has: existing threads were written before
+	 * streams existed and are backfilled to it.
+	 */
+	function gasf_crm_streams() {
+		$cfg = gasf_crm_cfg();
+		return (array) apply_filters( 'gasf_crm_streams', array(
+			'general' => array(
+				'label'   => __( 'General', 'gasf' ),
+				'mailbox' => $cfg['mailbox'],
+			),
+			'photos'  => array(
+				'label'   => __( 'Photo submissions', 'gasf' ),
+				'mailbox' => $cfg['mailbox_photos'],
+			),
+		) );
+	}
+
+	/** Streams with a mailbox actually configured. */
+	function gasf_crm_active_streams() {
+		return array_filter( gasf_crm_streams(), static function ( $s ) {
+			return ! empty( $s['mailbox'] );
+		} );
+	}
+
+	/** Mailbox address for a stream key, or '' if unknown/unconfigured. */
+	function gasf_crm_stream_mailbox( $stream ) {
+		$s = gasf_crm_streams();
+		return isset( $s[ $stream ] ) ? (string) $s[ $stream ]['mailbox'] : '';
+	}
+
+	/** Human label for a stream key. */
+	function gasf_crm_stream_label( $stream ) {
+		$s = gasf_crm_streams();
+		return isset( $s[ $stream ] ) ? (string) $s[ $stream ]['label'] : $stream;
+	}
+
 	function gasf_crm_cfg() {
 		return wp_parse_args( (array) get_option( 'gasf_crm_config', array() ), array(
 			'mailbox'        => 'info@germantampabay.com',
+			// Second watched mailbox. Blank disables the stream entirely rather
+			// than half-enabling it.
+			'mailbox_photos' => '',
 			'tenant_id'      => '',
 			'client_id'      => '',
 			'client_secret'  => '',
@@ -81,6 +129,11 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 			'board_address'  => 'board@germantampabay.com',
 			'notify_channel' => 'email',
 			'notify_extra'   => '',
+			// Per-mailbox sync cursors, keyed by stream. A single shared cursor
+			// would let a fast-moving mailbox drag the other one's window past
+			// unread mail. 'last_sync' below stays for the general stream so
+			// existing installs keep their position across this upgrade.
+			'last_sync_by'   => array(),
 			// Send ALL WordPress mail through Graph, not just this module's.
 			// Nothing wp_mail sends from this server reaches anyone otherwise —
 			// the domain's own SPF and DMARC records see to that.
@@ -132,6 +185,13 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 	add_action( 'init', function () {
 		if ( get_option( 'gasf_crm_schema' ) === GASF_CRM_SCHEMA ) { return; }
 		gasf_crm_install_tables();
+
+		// Threads written before streams existed belong to the general inbox —
+		// it was the only one. dbDelta's column default covers new rows; this
+		// covers the ones already there, and is safe to re-run.
+		global $wpdb;
+		$wpdb->query( "UPDATE " . gasf_crm_table( 'threads' ) . " SET stream = 'general' WHERE stream = '' OR stream IS NULL" ); // phpcs:ignore
+
 		flush_rewrite_rules( false );
 		update_option( 'gasf_crm_schema', GASF_CRM_SCHEMA, false );
 		gasf_mec_log( 'CRM: schema/rewrites upgraded to ' . GASF_CRM_SCHEMA );

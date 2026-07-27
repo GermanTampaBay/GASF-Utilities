@@ -100,10 +100,18 @@ function gasf_crm_flush_notifications( $force = false ) {
 		return 0;
 	}
 
-	list( $subject, $body ) = gasf_crm_notify_digest( $threads );
-
 	$delivered = 0;
-	foreach ( $recipients as $to ) {
+	foreach ( $recipients as $to => $streams ) {
+		// The digest is built PER RECIPIENT from the threads they are allowed to
+		// see. A single shared summary would leak general-inbox senders and
+		// subject lines to the photo team in the notification email — defeating
+		// the access rule everywhere else in the code, by mail.
+		$mine = array_values( array_filter( $threads, static function ( $t ) use ( $streams ) {
+			return in_array( (string) $t['stream'], $streams, true );
+		} ) );
+		if ( ! $mine ) { continue; }
+
+		list( $subject, $body ) = gasf_crm_notify_digest( $mine );
 		if ( gasf_crm_notify_send( $to, $subject, $body ) ) { $delivered++; }
 	}
 
@@ -134,20 +142,30 @@ function gasf_crm_flush_notifications( $force = false ) {
 
 /** Build the summary. Returns array( subject, body ). */
 function gasf_crm_notify_digest( array $threads ) {
-	$cfg   = gasf_crm_cfg();
 	$count = count( $threads );
 
+	// Name the mailbox when everything in this digest came from one, which is
+	// the normal case — "3 new emails to photos@" is more use than a generic
+	// count when somebody watches two inboxes.
+	$boxes = array_values( array_unique( array_map(
+		static function ( $t ) { return gasf_crm_stream_mailbox( (string) $t['stream'] ); },
+		$threads
+	) ) );
+	$where = ( 1 === count( $boxes ) && $boxes[0] ) ? $boxes[0] : 'the club mailboxes';
+
 	$subject = 1 === $count
-		? 'New email to ' . $cfg['mailbox']
-		: $count . ' new emails to ' . $cfg['mailbox'];
+		? 'New email to ' . $where
+		: $count . ' new emails to ' . $where;
 
 	$body = 1 === $count
-		? "A new message has arrived at " . $cfg['mailbox'] . ".\n\n"
-		: $count . " new messages have arrived at " . $cfg['mailbox'] . ".\n\n";
+		? "A new message has arrived at " . $where . ".\n\n"
+		: $count . " new messages have arrived at " . $where . ".\n\n";
 
+	$multi = count( $boxes ) > 1;
 	foreach ( array_slice( $threads, 0, GASF_CRM_NOTIFY_LIST_MAX ) as $t ) {
 		$from = $t['last_from_name'] ? $t['last_from_name'] : $t['last_from_addr'];
-		$body .= '  - ' . $from . ' — ' . wp_specialchars_decode( (string) $t['subject'] ) . "\n";
+		$tag  = $multi ? '[' . gasf_crm_stream_label( (string) $t['stream'] ) . '] ' : '';
+		$body .= '  - ' . $tag . $from . ' — ' . wp_specialchars_decode( (string) $t['subject'] ) . "\n";
 	}
 	if ( $count > GASF_CRM_NOTIFY_LIST_MAX ) {
 		$body .= '  ...and ' . ( $count - GASF_CRM_NOTIFY_LIST_MAX ) . " more.\n";
@@ -163,23 +181,43 @@ function gasf_crm_notify_digest( array $threads ) {
  * Everyone who should be told: approved volunteers, plus any hand-configured
  * addresses. Deduplicated — an administrator is commonly both.
  */
+/**
+ * Who to tell, mapped to WHICH STREAMS each of them may hear about.
+ *
+ * Returns address => array of stream keys. The caller builds each recipient's
+ * digest from that list, so a volunteer granted only photos never learns that
+ * a general enquiry arrived, let alone from whom.
+ */
 function gasf_crm_notify_recipients() {
 	$out = array();
 
 	foreach ( gasf_crm_all_users() as $u ) {
 		if ( ! gasf_crm_user_approved( $u->ID ) ) { continue; }
+		$streams = gasf_crm_user_streams( $u->ID );
+		if ( ! $streams ) { continue; }
+
 		$addr = get_user_meta( $u->ID, 'gasf_crm_email', true );
 		if ( ! $addr ) { $addr = $u->user_email; }
 		// Placeholder addresses are minted when a provider gives us no email.
-		if ( $addr && false === strpos( $addr, '@invalid.local' ) ) { $out[] = strtolower( $addr ); }
+		if ( ! $addr || false !== strpos( $addr, '@invalid.local' ) ) { continue; }
+
+		$addr = strtolower( $addr );
+		// One address, several accounts (Google and Microsoft sign-ins for the
+		// same person) gets the union rather than whichever was read last.
+		$out[ $addr ] = isset( $out[ $addr ] )
+			? array_values( array_unique( array_merge( $out[ $addr ], $streams ) ) )
+			: $streams;
 	}
 
+	// Hand-configured addresses belong to whoever runs this, so they see
+	// everything — they are the fallback when no volunteer is watching.
+	$all = array_keys( gasf_crm_active_streams() );
 	$cfg = gasf_crm_cfg();
 	foreach ( array_filter( array_map( 'trim', explode( ',', (string) $cfg['notify_extra'] ) ) ) as $addr ) {
-		if ( is_email( $addr ) ) { $out[] = strtolower( $addr ); }
+		if ( is_email( $addr ) ) { $out[ strtolower( $addr ) ] = $all; }
 	}
 
-	return array_values( array_unique( $out ) );
+	return $out;
 }
 
 /**

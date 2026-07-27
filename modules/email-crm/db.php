@@ -28,6 +28,7 @@ function gasf_crm_install_tables() {
 	dbDelta( "CREATE TABLE {$threads} (
 		id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
 		conversation_id VARCHAR(191) NOT NULL,
+		stream VARCHAR(32) NOT NULL DEFAULT 'general',
 		subject TEXT NULL,
 		last_from_name VARCHAR(191) NULL,
 		last_from_addr VARCHAR(191) NULL,
@@ -40,7 +41,8 @@ function gasf_crm_install_tables() {
 		notified_at DATETIME NULL,
 		PRIMARY KEY  (id),
 		UNIQUE KEY conversation_id (conversation_id),
-		KEY status_last (status, last_message_at)
+		KEY status_last (status, last_message_at),
+		KEY stream_status (stream, status, last_message_at)
 	) {$charset};" );
 
 	// Audit log. Append-only — rows are never updated or deleted, because the
@@ -123,7 +125,7 @@ function gasf_crm_install_tables() {
  * sender blasted their list again would make the button pointless. Restoring an
  * ignored thread is a manual action from the Ignored tab.
  */
-function gasf_crm_upsert_thread( $conversation_id, $subject, $from_name, $from_addr, $sent_at, $reopen ) {
+function gasf_crm_upsert_thread( $conversation_id, $subject, $from_name, $from_addr, $sent_at, $reopen, $stream = 'general' ) {
 	global $wpdb;
 	$t   = gasf_crm_table( 'threads' );
 	// GMT, matching the gmdate() stamps sync.php derives from Graph. Mixing
@@ -136,6 +138,7 @@ function gasf_crm_upsert_thread( $conversation_id, $subject, $from_name, $from_a
 	if ( ! $row ) {
 		$inserted = $wpdb->insert( $t, array(
 			'conversation_id'       => $conversation_id,
+			'stream'                => $stream,
 			'subject'               => $subject,
 			'last_from_name'        => $from_name,
 			'last_from_addr'        => $from_addr,
@@ -367,10 +370,18 @@ function gasf_crm_thread_messages( $thread_id ) {
 /**
  * Thread list for the inbox. Open threads (new/claimed) first, newest first
  * within each group — an addressed thread is history, an open one is work.
+ *
+ * $streams is the caller's PERMITTED set, not a display preference. It is
+ * required rather than optional and an empty array returns nothing, so a
+ * missing argument can never widen what somebody sees — the failure mode of an
+ * optional filter is showing too much, which here means the photo team reading
+ * the club's general correspondence.
  */
-function gasf_crm_list_threads( $status = 'open', $limit = 100 ) {
+function gasf_crm_list_threads( $status = 'open', array $streams = array(), $limit = 100 ) {
 	global $wpdb;
 	$t = gasf_crm_table( 'threads' );
+
+	if ( ! $streams ) { return array(); }
 
 	if ( 'all' === $status ) {
 		$where = '1=1';
@@ -382,10 +393,13 @@ function gasf_crm_list_threads( $status = 'open', $limit = 100 ) {
 		$where = "status IN ('new','claimed')";
 	}
 
+	$in   = implode( ',', array_fill( 0, count( $streams ), '%s' ) );
+	$args = array_merge( array_values( $streams ), array( (int) $limit ) );
+
 	return $wpdb->get_results( $wpdb->prepare(
-		"SELECT * FROM {$t} WHERE {$where}
+		"SELECT * FROM {$t} WHERE {$where} AND stream IN ({$in})
 		 ORDER BY (status IN ('addressed','ignored')) ASC, last_message_at DESC
-		 LIMIT %d", (int) $limit
+		 LIMIT %d", $args
 	), ARRAY_A );
 }
 

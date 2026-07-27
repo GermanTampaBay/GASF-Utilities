@@ -42,69 +42,30 @@ function gasf_crm_sync() {
 	}
 
 	try {
-		$cfg   = gasf_crm_cfg();
-		$last  = (int) $cfg['last_sync'];
-		$since = $last
-			? gmdate( 'Y-m-d H:i:s', $last - GASF_CRM_SYNC_OVERLAP )
-			: gmdate( 'Y-m-d H:i:s', time() - GASF_CRM_SYNC_FIRSTRUN );
-
-		$started = time();
-
-		$inbox = gasf_crm_graph_messages( 'Inbox', $since );
-
-		// The inbox fetch IS the health check. Everything else in this function
-		// is bookkeeping; if this call fails, mail is not reaching the club and
-		// that is the only fact anybody needs.
-		if ( is_wp_error( $inbox ) ) {
-			$result['errors'][] = $inbox->get_error_message();
-			gasf_mec_log( 'CRM sync: inbox fetch failed — ' . $inbox->get_error_message() );
-			gasf_crm_health_fail( $inbox->get_error_message() );
-			return $result;
-		}
-		gasf_crm_health_ok();
-
 		$fresh   = array();
 		$touched = array();
+		$failed  = array();
 
-		foreach ( $inbox['items'] as $m ) {
-			$r = gasf_crm_ingest( $m, 'in' );
-			if ( ! $r['thread_id'] ) { continue; }
-			$touched[ $r['thread_id'] ] = true;
-
-			if ( $r['inserted'] ) {
-				$result['new']++;
-				$fresh[ $r['thread_id'] ] = true;
-				gasf_crm_log_event( $r['thread_id'], 'received', 'Message from ' . $r['from'], 0 );
-			}
-			if ( $r['reopened'] ) {
-				$result['reopened']++;
-				gasf_crm_log_event( $r['thread_id'], 'reopened', 'New message arrived on an answered thread', 0 );
-			}
+		// One pass per configured mailbox. Cursors are per-stream: a shared one
+		// would let a busy mailbox drag the other's window forward past mail
+		// nobody had read yet, which is the silent-loss failure the cursor logic
+		// below exists to prevent.
+		foreach ( gasf_crm_active_streams() as $key => $stream ) {
+			$err = gasf_crm_sync_stream( $key, $stream['mailbox'], $result, $fresh, $touched );
+			if ( $err ) { $failed[ $key ] = $err; }
 		}
 
-		$sent        = gasf_crm_graph_messages( 'SentItems', $since );
-		$sent_failed = is_wp_error( $sent );
-		if ( $sent_failed ) {
-			// Non-fatal for THIS run: inbound already landed, and this only
-			// affects whether a thread shows as addressed. The cursor handling
-			// below refuses to advance, so the window is re-read next hour.
-			$result['errors'][] = $sent->get_error_message();
-			gasf_mec_log( 'CRM sync: sent-items fetch failed — ' . $sent->get_error_message() );
+		// Health is per-run but names the mailbox, so an alert about photos@
+		// failing while info@ works says so rather than reporting a vague
+		// outage — the two have different causes and different fixes.
+		if ( $failed ) {
+			$msg = implode( ' | ', array_map(
+				static function ( $k, $e ) { return gasf_crm_stream_mailbox( $k ) . ': ' . $e; },
+				array_keys( $failed ), $failed
+			) );
+			gasf_crm_health_fail( $msg );
 		} else {
-			foreach ( $sent['items'] as $m ) {
-				$r = gasf_crm_ingest( $m, 'out' );
-				if ( ! $r['thread_id'] ) { continue; }
-				$touched[ $r['thread_id'] ] = true;
-
-				// Inserted rather than adopted means no placeholder matched, so
-				// nothing in the CRM sent it — somebody answered from Outlook.
-				if ( $r['inserted'] ) {
-					// Detail text is shown to volunteers in the History timeline, so
-					// it does not name a mail client none of them will ever open.
-					gasf_crm_log_event( $r['thread_id'], 'replied_outlook', 'A reply was sent without going through this page', 0 );
-					unset( $fresh[ $r['thread_id'] ] );
-				}
-			}
+			gasf_crm_health_ok();
 		}
 
 		// Status is decided here, from the newest message in each thread, rather
@@ -128,51 +89,6 @@ function gasf_crm_sync() {
 		// Returns 0 when the batch is being held back, which is not a failure.
 		$result['notified'] = gasf_crm_flush_notifications();
 
-		/*
-		 * Cursor advance — the one place mail can be silently lost, so it errs
-		 * on re-reading rather than skipping. Three cases:
-		 *
-		 *  - Both folders read completely: advance to fetch start, as before.
-		 *  - A folder hit the page cap: advance only to the LAST MESSAGE
-		 *    ACTUALLY FETCHED in that folder. Items arrive oldest-first, so
-		 *    everything at or before that stamp is ingested and everything
-		 *    after it has not been seen yet; advancing to "now" over an
-		 *    incomplete read would un-exist the tail permanently, with nothing
-		 *    anywhere to say so. Repeated runs converge at ~500 messages each.
-		 *  - Sent Items failed outright: do not advance at all. Inbound is
-		 *    already ingested and the UNIQUE key makes the re-read free; a
-		 *    cursor that moved past an unread Sent window would leave answered
-		 *    threads marked new forever.
-		 */
-		if ( ! $sent_failed ) {
-			$cursor = $started;
-			$hold   = false;
-
-			foreach ( array(
-				array( $inbox, 'receivedDateTime' ),
-				array( $sent, 'sentDateTime' ),
-			) as $pair ) {
-				list( $folder, $field ) = $pair;
-				if ( $folder['complete'] ) { continue; }
-				$items = $folder['items'];
-				$last  = $items ? end( $items ) : null;
-				$ts    = $last ? strtotime( (string) ( $last[ $field ] ?? '' ) ) : false;
-				if ( $ts ) {
-					$cursor = min( $cursor, $ts );
-				} else {
-					$hold = true; // truncated with nothing usable — keep the old cursor
-				}
-			}
-
-			if ( ! $hold ) {
-				$cfg              = gasf_crm_cfg();
-				$cfg['last_sync'] = $cursor;
-				gasf_crm_save_cfg( $cfg );
-			} else {
-				gasf_mec_log( 'CRM sync: cursor held — truncated read returned no usable timestamp.' );
-			}
-		}
-
 		if ( $result['new'] || $result['reopened'] ) {
 			gasf_mec_log( sprintf(
 				'CRM sync: %d new, %d reopened, %d notified.',
@@ -187,13 +103,137 @@ function gasf_crm_sync() {
 }
 
 /**
+ * Sync one mailbox. Returns '' on success or an error string.
+ *
+ * $result, $fresh and $touched accumulate across streams by reference — thread
+ * settling and notification queueing happen once for the whole run, after
+ * every mailbox has been read.
+ */
+function gasf_crm_sync_stream( $stream, $mailbox, array &$result, array &$fresh, array &$touched ) {
+	$cfg    = gasf_crm_cfg();
+	$by     = (array) $cfg['last_sync_by'];
+
+	// 'general' falls back to the pre-streams cursor so this upgrade does not
+	// re-read a month of history on the mailbox that has been running for days.
+	$last = isset( $by[ $stream ] ) ? (int) $by[ $stream ] : ( 'general' === $stream ? (int) $cfg['last_sync'] : 0 );
+
+	$since = $last
+		? gmdate( 'Y-m-d H:i:s', $last - GASF_CRM_SYNC_OVERLAP )
+		: gmdate( 'Y-m-d H:i:s', time() - GASF_CRM_SYNC_FIRSTRUN );
+
+	$started = time();
+
+	$inbox = gasf_crm_graph_messages( 'Inbox', $since, 10, $mailbox );
+
+	// The inbox fetch IS the health check for this mailbox. Everything else
+	// here is bookkeeping; if this call fails, mail is not reaching the club.
+	if ( is_wp_error( $inbox ) ) {
+		$result['errors'][] = $mailbox . ': ' . $inbox->get_error_message();
+		gasf_mec_log( 'CRM sync: inbox fetch failed for ' . $mailbox . ' — ' . $inbox->get_error_message() );
+		return $inbox->get_error_message();
+	}
+
+	foreach ( $inbox['items'] as $m ) {
+		$r = gasf_crm_ingest( $m, 'in', $stream );
+		if ( ! $r['thread_id'] ) { continue; }
+		$touched[ $r['thread_id'] ] = true;
+
+		if ( $r['inserted'] ) {
+			$result['new']++;
+			$fresh[ $r['thread_id'] ] = true;
+			gasf_crm_log_event( $r['thread_id'], 'received', 'Message from ' . $r['from'], 0 );
+		}
+		if ( $r['reopened'] ) {
+			$result['reopened']++;
+			gasf_crm_log_event( $r['thread_id'], 'reopened', 'New message arrived on an answered thread', 0 );
+		}
+	}
+
+	$sent        = gasf_crm_graph_messages( 'SentItems', $since, 10, $mailbox );
+	$sent_failed = is_wp_error( $sent );
+	if ( $sent_failed ) {
+		// Non-fatal for THIS run: inbound already landed, and this only affects
+		// whether a thread shows as addressed. The cursor below refuses to
+		// advance, so the window is re-read next hour.
+		$result['errors'][] = $mailbox . ' (sent): ' . $sent->get_error_message();
+		gasf_mec_log( 'CRM sync: sent-items fetch failed for ' . $mailbox . ' — ' . $sent->get_error_message() );
+	} else {
+		foreach ( $sent['items'] as $m ) {
+			$r = gasf_crm_ingest( $m, 'out', $stream );
+			if ( ! $r['thread_id'] ) { continue; }
+			$touched[ $r['thread_id'] ] = true;
+
+			// Inserted rather than adopted means no placeholder matched, so
+			// nothing in the CRM sent it — somebody answered from Outlook.
+			if ( $r['inserted'] ) {
+				// Detail text is shown to volunteers in the History timeline, so
+				// it does not name a mail client none of them will ever open.
+				gasf_crm_log_event( $r['thread_id'], 'replied_outlook', 'A reply was sent without going through this page', 0 );
+				unset( $fresh[ $r['thread_id'] ] );
+			}
+		}
+	}
+
+	/*
+	 * Cursor advance — the one place mail can be silently lost, so it errs on
+	 * re-reading rather than skipping. Three cases:
+	 *
+	 *  - Both folders read completely: advance to fetch start.
+	 *  - A folder hit the page cap: advance only to the LAST MESSAGE ACTUALLY
+	 *    FETCHED in that folder. Items arrive oldest-first, so everything at or
+	 *    before that stamp is ingested and everything after it has not been
+	 *    seen; advancing to "now" over an incomplete read would un-exist the
+	 *    tail permanently, with nothing anywhere to say so.
+	 *  - Sent Items failed outright: do not advance at all. Inbound is already
+	 *    ingested and the UNIQUE key makes the re-read free; a cursor past an
+	 *    unread Sent window would leave answered threads marked new forever.
+	 */
+	if ( ! $sent_failed ) {
+		$cursor = $started;
+		$hold   = false;
+
+		foreach ( array(
+			array( $inbox, 'receivedDateTime' ),
+			array( $sent, 'sentDateTime' ),
+		) as $pair ) {
+			list( $folder, $field ) = $pair;
+			if ( $folder['complete'] ) { continue; }
+			$items = $folder['items'];
+			$last_item = $items ? end( $items ) : null;
+			$ts        = $last_item ? strtotime( (string) ( $last_item[ $field ] ?? '' ) ) : false;
+			if ( $ts ) {
+				$cursor = min( $cursor, $ts );
+			} else {
+				$hold = true; // truncated with nothing usable — keep the old cursor
+			}
+		}
+
+		if ( ! $hold ) {
+			// Re-read config immediately before writing: a sibling stream in this
+			// same loop has already saved its own cursor into the shared option,
+			// and using the copy fetched at the top of this function would undo it.
+			$cfg                            = gasf_crm_cfg();
+			$by                             = (array) $cfg['last_sync_by'];
+			$by[ $stream ]                  = $cursor;
+			$cfg['last_sync_by']            = $by;
+			if ( 'general' === $stream ) { $cfg['last_sync'] = $cursor; } // legacy display field
+			gasf_crm_save_cfg( $cfg );
+		} else {
+			gasf_mec_log( 'CRM sync: cursor held for ' . $mailbox . ' — truncated read returned no usable timestamp.' );
+		}
+	}
+
+	return '';
+}
+
+/**
  * Normalise one Graph message into the local tables.
  *
  * Messages with no conversationId are skipped rather than guessed at — without
  * it there is no thread to attach to, and inventing one would produce a
  * singleton thread that never groups with its own replies.
  */
-function gasf_crm_ingest( array $m, $direction ) {
+function gasf_crm_ingest( array $m, $direction, $stream = 'general' ) {
 	$none = array( 'inserted' => false, 'adopted' => false, 'reopened' => false, 'thread_id' => 0, 'from' => '' );
 
 	$conversation_id = (string) ( $m['conversationId'] ?? '' );
@@ -218,7 +258,8 @@ function gasf_crm_ingest( array $m, $direction ) {
 		$from_name,
 		$from_addr,
 		$sent_at,
-		'in' === $direction
+		'in' === $direction,
+		$stream
 	);
 
 	// A thread id of 0 means the upsert genuinely failed (see upsert_thread).

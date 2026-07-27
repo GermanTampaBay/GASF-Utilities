@@ -19,6 +19,30 @@ function gasf_crm_rest_guard() {
 	return true;
 }
 
+/**
+ * Load a thread the current user is allowed to touch, or a WP_Error.
+ *
+ * Every route that takes a thread id goes through here. Approval gets you into
+ * the building; the stream grant decides which rooms — and thread ids are
+ * small sequential integers, so without this check a photos volunteer could
+ * read, reply to, forward or ignore any general enquiry by typing a different
+ * number into the URL.
+ *
+ * A thread outside the user's streams returns 404, not 403: a 403 would
+ * confirm the thread exists, which is itself information about an inbox they
+ * have no access to.
+ */
+function gasf_crm_rest_thread( $thread_id ) {
+	$thread = gasf_crm_get_thread( (int) $thread_id );
+	if ( ! $thread ) {
+		return new WP_Error( 'gasf_crm_404', 'Thread not found.', array( 'status' => 404 ) );
+	}
+	if ( ! gasf_crm_user_can_stream( (string) $thread['stream'] ) ) {
+		return new WP_Error( 'gasf_crm_404', 'Thread not found.', array( 'status' => 404 ) );
+	}
+	return $thread;
+}
+
 add_action( 'rest_api_init', function () {
 	$guard = 'gasf_crm_rest_guard';
 
@@ -26,8 +50,16 @@ add_action( 'rest_api_init', function () {
 		'methods'             => 'GET',
 		'permission_callback' => $guard,
 		'callback'            => function ( WP_REST_Request $req ) {
-			$status  = $req->get_param( 'status' ) ? sanitize_key( $req->get_param( 'status' ) ) : 'open';
-			$threads = gasf_crm_list_threads( $status );
+			$status = $req->get_param( 'status' ) ? sanitize_key( $req->get_param( 'status' ) ) : 'open';
+
+			// The stream filter is intersected with what this user may see, so a
+			// hand-edited ?stream= widens nothing — the worst it can do is show
+			// fewer threads than they are entitled to.
+			$allowed = gasf_crm_user_streams();
+			$asked   = $req->get_param( 'stream' ) ? sanitize_key( $req->get_param( 'stream' ) ) : '';
+			$streams = ( $asked && in_array( $asked, $allowed, true ) ) ? array( $asked ) : $allowed;
+
+			$threads = gasf_crm_list_threads( $status, $streams );
 
 			return array_map( function ( $t ) {
 				$holder = $t['locked_by'] ? get_userdata( (int) $t['locked_by'] ) : null;
@@ -37,6 +69,7 @@ add_action( 'rest_api_init', function () {
 					'from'       => $t['last_from_name'] ? $t['last_from_name'] : $t['last_from_addr'],
 					'from_addr'  => (string) $t['last_from_addr'],
 					'status'     => (string) $t['status'],
+					'stream'     => (string) $t['stream'],
 					'last'       => (string) $t['last_message_at'],
 					'locked_by'  => $holder ? $holder->display_name : null,
 					'locked_mine' => (int) $t['locked_by'] === get_current_user_id(),
@@ -50,17 +83,16 @@ add_action( 'rest_api_init', function () {
 		'permission_callback' => $guard,
 		'callback'            => function ( WP_REST_Request $req ) {
 			$id     = (int) $req['id'];
-			$thread = gasf_crm_get_thread( $id );
-			if ( ! $thread ) {
-				return new WP_Error( 'gasf_crm_404', 'Thread not found.', array( 'status' => 404 ) );
-			}
+			$thread = gasf_crm_rest_thread( $id );
+			if ( is_wp_error( $thread ) ) { return $thread; }
+			$stream = (string) $thread['stream'];
 
 			// Opening a thread claims it — that IS the lock, so two volunteers
 			// cannot start writing the same reply. Failing to claim is not an
 			// error: they still get to read it, just not send.
 			$mine = gasf_crm_claim_thread( $id, get_current_user_id() );
 
-			$messages = array_map( function ( $m ) {
+			$messages = array_map( function ( $m ) use ( $stream ) {
 				return array(
 					'id'          => (int) $m['id'],
 					'direction'   => (string) $m['direction'],
@@ -73,7 +105,7 @@ add_action( 'rest_api_init', function () {
 					// on trust. Costs microseconds on a handful of messages.
 					'body'        => gasf_crm_email_kses( (string) $m['body_html'] ),
 					'attachments' => ! empty( $m['has_attachments'] )
-						? gasf_crm_attachment_list( $m['graph_message_id'] )
+						? gasf_crm_attachment_list( $m['graph_message_id'], $stream )
 						: array(),
 				);
 			}, gasf_crm_thread_messages( $id ) );
@@ -85,6 +117,8 @@ add_action( 'rest_api_init', function () {
 				'id'        => $id,
 				'subject'   => (string) $thread['subject'],
 				'status'    => (string) $thread['status'],
+				'stream'    => $stream,
+				'mailbox'   => gasf_crm_stream_mailbox( $stream ),
 				'can_reply' => (bool) $mine,
 				'locked_by' => ( ! $mine && $holder ) ? $holder->display_name : null,
 				'messages'  => $messages,
@@ -104,6 +138,8 @@ add_action( 'rest_api_init', function () {
 		'methods'             => 'POST',
 		'permission_callback' => $guard,
 		'callback'            => function ( WP_REST_Request $req ) {
+			$thread = gasf_crm_rest_thread( (int) $req['id'] );
+			if ( is_wp_error( $thread ) ) { return $thread; }
 			gasf_crm_release_thread( (int) $req['id'], get_current_user_id() );
 			return array( 'ok' => true );
 		},
@@ -117,7 +153,9 @@ add_action( 'rest_api_init', function () {
 		'methods'             => 'POST',
 		'permission_callback' => $guard,
 		'callback'            => function ( WP_REST_Request $req ) {
-			$id = (int) $req['id'];
+			$id     = (int) $req['id'];
+			$thread = gasf_crm_rest_thread( $id );
+			if ( is_wp_error( $thread ) ) { return $thread; }
 			gasf_crm_set_status( $id, 'addressed' );
 			gasf_crm_log_event( $id, 'addressed', 'Marked answered without sending a reply' );
 			return array( 'ok' => true );
@@ -129,6 +167,8 @@ add_action( 'rest_api_init', function () {
 		'permission_callback' => $guard,
 		'callback'            => function ( WP_REST_Request $req ) {
 			$id     = (int) $req['id'];
+			$thread = gasf_crm_rest_thread( $id );
+			if ( is_wp_error( $thread ) ) { return $thread; }
 			$reason = trim( sanitize_text_field( (string) $req->get_param( 'reason' ) ) );
 
 			// A reason is required, and validated here rather than only in the
@@ -152,7 +192,9 @@ add_action( 'rest_api_init', function () {
 		'methods'             => 'POST',
 		'permission_callback' => $guard,
 		'callback'            => function ( WP_REST_Request $req ) {
-			$id = (int) $req['id'];
+			$id     = (int) $req['id'];
+			$thread = gasf_crm_rest_thread( $id );
+			if ( is_wp_error( $thread ) ) { return $thread; }
 			gasf_crm_set_status( $id, 'new' );
 			gasf_crm_log_event( $id, 'restored', 'Returned to the open queue' );
 			return array( 'ok' => true );
@@ -172,6 +214,9 @@ add_action( 'rest_api_init', function () {
 				return new WP_Error( 'gasf_crm_rate', 'Too many drafts in the last hour. Try again later.', array( 'status' => 429 ) );
 			}
 			set_transient( $k, $n + 1, HOUR_IN_SECONDS );
+
+			$thread = gasf_crm_rest_thread( (int) $req['id'] );
+			if ( is_wp_error( $thread ) ) { return $thread; }
 
 			$text = gasf_crm_draft_reply( (int) $req['id'] );
 			if ( is_wp_error( $text ) ) {
@@ -334,10 +379,9 @@ function gasf_crm_rest_forward( WP_REST_Request $req ) {
 		}
 	}
 
-	$thread = gasf_crm_get_thread( $thread_id );
-	if ( ! $thread ) {
-		return new WP_Error( 'gasf_crm_404', 'Thread not found.', array( 'status' => 404 ) );
-	}
+	$thread = gasf_crm_rest_thread( $thread_id );
+	if ( is_wp_error( $thread ) ) { return $thread; }
+	$stream = (string) $thread['stream'];
 
 	// Forward the newest message, whichever direction it came from — that is the
 	// one carrying whatever prompted the forward.
@@ -363,7 +407,7 @@ function gasf_crm_rest_forward( WP_REST_Request $req ) {
 	$comment = ( '' !== $note ? wpautop( esc_html( $note ) ) : '' )
 		. '<p>--<br>Forwarded by ' . esc_html( $name ) . '<br>' . esc_html( $cfg['signature_org'] ) . '</p>';
 
-	$sent = gasf_crm_graph_forward( $target['graph_message_id'], $to, $comment );
+	$sent = gasf_crm_graph_forward( $target['graph_message_id'], $to, $comment, $stream );
 	if ( is_wp_error( $sent ) ) {
 		gasf_mec_log( 'CRM forward failed (thread ' . $thread_id . '): ' . $sent->get_error_message() );
 		return new WP_Error( 'gasf_crm_send', $sent->get_error_message(), array( 'status' => 502 ) );
@@ -388,7 +432,7 @@ function gasf_crm_rest_forward( WP_REST_Request $req ) {
 		'graph_message_id' => 'local-fwd-' . $thread_id . '-' . time() . '-' . $user_id,
 		'direction'        => 'out',
 		'from_name'        => $name,
-		'from_addr'        => $cfg['mailbox'],
+		'from_addr'        => gasf_crm_stream_mailbox( $stream ),
 		'to_addrs'         => wp_json_encode( $to ),
 		'sent_at'          => current_time( 'mysql', true ),
 		'body_preview'     => 'Forwarded to ' . implode( ', ', $to ) . ( '' !== $note ? ' — ' . $note : '' ),
@@ -434,10 +478,9 @@ function gasf_crm_rest_reply( WP_REST_Request $req ) {
 		return new WP_Error( 'gasf_crm_empty', 'The reply is empty.', array( 'status' => 400 ) );
 	}
 
-	$thread = gasf_crm_get_thread( $thread_id );
-	if ( ! $thread ) {
-		return new WP_Error( 'gasf_crm_404', 'Thread not found.', array( 'status' => 404 ) );
-	}
+	$thread = gasf_crm_rest_thread( $thread_id );
+	if ( is_wp_error( $thread ) ) { return $thread; }
+	$stream = (string) $thread['stream'];
 
 	// Re-check the lock at send time. The claim happened when the thread was
 	// opened, possibly an hour ago — by now it may have expired and been taken.
@@ -502,9 +545,12 @@ function gasf_crm_rest_reply( WP_REST_Request $req ) {
 		$html .= '<p><em>Attached: ' . esc_html( implode( ', ', $names ) ) . '</em></p>';
 	}
 
+	// Sent from the thread's OWN mailbox — somebody who wrote to photos@ gets a
+	// reply from photos@, not from info@. This is the single strongest argument
+	// for real mailboxes over aliases, and it is one argument wide.
 	$sent = $attachments
-		? gasf_crm_graph_reply_with_attachments( $target['graph_message_id'], $html, $attachments )
-		: gasf_crm_graph_reply( $target['graph_message_id'], $html );
+		? gasf_crm_graph_reply_with_attachments( $target['graph_message_id'], $html, $attachments, $stream )
+		: gasf_crm_graph_reply( $target['graph_message_id'], $html, $stream );
 
 	if ( is_wp_error( $sent ) ) {
 		gasf_mec_log( 'CRM reply failed (thread ' . $thread_id . '): ' . $sent->get_error_message() );
@@ -520,7 +566,7 @@ function gasf_crm_rest_reply( WP_REST_Request $req ) {
 		'graph_message_id' => 'local-' . $thread_id . '-' . time() . '-' . $user_id,
 		'direction'        => 'out',
 		'from_name'        => $name,
-		'from_addr'        => $cfg['mailbox'],
+		'from_addr'        => gasf_crm_stream_mailbox( $stream ),
 		'to_addrs'         => wp_json_encode( array( $thread['last_from_addr'] ) ),
 		'sent_at'          => current_time( 'mysql', true ),
 		'body_preview'     => mb_substr( trim( wp_strip_all_tags( $clean ) ), 0, 500 ),
@@ -540,8 +586,8 @@ function gasf_crm_rest_reply( WP_REST_Request $req ) {
 }
 
 /** Attachment metadata for a message, best-effort — never fatal to a thread view. */
-function gasf_crm_attachment_list( $graph_message_id ) {
-	$list = gasf_crm_graph_attachments( $graph_message_id );
+function gasf_crm_attachment_list( $graph_message_id, $stream = 'general' ) {
+	$list = gasf_crm_graph_attachments( $graph_message_id, $stream );
 	if ( is_wp_error( $list ) ) { return array(); }
 
 	$out = array();
@@ -566,6 +612,7 @@ function gasf_crm_attachment_list( $graph_message_id ) {
 			'url'  => add_query_arg( array(
 				'msg'      => rawurlencode( $graph_message_id ),
 				'att'      => rawurlencode( (string) ( $a['id'] ?? '' ) ),
+			'stream'   => $stream,
 				'_wpnonce' => wp_create_nonce( 'wp_rest' ),
 			), rest_url( 'gasf/v1/crm/attachment' ) ),
 		);
@@ -587,12 +634,27 @@ function gasf_crm_rest_attachment( WP_REST_Request $req ) {
 		gasf_crm_attachment_problem( 'That download link is incomplete. Go back and open the message again.' );
 	}
 
+	// Which mailbox to fetch from is decided by OUR record of the message, never
+	// by anything in the URL — otherwise a photos volunteer could point this at
+	// the general mailbox and pull down attachments from an inbox they cannot
+	// even list.
+	global $wpdb;
+	$stream = (string) $wpdb->get_var( $wpdb->prepare(
+		'SELECT t.stream FROM ' . gasf_crm_table( 'messages' ) . ' m
+		   JOIN ' . gasf_crm_table( 'threads' ) . ' t ON t.id = m.thread_id
+		  WHERE m.graph_message_id = %s LIMIT 1',
+		$msg
+	) );
+	if ( '' === $stream || ! gasf_crm_user_can_stream( $stream ) ) {
+		gasf_crm_attachment_problem( 'That attachment is not available to your account.' );
+	}
+
 	// Metadata first, without the bytes: name and kind decide what happens next,
 	// and pulling a 30 MB photo into memory to read its filename is exactly the
 	// failure this path is built to avoid.
-	$meta = gasf_crm_graph_attachment_meta( $msg, $att );
+	$meta = gasf_crm_graph_attachment_meta( $msg, $att, $stream );
 	if ( is_wp_error( $meta ) ) {
-		gasf_crm_attachment_problem( $meta->get_error_message(), $msg );
+		gasf_crm_attachment_problem( $meta->get_error_message(), $msg, $stream );
 	}
 
 	$kind = (string) ( $meta['@odata.type'] ?? '' );
@@ -600,25 +662,25 @@ function gasf_crm_rest_attachment( WP_REST_Request $req ) {
 		gasf_crm_attachment_problem( sprintf(
 			'"%s" is a cloud link (OneDrive or SharePoint), not a file — there is nothing here to download. The sender shared it rather than attaching it.',
 			(string) ( $meta['name'] ?? 'That attachment' )
-		), $msg );
+		), $msg, $stream );
 	}
 	if ( false !== strpos( $kind, 'itemAttachment' ) ) {
 		gasf_crm_attachment_problem( sprintf(
 			'"%s" is another email attached to this one, rather than a file.',
 			(string) ( $meta['name'] ?? 'That attachment' )
-		), $msg );
+		), $msg, $stream );
 	}
 
 	$name = sanitize_file_name( (string) ( $meta['name'] ?? 'attachment' ) );
 	$tmp  = wp_tempnam( 'gasf-crm-att' );
 	if ( ! $tmp ) {
-		gasf_crm_attachment_problem( 'The server could not make room to fetch that file.', $msg );
+		gasf_crm_attachment_problem( 'The server could not make room to fetch that file.', $msg, $stream );
 	}
 
-	$ok = gasf_crm_graph_attachment_stream( $msg, $att, $tmp );
+	$ok = gasf_crm_graph_attachment_stream( $msg, $att, $tmp, $stream );
 	if ( is_wp_error( $ok ) ) {
 		@unlink( $tmp );
-		gasf_crm_attachment_problem( $ok->get_error_message(), $msg );
+		gasf_crm_attachment_problem( $ok->get_error_message(), $msg, $stream );
 	}
 
 	nocache_headers();
@@ -647,10 +709,10 @@ function gasf_crm_rest_attachment( WP_REST_Request $req ) {
  * Microsoft sign-in wall — showing it to everyone would be sending most of
  * your volunteers to a locked door.
  */
-function gasf_crm_attachment_problem( $message, $graph_message_id = '' ) {
+function gasf_crm_attachment_problem( $message, $graph_message_id = '', $stream = '' ) {
 	$outlook = '';
 	if ( $graph_message_id && current_user_can( 'manage_options' ) ) {
-		$outlook = gasf_crm_graph_message_weblink( $graph_message_id );
+		$outlook = gasf_crm_graph_message_weblink( $graph_message_id, $stream );
 	}
 
 	nocache_headers();
