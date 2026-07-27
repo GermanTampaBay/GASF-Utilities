@@ -356,6 +356,10 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 					'term'  => $t,
 					'depth' => $depth,
 					'geo'   => '' !== (string) get_term_meta( $t->term_id, 'gasf_lat', true ),
+					// Whether picking this one still leaves a more specific
+					// answer available. Only then is it worth telling somebody
+					// they are choosing the broad option.
+					'haskids' => ! empty( $by_parent[ (int) $t->term_id ] ),
 				);
 				$walk( (int) $t->term_id, $depth + 1 );
 			}

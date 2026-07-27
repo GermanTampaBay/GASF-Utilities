@@ -184,7 +184,15 @@ function gasf_crm_photo_page( $state, $invite = null, $notice = '' ) {
 
 		$img = wp_get_attachment_image( $id, 'medium', false, array( 'loading' => 'lazy', 'alt' => '' ) );
 		printf( '<div class="card photo" data-photo="%d"%s>', (int) $id, 0 === $i ? ' data-first="1"' : '' );
-		echo '<div class="thumb">' . $img . '</div>'; // phpcs:ignore WordPress.Security.EscapeOutput -- core-generated markup
+		// Opens full size in a new tab. "Who is in it?" is often unanswerable
+		// from a thumbnail, and a new tab means looking closer never costs
+		// somebody the answers they have already typed.
+		printf(
+			'<a class="thumb" href="%s" target="_blank" rel="noopener" title="%s">%s<span class="zoom">Tap to see it full size</span></a>',
+			esc_url( wp_get_attachment_url( $id ) ),
+			esc_attr__( 'Open full size in a new tab', 'gasf' ),
+			$img // phpcs:ignore WordPress.Security.EscapeOutput -- core-generated markup
+		);
 		echo '<div class="pad fields">';
 		printf( '<h3>Photo %d of %d</h3>', (int) $i + 1, count( $ids ) );
 
@@ -207,41 +215,46 @@ function gasf_crm_photo_page( $state, $invite = null, $notice = '' ) {
 		if ( $place_val ) {
 			printf( '<p class="hint">The camera put this at <strong>%s</strong>. Say which part if you know.</p>', esc_html( $place_val ) );
 		}
+		// A dropdown, not a stack of radios. Eight places times six photos was
+		// forty-eight rows of form; the hierarchy survives as indentation in the
+		// option text, which is what it was there to convey.
 		if ( $tree ) {
-			echo '<div class="places">';
+			printf( '<select class="f-place" name="photo[%d][place]"%s>', (int) $id, $place_val ? ' data-own="1"' : '' );
+			echo '<option value="">— not sure —</option>';
 			foreach ( $tree as $row ) {
 				$term = $row['term'];
 				printf(
-					'<label class="pl d%d"><input type="radio" class="f-place" name="photo[%d][place]" value="%s"%s%s> <span>%s</span>%s</label>',
-					min( 2, (int) $row['depth'] ),
-					(int) $id,
+					'<option value="%s"%s>%s%s%s</option>',
 					esc_attr( $term->name ),
-					checked( $term->name, $place_val, false ),
-					$place_val && $term->name === $place_val ? ' data-own="1"' : '',
+					selected( $term->name, $place_val, false ),
+					esc_html( str_repeat( "\xC2\xA0", 4 * min( 2, (int) $row['depth'] ) ) ),
 					esc_html( $term->name ),
-					$row['depth'] ? '' : ' <em>anywhere here</em>'
+					// Only where it distinguishes something. On the grounds, which
+					// contain rooms, "anywhere" separates it from "the Bierstube".
+					// On England Brothers Park it answered a question nobody asked.
+					! empty( $row['haskids'] ) ? esc_html__( ' (anywhere)', 'gasf' ) : ''
 				);
 			}
-			printf(
-				'<label class="pl d0"><input type="radio" class="f-place" name="photo[%d][place]" value=""%s> <span>Somewhere else &mdash; or not sure</span></label>',
-				(int) $id,
-				checked( '', $place_val, false )
-			);
-			echo '</div>';
+			echo '<option value="__other">Somewhere else…</option>';
+			echo '</select>';
 		}
-		printf( '<input type="text" class="f-placeother" name="photo[%d][place_other]" maxlength="120" placeholder="Somewhere not on the list">', (int) $id );
-		echo '<em>Only if it is not above. Anything typed here wins.</em></div>';
+		printf( '<input type="text" class="f-placeother" name="photo[%d][place_other]" maxlength="120" placeholder="Where was it?" hidden>', (int) $id );
+		echo '</div>';
 
-		// Occasion — a search over the club's calendar, not a blank box.
+		// Occasion — the club's own calendar, searched. Whatever the date
+		// matched goes above the search box, because 98% of the time it is the
+		// answer and should not need looking for.
 		echo '<div class="f"><span>What was the occasion?</span>';
+		echo '<div class="evlist" data-for="' . (int) $id . '"></div>';
 		printf(
-			'<input type="text" class="f-evsearch" placeholder="Start typing an event name…" autocomplete="off" data-for="%d">',
+			'<input type="text" class="f-evsearch" placeholder="%s" autocomplete="off" data-for="%d">',
+			esc_attr__( 'Search for an event', 'gasf' ),
 			(int) $id
 		);
-		echo '<div class="evlist" data-for="' . (int) $id . '"></div>';
+		echo '<button type="button" class="evopt evfree">Not at an event &mdash; let me type it</button>';
+		printf( '<input type="text" class="f-evfree" name="photo[%d][event_other]" maxlength="120" placeholder="What was it?" hidden>', (int) $id );
 		printf( '<input type="hidden" class="f-event" name="photo[%d][event]" value="">', (int) $id );
 		printf( '<input type="hidden" class="f-eventid" name="photo[%d][event_id]" value="">', (int) $id );
-		echo '<em class="evnote">Events on the date above come up first. Nothing matching? Tick <strong>Not a club event</strong> and type it.</em>';
 		echo '</div>';
 
 		echo '<div class="f"><span>Who is in it?</span>';
@@ -319,6 +332,15 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--gasf-accent);out
 .evopt.on{border-color:var(--gasf-accent);background:var(--chip);box-shadow:inset 0 0 0 1px var(--gasf-accent);font-weight:600}
 .evopt.evfree{border-style:dashed;color:var(--muted)}
 .evnote{margin-top:2px}
+.f-evsearch{margin:6px 0}
+select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'><path d='M1 1l5 5 5-5' fill='none' stroke='%236b6b6b' stroke-width='2'/></svg>");
+	background-repeat:no-repeat;background-position:right 12px center;background-size:12px;padding-right:34px}
+/* Tap target for the full-size view — the answer to "who is in it" is rarely
+   visible in a thumbnail. */
+.photo .thumb{position:relative;display:block;text-decoration:none}
+.photo .thumb .zoom{position:absolute;left:0;right:0;bottom:0;background:rgba(0,0,0,.55);color:#fff;
+	font-size:12px;text-align:center;padding:5px 4px}
+.photo .thumb:hover .zoom{background:rgba(0,0,0,.72)}
 /* :has() is unsupported on older Android browsers, where the radio dot alone
    still shows the selection — degraded, never broken. */
 .addp{background:none;border:1px dashed var(--border);color:var(--ink);border-radius:6px;padding:8px 14px;font:inherit;font-size:14px;cursor:pointer}
@@ -391,41 +413,24 @@ function gasf_crm_photo_script() {
 	var EV = (typeof GASF_EVENTS !== 'undefined') ? GASF_EVENTS : [];
 
 	function evRender(box, list, chosen){
-		var id = box.dataset.for;
+		var card = box.closest('.photo');
+		var free = card.querySelector('.evfree');
+
 		box.innerHTML = list.map(function(e){
 			return '<button type="button" class="evopt' + (chosen === e.title ? ' on' : '') +
 				'" data-title="' + esc(e.title) + '" data-id="' + e.id + '">' +
 				esc(e.title) + ' <em>' + esc(e.when) + '</em></button>';
-		}).join('') +
-			'<button type="button" class="evopt evfree" data-title="" data-id="0">Not a club event &mdash; let me type it</button>';
+		}).join('');
 
 		Array.prototype.forEach.call(box.querySelectorAll('.evopt'), function(b){
 			b.onclick = function(){
-				var card = box.closest('.photo');
 				Array.prototype.forEach.call(box.querySelectorAll('.evopt'), function(x){ x.classList.remove('on'); });
+				if (free) { free.classList.remove('on'); }
 				b.classList.add('on');
-
-				var free = card.querySelector('.f-evfree');
-				if (b.classList.contains('evfree')) {
-					if (!free) {
-						free = document.createElement('input');
-						free.type = 'text'; free.className = 'f-evfree'; free.maxLength = 120;
-						free.placeholder = 'What was it?';
-						b.parentNode.parentNode.insertBefore(free, b.parentNode.nextSibling);
-						free.oninput = function(){
-							card.querySelector('.f-event').value = free.value;
-							card.querySelector('.f-eventid').value = '';
-							touch(card, 'event');
-						};
-					}
-					free.hidden = false; free.focus();
-					card.querySelector('.f-event').value = free.value;
-					card.querySelector('.f-eventid').value = '';
-				} else {
-					if (free) { free.hidden = true; }
-					card.querySelector('.f-event').value = b.dataset.title;
-					card.querySelector('.f-eventid').value = b.dataset.id;
-				}
+				card.querySelector('.f-evfree').hidden = true;
+				card.querySelector('.f-evfree').value = '';
+				card.querySelector('.f-event').value = b.dataset.title;
+				card.querySelector('.f-eventid').value = b.dataset.id;
 				touch(card, 'event');
 			};
 		});
@@ -462,9 +467,10 @@ function gasf_crm_photo_script() {
 	function inherit(){
 		if (!first || cards.length < 2) { return; }
 		var d = first.querySelector('.f-date');
-		var p = first.querySelector('.f-place:checked');
+		var p = first.querySelector('.f-place');
 		var e = first.querySelector('.f-event');
 		var i = first.querySelector('.f-eventid');
+		var o = first.querySelector('.f-placeother');
 
 		cards.slice(1).forEach(function(c){
 			// A value the photo itself carried is evidence about THIS picture and
@@ -472,17 +478,22 @@ function gasf_crm_photo_script() {
 			var cd = c.querySelector('.f-date');
 			if (cd && !cd.dataset.own && !touched(c, 'date') && d) { cd.value = d.value; }
 
-			if (p && !touched(c, 'place')) {
-				var own = c.querySelector('.f-place[data-own]');
-				if (!own) {
-					var match = c.querySelector('.f-place[value="' + (window.CSS && CSS.escape ? CSS.escape(p.value) : p.value) + '"]');
-					if (match) { match.checked = true; }
+			var cp = c.querySelector('.f-place');
+			if (p && cp && !cp.dataset.own && !touched(c, 'place')) {
+				cp.value = p.value;
+				var co = c.querySelector('.f-placeother');
+				if (co) {
+					co.hidden = ('__other' !== p.value);
+					if (o) { co.value = o.value; }
 				}
 			}
 
 			if (e && !touched(c, 'event')) {
 				c.querySelector('.f-event').value = e.value;
 				c.querySelector('.f-eventid').value = i ? i.value : '';
+				var cf = c.querySelector('.f-evfree');
+				var ff = first.querySelector('.f-evfree');
+				if (cf && ff) { cf.hidden = ff.hidden; cf.value = ff.value; }
 				evFor(c);
 			}
 		});
@@ -491,6 +502,10 @@ function gasf_crm_photo_script() {
 	cards.forEach(function(card){
 		var search = card.querySelector('.f-evsearch');
 		var date   = card.querySelector('.f-date');
+		var place  = card.querySelector('.f-place');
+		var other  = card.querySelector('.f-placeother');
+		var free   = card.querySelector('.evfree');
+		var freein = card.querySelector('.f-evfree');
 
 		if (search) {
 			var t = null;
@@ -503,9 +518,33 @@ function gasf_crm_photo_script() {
 				if (card === first) { inherit(); }
 			};
 		}
-		Array.prototype.forEach.call(card.querySelectorAll('.f-place'), function(r){
-			r.onchange = function(){ touch(card, 'place'); if (card === first) { inherit(); } };
-		});
+		if (place) {
+			place.onchange = function(){
+				touch(card, 'place');
+				// The free-text box only exists when it is being used.
+				if (other) {
+					other.hidden = ('__other' !== place.value);
+					if (!other.hidden) { other.focus(); }
+				}
+				if (card === first) { inherit(); }
+			};
+		}
+		if (free && freein) {
+			free.onclick = function(){
+				Array.prototype.forEach.call(card.querySelectorAll('.evlist .evopt'), function(x){ x.classList.remove('on'); });
+				free.classList.add('on');
+				freein.hidden = false;
+				freein.focus();
+				card.querySelector('.f-event').value = freein.value;
+				card.querySelector('.f-eventid').value = '';
+				touch(card, 'event');
+			};
+			freein.oninput = function(){
+				card.querySelector('.f-event').value = freein.value;
+				card.querySelector('.f-eventid').value = '';
+				touch(card, 'event');
+			};
+		}
 		evFor(card);
 	});
 

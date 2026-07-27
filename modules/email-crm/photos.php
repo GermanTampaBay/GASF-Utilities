@@ -353,12 +353,17 @@ function gasf_crm_photo_save_pending( array $invite ) {
 			: substr( $caption, 0, GASF_CRM_PHOTO_CAPTION_MAX );
 
 		// A typed answer beats a picked one: somebody who bothered to write in
-		// the "not on the list" box has told us the list was wrong.
+		// the "somewhere else" box has told us the list was wrong. __other is
+		// the sentinel the dropdown uses to reveal that box and is never itself
+		// a place.
 		$place = sanitize_text_field( (string) ( $row['place'] ?? '' ) );
 		$other = sanitize_text_field( (string) ( $row['place_other'] ?? '' ) );
+		if ( '__other' === $place ) { $place = ''; }
 		if ( '' !== $other ) { $place = $other; }
 
 		$event = sanitize_text_field( (string) ( $row['event'] ?? '' ) );
+		$ev_other = sanitize_text_field( (string) ( $row['event_other'] ?? '' ) );
+		if ( '' !== $ev_other ) { $event = $ev_other; }
 		// Only trust an event ID that names a real published event, and only
 		// when the title still matches it. A stale or doctored pair must not
 		// attach a photo to an event it was never at.
