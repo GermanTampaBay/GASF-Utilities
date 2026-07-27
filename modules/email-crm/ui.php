@@ -56,12 +56,20 @@ function gasf_crm_render_app() {
 
 	$status = gasf_crm_user_status();
 
+	// The whole page's colour scheme hangs off a data-stream attribute (see the
+	// palette block in gasf_crm_styles). Somebody who holds exactly one mailbox
+	// gets it themed to theirs from the first paint rather than flashing the
+	// wrong colour and correcting itself; with several, the switcher sets it,
+	// and '' means "all", which wears the club's own gold.
+	$my_streams  = gasf_crm_user_streams();
+	$body_stream = ( 1 === count( $my_streams ) ) ? (string) $my_streams[0] : '';
+
 	echo '<!DOCTYPE html><html ' . get_language_attributes() . '><head><meta charset="' . esc_attr( get_bloginfo( 'charset' ) ) . '">';
 	echo '<meta name="viewport" content="width=device-width, initial-scale=1">';
 	echo '<meta name="robots" content="noindex, nofollow">';
 	echo '<title>Email — ' . esc_html( get_bloginfo( 'name' ) ) . '</title>';
 	gasf_crm_styles();
-	echo '</head><body>';
+	echo '</head><body data-stream="' . esc_attr( $body_stream ) . '">';
 
 	if ( 'anonymous' === $status ) {
 		gasf_crm_render_signin();
@@ -78,110 +86,202 @@ function gasf_crm_styles() {
 	?>
 <style>
 *,*::before,*::after{box-sizing:border-box}
-body{margin:0;font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#1d2327;background:#f0f0f1}
-a{color:#2b5c9b}
+/* Design tokens — the same names and values the rest of germantampabay.com
+   uses (GASF Events' gasf-events.css defines them for the theme side).
+
+   Deliberately NOT the theme's stylesheet: pulling that in would drag the site
+   header, hero, menu and cookie banner into a tool whose entire purpose is an
+   uncluttered view of an email. Tokens give us the club's colours without its
+   furniture — and an admin who overrides --gasf-* in the theme moves this page
+   along with everything else, which is what "the site's CSS" should mean. */
+:root{
+	--gasf-accent:#b8860b;
+	--gasf-text:#1a1a1a;
+	--gasf-muted:#6b6b6b;
+	--gasf-border:#c9c4ba;
+	--gasf-surface:#fff;
+	--gasf-chip:#f3efe6;
+	--gasf-radius:8px;
+	--gasf-dark:#1a1a1a;
+	--gasf-page:#f7f5f0;
+	--ok:#2c7a3f;
+	--danger:#b32d2e;
+	--hair:#ece9e2;
+}
+
+/* Per-stream palette.
+
+   One block of rules, re-pointed by [data-stream] — an attribute that already
+   sits on the switcher buttons, and which we now also stamp on <body>, on every
+   list row and on the reading pane. Each subtree therefore colours itself from
+   the stream it actually belongs to, rather than from one global "current
+   stream" that goes stale the moment you open a photo thread from the All list.
+
+   General wears the club gold. Photo submissions wear the Bayern red/blue
+   already used by the Bundesliga table and /fcbmc/ — a palette the club owns,
+   rather than a third one invented here.
+
+   --s-accent is decoration (rules, edges, dots); --s-ink is anything carrying
+   text. They differ for gold because #b8860b on white is 3.3:1, short of the
+   4.5:1 body text needs; #8a6508 is the same hue at 5.3:1. Bayern blue is
+   10.6:1 and needs no such split. */
+[data-stream]{ /* unknown / future stream: neutral, never borrowed from a sibling */
+	--s-accent:var(--gasf-muted);--s-ink:#4a473f;--s-wash:#faf9f7;--s-tint:#eeece7;
+}
+[data-stream=""],[data-stream="general"]{
+	--s-accent:var(--gasf-accent);--s-ink:#8a6508;--s-wash:#fdfaf1;--s-tint:#f6efdd;
+}
+[data-stream="photos"]{
+	--s-accent:#0033a0;--s-ink:#0033a0;--s-wash:#f5f8fd;--s-tint:#e6edf9;--s-mark:#dc052d;
+}
+
+body{margin:0;font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:var(--gasf-text);background:var(--gasf-page)}
+a{color:var(--s-ink)}
 .wrap{max-width:1200px;margin:0 auto;padding:0 16px}
-header.bar{background:#1d2327;color:#fff;padding:12px 0}
+/* The bar carries the active mailbox's colour along its bottom edge, so the
+   page says which inbox you are in before you have read a word of it. */
+header.bar{background:var(--gasf-dark);color:#fff;padding:12px 0;border-bottom:3px solid var(--s-accent)}
 header.bar .wrap{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
 header.bar h1{font-size:16px;margin:0;font-weight:600}
-header.bar a{color:#c3c4c7;text-decoration:none;font-size:13px}
-header.bar .hbtn{background:#2271b1;color:#fff;border:0;padding:5px 12px;border-radius:4px;cursor:pointer;font:inherit;font-size:13px;margin-right:10px}
-.center{max-width:420px;margin:12vh auto;background:#fff;padding:32px;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.13);text-align:center}
+header.bar h1 .box{font-weight:400;opacity:.75}
+header.bar a{color:#d9d4c8;text-decoration:none;font-size:13px}
+header.bar .hbtn{background:rgba(255,255,255,.14);color:#fff;border:1px solid rgba(255,255,255,.26);padding:5px 12px;border-radius:4px;cursor:pointer;font:inherit;font-size:13px;margin-right:8px}
+header.bar .hbtn:hover{background:rgba(255,255,255,.26)}
+.center{max-width:420px;margin:12vh auto;background:var(--gasf-surface);padding:32px;border-radius:var(--gasf-radius);box-shadow:0 1px 3px rgba(0,0,0,.13);text-align:center;border-top:4px solid var(--gasf-accent)}
 .center h1{font-size:20px;margin:0 0 8px}
-.center p{color:#50575e;margin:0 0 24px}
-.btn{display:inline-block;padding:9px 16px;border:1px solid #2271b1;background:#2271b1;color:#fff;border-radius:4px;cursor:pointer;font-size:14px;text-decoration:none;font-family:inherit}
-.btn:hover{background:#135e96}
-.btn[disabled]{opacity:.5;cursor:default}
-.btn.sec{background:#f6f7f7;color:#2271b1}
-.btn.sec:hover{background:#f0f0f1}
-.btn.warn{background:#fff;color:#b32d2e;border-color:#b32d2e}
-.btn.warn:hover{background:#fcf0f1}
+.center p{color:var(--gasf-muted);margin:0 0 24px}
+.btn{display:inline-block;padding:9px 16px;border:1px solid var(--s-ink);background:var(--s-ink);color:#fff;border-radius:5px;cursor:pointer;font-size:14px;text-decoration:none;font-family:inherit}
+/* brightness() rather than a second hex per stream — one rule that stays
+   correct whatever colour a future stream turns out to be. */
+.btn:hover{filter:brightness(.86)}
+.btn[disabled]{opacity:.5;cursor:default;filter:none}
+.btn.sec{background:var(--gasf-surface);color:var(--s-ink);border-color:var(--gasf-border)}
+.btn.sec:hover{background:var(--gasf-chip);filter:none}
+.btn.warn{background:var(--gasf-surface);color:var(--danger);border-color:var(--danger)}
+.btn.warn:hover{background:#fcf0f1;filter:none}
 .btn.block{display:block;width:100%;margin:0 0 10px;padding:11px}
 .layout{display:grid;grid-template-columns:340px 1fr;gap:16px;padding:16px 0;align-items:start}
 @media(max-width:820px){.layout{grid-template-columns:1fr}}
-.card{background:#fff;border:1px solid #dcdcde;border-radius:6px}
+.card{background:var(--gasf-surface);border:1px solid var(--gasf-border);border-radius:var(--gasf-radius);overflow:hidden}
 .list{max-height:78vh;overflow:auto}
-.tabs{display:flex;border-bottom:1px solid #dcdcde}
-.tabs button{flex:1;padding:10px 6px;border:0;background:none;cursor:pointer;font:inherit;font-size:13px;color:#50575e;border-bottom:2px solid transparent}
-.tabs button.on{color:#2271b1;border-bottom-color:#2271b1;font-weight:600}
-.tabs.streams{background:#f6f7f7}
-.tabs.streams button{font-size:12px;padding:8px 6px}
-.streamtag{display:inline-block;font-size:10px;padding:1px 6px;border-radius:9px;background:#e8eef5;color:#2271b1;margin-left:6px;vertical-align:middle}
-.item{padding:12px 14px;border-bottom:1px solid #f0f0f1;cursor:pointer}
-.item:hover{background:#f6f7f7}
-.item.on{background:#f0f6fc;border-left:3px solid #2271b1;padding-left:11px}
-.item .who{font-weight:600;font-size:13px;display:flex;justify-content:space-between;gap:8px}
-.item .subj{font-size:13px;margin:2px 0 0}
-.item .meta{font-size:11px;color:#787c82;margin-top:4px}
+
+/* Two rows of near-identical tabs was the main reason this page read as a wall
+   of grey. They do different jobs, so they now have different shapes: the top
+   row is a segmented switcher for WHICH MAILBOX, coloured per stream; the row
+   below it is quiet underlined tabs for WHICH LIST. */
+.tabs.streams{display:flex;gap:4px;padding:6px;background:var(--gasf-chip);border-bottom:1px solid var(--gasf-border)}
+.tabs.streams button{flex:1;display:flex;align-items:center;justify-content:center;gap:6px;padding:7px 8px;border:0;border-radius:5px;background:none;cursor:pointer;font:inherit;font-size:12px;font-weight:600;line-height:1.2;color:var(--gasf-muted)}
+/* The swatch reads its colour from the button's OWN data-stream, so the legend
+   and the list can never disagree about which colour means which inbox. */
+.tabs.streams button::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--s-accent);flex:none}
+.tabs.streams button[data-stream=""]::before{display:none} /* "All" is not a colour */
+.tabs.streams button:hover{background:rgba(0,0,0,.05)}
+.tabs.streams button.on{background:var(--s-ink);color:#fff}
+.tabs.streams button.on::before{background:#fff}
+
+.tabs:not(.streams){display:flex;border-bottom:1px solid var(--gasf-border)}
+.tabs:not(.streams) button{flex:1;padding:9px 6px;border:0;background:none;cursor:pointer;font:inherit;font-size:13px;color:var(--gasf-muted);border-bottom:2px solid transparent}
+.tabs:not(.streams) button:hover{color:var(--gasf-text)}
+.tabs:not(.streams) button.on{color:var(--s-ink);border-bottom-color:var(--s-accent);font-weight:600}
+
+.streamtag{display:inline-block;font-size:10px;font-weight:600;letter-spacing:.02em;padding:1px 7px;border-radius:9px;background:var(--s-tint);color:var(--s-ink);margin-left:6px;vertical-align:middle}
+/* Every row wears its own mailbox's colour on the left edge. In the All view
+   that is the point: which inbox a message came from is legible at a glance,
+   without stopping to read the tag on each one. */
+.item{padding:12px 14px 12px 13px;border-bottom:1px solid var(--hair);border-left:3px solid var(--s-accent);cursor:pointer;background:var(--gasf-surface)}
+.item:last-child{border-bottom:0}
+.item:hover{background:var(--s-wash)}
+/* Selection changes colour and weight, never geometry — a border that grows on
+   click shifts every row below it. */
+.item.on{background:var(--s-wash);box-shadow:inset 0 0 0 1px var(--s-tint)}
+.item .who{font-weight:600;font-size:13px;display:flex;justify-content:space-between;gap:8px;color:var(--gasf-text)}
+.item .subj{font-size:13px;margin:2px 0 0;color:#3c3a35}
+.item .meta{font-size:11px;color:var(--gasf-muted);margin-top:4px;font-weight:400}
 .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#d63638;margin-right:6px;vertical-align:middle}
 .pane{padding:20px;min-height:300px}
-.msg{border-bottom:1px solid #f0f0f1;padding:0 0 16px;margin:0 0 16px}
+/* The reading pane takes the colour of the thread's own mailbox, whichever list
+   you reached it from — and so answers "which address is this about to send
+   from?", which matters more here than anywhere else on the page. */
+#pane{border-top:3px solid var(--s-accent)}
+.frombox{font-size:12px;color:var(--gasf-muted);margin:-10px 0 16px}
+.frombox code{background:var(--s-tint);color:var(--s-ink);padding:1px 6px;border-radius:3px;font-size:12px;user-select:all}
+.msg{border-bottom:1px solid var(--hair);padding:0 0 16px;margin:0 0 16px}
 .msg:last-of-type{border-bottom:0}
-.msg .hd{font-size:12px;color:#787c82;margin-bottom:8px}
-.msg .hd b{color:#1d2327;font-size:13px}
+.msg .hd{font-size:12px;color:var(--gasf-muted);margin-bottom:8px}
+.msg .hd b{color:var(--gasf-text);font-size:13px}
 /* Revealed on hover, but it is real selectable text the whole time — opacity
    keeps it in the layout so nothing shifts, and the reveal is triggered by the
    whole message block so it stays visible while you drag across it to select. */
 .msg .addr{opacity:0;transition:opacity .12s;font-weight:400}
 .msg:hover .addr,.msg .addr:focus-within{opacity:1}
-.msg .addr code{background:#f0f0f1;padding:1px 5px;border-radius:3px;font-size:12px;user-select:all}
-.copy{border:1px solid #dcdcde;background:#fff;border-radius:3px;cursor:pointer;font:inherit;font-size:11px;padding:1px 6px;margin-left:4px;color:#2271b1}
-.copy:hover{background:#f0f6fc}
-.copy.done{color:#2c7a3f;border-color:#2c7a3f}
+.msg .addr code{background:var(--gasf-chip);padding:1px 5px;border-radius:3px;font-size:12px;user-select:all}
+.copy{border:1px solid var(--gasf-border);background:var(--gasf-surface);border-radius:3px;cursor:pointer;font:inherit;font-size:11px;padding:1px 6px;margin-left:4px;color:var(--s-ink)}
+.copy:hover{background:var(--s-wash)}
+.copy.done{color:var(--ok);border-color:var(--ok)}
 /* Touch devices have no hover at all — never hide it there. */
 @media(hover:none){.msg .addr{opacity:1}}
-.msg.out{background:#f6faf6;border-left:3px solid #2c7a3f;padding:12px;border-radius:4px}
+/* Outbound stays green in every stream: this marks a DIRECTION, not a mailbox,
+   and re-colouring it per stream would collide with the one meaning readers
+   already have for it. */
+.msg.out{background:#f4f8f4;border-left:3px solid var(--ok);padding:12px;border-radius:4px}
 .msg .body{overflow-wrap:anywhere}
 .msg .body table{max-width:100%;border-collapse:collapse}
 .msg .body img{max-width:100%;height:auto}
-textarea{width:100%;min-height:150px;padding:10px;border:1px solid #8c8f94;border-radius:4px;font:inherit;resize:vertical}
-.ed{border:1px solid #8c8f94;border-radius:4px;overflow:hidden;background:#fff}
-.edbar{display:flex;flex-wrap:wrap;align-items:center;gap:2px;padding:6px;border-bottom:1px solid #dcdcde;background:#f6f7f7}
-.edbar button{min-width:32px;height:28px;padding:0 9px;border:1px solid transparent;background:none;border-radius:3px;cursor:pointer;font:inherit;font-size:13px;color:#1d2327;line-height:1}
-.edbar button:hover{background:#fff;border-color:#dcdcde}
-.edbar .sep{width:1px;height:18px;background:#dcdcde;margin:0 5px}
+textarea{width:100%;min-height:150px;padding:10px;border:1px solid var(--gasf-border);border-radius:5px;font:inherit;resize:vertical;background:var(--gasf-surface);color:var(--gasf-text)}
+.ed{border:1px solid var(--gasf-border);border-radius:5px;overflow:hidden;background:var(--gasf-surface)}
+.edbar{display:flex;flex-wrap:wrap;align-items:center;gap:2px;padding:6px;border-bottom:1px solid var(--gasf-border);background:var(--gasf-chip)}
+.edbar button{min-width:32px;height:28px;padding:0 9px;border:1px solid transparent;background:none;border-radius:3px;cursor:pointer;font:inherit;font-size:13px;color:var(--gasf-text);line-height:1}
+.edbar button:hover{background:var(--gasf-surface);border-color:var(--gasf-border)}
+.edbar .sep{width:1px;height:18px;background:var(--gasf-border);margin:0 5px}
 .edbody{min-height:170px;max-height:50vh;overflow:auto;padding:10px;outline:none;font:inherit;overflow-wrap:anywhere}
-.edbody:empty::before{content:attr(data-ph);color:#8c8f94}
-.edbody:focus{box-shadow:inset 0 0 0 1px #2271b1}
+.edbody:empty::before{content:attr(data-ph);color:#9a958a}
+.edbody:focus{box-shadow:inset 0 0 0 2px var(--s-accent)}
 .edbody p{margin:0 0 10px}
 .edbody ul,.edbody ol{margin:0 0 10px;padding-left:24px}
 .actions{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
-.note{padding:10px 12px;border-radius:4px;font-size:13px;margin:12px 0}
-.note.warn{background:#fcf9e8;border-left:4px solid #dba617}
+.note{padding:10px 12px;border-radius:5px;font-size:13px;margin:12px 0}
+.note.warn{background:#fdf8e7;border-left:4px solid #dba617}
 .note.err{background:#fcf0f1;border-left:4px solid #d63638}
-.note.ok{background:#f0f6fc;border-left:4px solid #72aee6}
-.muted{color:#787c82;font-size:13px}
-.att{display:inline-block;margin:4px 8px 0 0;padding:4px 10px;background:#f0f0f1;border-radius:3px;font-size:12px;text-decoration:none;color:#2271b1}
-.att:hover{background:#e5e5e6}
-.att--noload{color:#787c82;font-style:italic}
+/* Green, not blue: "this is answered" is a settled-good state, and blue is now
+   a stream colour rather than a status one. */
+.note.ok{background:#f0f6ec;border-left:4px solid var(--ok)}
+.muted{color:var(--gasf-muted);font-size:13px}
+.att{display:inline-block;margin:4px 8px 0 0;padding:4px 10px;background:var(--gasf-chip);border:1px solid var(--gasf-border);border-radius:4px;font-size:12px;text-decoration:none;color:var(--s-ink)}
+.att:hover{background:var(--s-tint)}
+.att--noload{color:var(--gasf-muted);font-style:italic}
 .spin{opacity:.6}
-.hist{margin-top:28px;border-top:1px solid #dcdcde;padding-top:14px}
-.hist h3{font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:#787c82;margin:0 0 10px}
+.hist{margin-top:28px;border-top:1px solid var(--gasf-border);padding-top:14px}
+.hist h3{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--gasf-muted);margin:0 0 10px}
 .hist ul{list-style:none;margin:0;padding:0}
-.hist li{font-size:13px;padding:5px 0 5px 16px;border-left:2px solid #dcdcde;color:#50575e}
-.hist li b{color:#1d2327}
-.hist li .t{color:#787c82;font-size:12px}
-.help{background:#fff;border:1px solid #dcdcde;border-radius:6px;padding:20px 24px;margin:16px 0}
+.hist li{font-size:13px;padding:5px 0 5px 16px;border-left:2px solid var(--gasf-border);color:#4a473f}
+.hist li b{color:var(--gasf-text)}
+.hist li .t{color:var(--gasf-muted);font-size:12px}
+/* Help wears the club gold in every stream — it is about the whole page, not
+   about whichever inbox happens to be selected behind it. */
+.help{background:var(--gasf-surface);border:1px solid var(--gasf-border);border-top:4px solid var(--gasf-accent);border-radius:var(--gasf-radius);padding:20px 24px;margin:16px 0}
 .help h2{font-size:17px;margin:0 0 4px}
 .help h3{font-size:14px;margin:18px 0 4px}
-.help p,.help li{font-size:14px;color:#3c434a}
+.help p,.help li{font-size:14px;color:#3c3a35}
 .help ul{margin:4px 0;padding-left:20px}
 .help .close{float:right}
-.fwd{border:1px solid #dcdcde;border-radius:6px;padding:14px;margin-top:12px;background:#fbfbfc}
+.help .key{display:flex;flex-wrap:wrap;gap:16px;margin:8px 0 0;padding:0;list-style:none}
+.help .key li{display:flex;align-items:center;gap:7px}
+.help .key i{width:11px;height:11px;border-radius:3px;background:var(--s-accent);flex:none}
+.fwd{border:1px solid var(--gasf-border);border-radius:5px;padding:14px;margin-top:12px;background:var(--s-wash)}
 .fwd label{display:block;font-size:13px;font-weight:600;margin-bottom:12px}
-.fwd input[type=text]{width:100%;max-width:440px;padding:8px;border:1px solid #8c8f94;border-radius:4px;font:inherit;font-weight:400;margin-top:3px}
+.fwd input[type=text]{width:100%;max-width:440px;padding:8px;border:1px solid var(--gasf-border);border-radius:4px;font:inherit;font-weight:400;margin-top:3px}
 .fwd textarea{min-height:70px;font-weight:400;margin-top:3px}
 .ignpicks{display:flex;flex-wrap:wrap;gap:8px}
 .ignpicks .btn{margin:0}
-.chip{display:inline-block;background:#f0f6fc;border:1px solid #c5d9ed;border-radius:14px;padding:3px 6px 3px 11px;font-size:12px;margin:4px 6px 0 0}
-.chip button{border:0;background:none;cursor:pointer;font:inherit;font-size:14px;color:#b32d2e;padding:0 5px;line-height:1}
-.lib{margin-top:14px;border-top:1px solid #dcdcde;padding-top:12px}
-.lib h4{margin:0 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:#787c82}
-.lib .row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:5px 0;font-size:13px;border-bottom:1px solid #f0f0f1}
+.chip{display:inline-block;background:var(--s-tint);border:1px solid var(--gasf-border);border-radius:14px;padding:3px 6px 3px 11px;font-size:12px;margin:4px 6px 0 0;color:var(--s-ink)}
+.chip button{border:0;background:none;cursor:pointer;font:inherit;font-size:14px;color:var(--danger);padding:0 5px;line-height:1}
+.lib{margin-top:14px;border-top:1px solid var(--gasf-border);padding-top:12px}
+.lib h4{margin:0 0 8px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--gasf-muted)}
+.lib .row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:5px 0;font-size:13px;border-bottom:1px solid var(--hair)}
 .lib .row:last-child{border-bottom:0}
-.badge{display:inline-block;font-size:11px;padding:1px 7px;border-radius:9px;background:#f0f0f1;color:#50575e;vertical-align:middle}
-.badge.ig{background:#fcf0f1;color:#b32d2e}
-.badge.an{background:#edf7ed;color:#2c7a3f}
+.badge{display:inline-block;font-size:11px;padding:1px 7px;border-radius:9px;background:var(--gasf-chip);color:var(--gasf-muted);vertical-align:middle}
+.badge.ig{background:#fcf0f1;color:var(--danger)}
+.badge.an{background:#edf4ea;color:var(--ok)}
 </style>
 	<?php
 }
@@ -230,11 +330,34 @@ function gasf_crm_render_pending( $status ) {
  * draft is a starting point rather than an answer.
  */
 function gasf_crm_render_help() {
+	// Name the mailboxes THIS reader actually holds. The old text hardcoded
+	// info@, which for a photos-only volunteer described an inbox they have no
+	// access to and cannot act on — help that confidently describes the wrong
+	// thing is worse than no help.
+	$my_streams = gasf_crm_user_streams();
+	$boxes      = array();
+	foreach ( $my_streams as $k ) {
+		$boxes[] = '<strong>' . esc_html( gasf_crm_stream_mailbox( $k ) ) . '</strong>';
+	}
+	// wp_sprintf's %l is the "a, b and c" list joiner.
+	$box_list = $boxes ? wp_sprintf( '%l', $boxes ) : '<strong>the club address</strong>';
 	?>
 <div class="wrap"><div class="help" id="help" style="display:none">
 	<button class="btn sec close" onclick="document.getElementById('help').style.display='none'">Close</button>
 	<h2>What this page is</h2>
-	<p>This is the club's shared mailbox. Anything sent to <strong>info@germantampabay.com</strong> — the address on our website — turns up here, and any of us can answer it. Replies go out from the club address with your name at the bottom, so the person who wrote in sees a reply from the club, not from your personal email.</p>
+	<?php /* phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- $box_list is built from esc_html'd parts above. */ ?>
+	<p>This is the club's shared mailbox. Anything sent to <?php echo $box_list; ?> turns up here, and any of us can answer it. Replies go out from the club address &mdash; the same one the message arrived at &mdash; with your name at the bottom, so the person who wrote in sees a reply from the club, not from your personal email.</p>
+
+	<?php if ( count( $my_streams ) > 1 ) : ?>
+	<h3>You can see more than one mailbox</h3>
+	<p>The buttons at the very top of the list switch between them, and <strong>All</strong> shows everything together. Each mailbox has its own colour, shown down the left-hand edge of every message, so you can tell them apart at a glance without stopping to read the label:</p>
+	<ul class="key">
+		<?php foreach ( $my_streams as $k ) : ?>
+		<li data-stream="<?php echo esc_attr( $k ); ?>"><i></i> <span><strong><?php echo esc_html( gasf_crm_stream_label( $k ) ); ?></strong> &mdash; <?php echo esc_html( gasf_crm_stream_mailbox( $k ) ); ?></span></li>
+		<?php endforeach; ?>
+	</ul>
+	<p>A reply always goes back out from the address the message came to. Answer a photo submission and it leaves from the photo address, not the general one &mdash; you do not have to think about it, and the top of the message tells you which it will be.</p>
+	<?php endif; ?>
 
 	<h3>The three lists</h3>
 	<ul>
@@ -290,10 +413,17 @@ function gasf_crm_render_help() {
 }
 
 function gasf_crm_render_inbox() {
-	$user = wp_get_current_user();
+	$user       = wp_get_current_user();
+	$my_streams = gasf_crm_user_streams();
+	// This used to be hardcoded to info@. With a second mailbox that is simply
+	// wrong for a photos-only volunteer — it names an address they cannot see
+	// and have no business knowing about. One stream: name theirs. Several: the
+	// switcher fills it in, and "All" leaves it blank because no single address
+	// applies to a mixed list.
+	$one_box = ( 1 === count( $my_streams ) ) ? gasf_crm_stream_mailbox( $my_streams[0] ) : '';
 	?>
 <header class="bar"><div class="wrap">
-	<h1>Club inbox &mdash; info@germantampabay.com</h1>
+	<h1>Club inbox<span class="box" id="hbox"><?php echo $one_box ? ' &mdash; ' . esc_html( $one_box ) : ''; ?></span></h1>
 	<div>
 		<button class="hbtn" id="checkmail">Check for new mail</button>
 		<button class="hbtn" onclick="var h=document.getElementById('help');h.style.display=h.style.display==='none'?'block':'none';window.scrollTo(0,0)">Help</button>
@@ -403,6 +533,13 @@ function gasf_crm_render_inbox() {
 		return isNaN(d) ? s : d.toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'});
 	}
 
+	// Clearing the pane also drops its stream colour, so the empty state follows
+	// the page instead of keeping the tint of whatever was last open.
+	function clearPane(){
+		pane.removeAttribute('data-stream');
+		pane.innerHTML = '<p class="muted">Select a message on the left.</p>';
+	}
+
 	function loadList(){
 		return api('/threads?status=' + status + (stream ? '&stream=' + encodeURIComponent(stream) : '')).then(function(rows){
 			// If the thread on screen has grown a newer message, say so rather
@@ -428,7 +565,10 @@ function gasf_crm_render_inbox() {
 						if (STREAMS[s].key === t.stream) { tag = '<span class="streamtag">' + esc(STREAMS[s].label) + '</span>'; }
 					}
 				}
-				return '<div class="item' + (current === t.id ? ' on' : '') + '" data-id="' + t.id + '">' +
+				// data-stream drives the row's colour: the palette block keys off
+				// it, so the left edge and the tag cannot drift apart.
+				return '<div class="item' + (current === t.id ? ' on' : '') + '" data-id="' + t.id +
+					'" data-stream="' + esc(t.stream) + '">' +
 					'<div class="who"><span>' + (t.status === 'new' ? '<span class="dot"></span>' : '') +
 					esc(t.from) + '</span><span class="meta">' + esc(when(t.last)) + '</span></div>' +
 					'<div class="subj">' + esc(t.subject || '(no subject)') + tag + '</div>' + lock + '</div>';
@@ -474,9 +614,20 @@ function gasf_crm_render_inbox() {
 		attached = []; // attachments belong to the reply being written, not to the app
 		pane.innerHTML = '<p class="muted">Loading…</p>';
 		api('/threads/' + id).then(function(t){
+			// The pane takes the THREAD's mailbox colour, whichever list it was
+			// opened from: in the All view the surrounding chrome is the club's
+			// gold, but this particular message may not be a general one.
+			pane.setAttribute('data-stream', t.stream || '');
 			var badge = t.status === 'ignored' ? ' <span class="badge ig">Ignored</span>'
 				: (t.status === 'addressed' ? ' <span class="badge an">Answered</span>' : '');
 			var html = '<h2 style="margin:0 0 16px;font-size:18px">' + esc(t.subject || '(no subject)') + badge + '</h2>';
+
+			// Which address the reply will leave from. Only worth saying to
+			// somebody who holds more than one mailbox — otherwise it never
+			// varies and is just another line to read past.
+			if(STREAMS.length > 1 && t.mailbox){
+				html += '<div class="frombox">Replies go out from <code>' + esc(t.mailbox) + '</code></div>';
+			}
 
 			if(!t.can_reply && t.locked_by){
 				html += '<div class="note warn">' + esc(t.locked_by) + ' is replying to this. You can read it, but not send.</div>';
@@ -959,7 +1110,7 @@ function gasf_crm_render_inbox() {
 		b.onclick = function(){
 			Array.prototype.forEach.call(document.querySelectorAll('.tabs:not(.streams) button'), function(x){ x.classList.remove('on'); });
 			b.classList.add('on'); status = b.dataset.status; current = null; currentStamp = null;
-			pane.innerHTML = '<p class="muted">Select a message on the left.</p>';
+			clearPane();
 			loadList();
 		};
 	});
@@ -967,7 +1118,14 @@ function gasf_crm_render_inbox() {
 		b.onclick = function(){
 			Array.prototype.forEach.call(document.querySelectorAll('.tabs.streams button'), function(x){ x.classList.remove('on'); });
 			b.classList.add('on'); stream = b.dataset.stream || ''; current = null; currentStamp = null;
-			pane.innerHTML = '<p class="muted">Select a message on the left.</p>';
+			// Re-theme the page to the chosen mailbox and name it in the header.
+			// '' (All) falls back to the club's own colours and no address, since
+			// no single one describes a mixed list.
+			document.body.setAttribute('data-stream', stream);
+			var hb = document.getElementById('hbox'), box = '';
+			for (var i = 0; i < STREAMS.length; i++) { if (STREAMS[i].key === stream) { box = STREAMS[i].mailbox; } }
+			if (hb) { hb.textContent = box ? ' — ' + box : ''; }
+			clearPane();
 			loadList();
 		};
 	});

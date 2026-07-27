@@ -609,10 +609,13 @@ function gasf_crm_attachment_list( $graph_message_id, $stream = 'general' ) {
 			// query-param form is REST cookie-auth's sanctioned equivalent. The
 			// nonce is minted fresh each time the thread is opened and is
 			// useless without the session cookie it is bound to.
+			// No mailbox or stream in the URL on purpose: the download route looks
+			// that up from our own record of the message. A stream parameter here
+			// would read as authoritative to the next person and invite them to
+			// start trusting it, which is exactly the hole the lookup closes.
 			'url'  => add_query_arg( array(
 				'msg'      => rawurlencode( $graph_message_id ),
 				'att'      => rawurlencode( (string) ( $a['id'] ?? '' ) ),
-			'stream'   => $stream,
 				'_wpnonce' => wp_create_nonce( 'wp_rest' ),
 			), rest_url( 'gasf/v1/crm/attachment' ) ),
 		);
