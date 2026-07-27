@@ -407,6 +407,49 @@ function gasf_crm_admin_tab() {
 	}
 	?>
 
+	<h3>Photo submissions</h3>
+	<?php
+	if ( ! function_exists( 'gasf_crm_photo_pending_threads' ) ) {
+		echo '<p class="description">The photo module is not loaded.</p>';
+	} else {
+		global $wpdb;
+		$inv_t   = gasf_crm_table( 'photo_invites' );
+		$sent    = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$inv_t}" );
+		$opened  = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$inv_t} WHERE opened_at IS NOT NULL" );
+		$done    = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$inv_t} WHERE submitted_at IS NOT NULL" );
+		$live    = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$inv_t} WHERE submitted_at IS NULL AND expires_at > %s", current_time( 'mysql', true ) ) );
+		$waiting = array_sum( gasf_crm_photo_pending_threads() );
+
+		// Who could actually act on a submission. Zero here means answers arrive
+		// and nobody is told — the failure this panel exists to make visible.
+		$reviewers = array();
+		foreach ( gasf_crm_notify_recipients() as $addr => $streams ) {
+			if ( in_array( 'photos', (array) $streams, true ) ) { $reviewers[] = $addr; }
+		}
+
+		printf(
+			'<p class="description">%d tagging link(s) sent, %d opened, %d filled in. %d still live and unanswered.</p>',
+			$sent, $opened, $done, $live
+		);
+
+		if ( $waiting ) {
+			printf(
+				'<div class="notice notice-warning inline"><p><strong>%d photo(s) have descriptions waiting to be checked.</strong> Nothing a submitter typed becomes a tag until a volunteer confirms it at <code>%s</code>.</p></div>',
+				(int) $waiting,
+				esc_html( home_url( '/email' ) )
+			);
+		}
+
+		if ( ! $reviewers ) {
+			echo '<div class="notice notice-error inline"><p><strong>Nobody holds the Photo submissions stream.</strong> Descriptions can still be submitted and will be stored, but no one is told and no one can turn them into tags. Tick <em>Photo submissions</em> under <strong>Can see</strong> for at least one approved account above.</p></div>';
+		} else {
+			printf( '<p class="description">Reviewed by: %s.</p>', esc_html( implode( ', ', $reviewers ) ) );
+		}
+
+		echo '<p class="description">Links expire after ' . (int) GASF_CRM_PHOTO_INVITE_DAYS . ' days. Tokens are stored hashed, so an expired or lost link cannot be recovered — send a fresh one from the thread instead.</p>';
+	}
+	?>
+
 	<h3>Address book</h3>
 	<?php
 	$contacts = gasf_crm_contacts( '', 50 );

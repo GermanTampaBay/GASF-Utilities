@@ -341,8 +341,65 @@ function gasf_crm_photo_save_pending( array $invite ) {
 	);
 
 	gasf_crm_log_event( (int) $invite['thread_id'], 'photo_tagged', $invite['email'] . ' described ' . count( $invite['ids'] ) . ' photo(s)' );
+	gasf_crm_photo_notify_review( $invite, count( $invite['ids'] ) );
 
 	gasf_crm_photo_page( 'thanks', $invite );
+}
+
+/**
+ * Tell the photo volunteers that answers are waiting.
+ *
+ * The submitter is told, in as many words, that one of our volunteers will
+ * check it over. Until this existed nothing made that true: the answers landed
+ * in the database and sat there until somebody happened to reopen the right
+ * thread. A promise made to a member of the public on the club's behalf is
+ * worth actually keeping, and "it saved fine" is the most convincing way for
+ * something to fail.
+ */
+function gasf_crm_photo_notify_review( array $invite, $count ) {
+	$to = array();
+	foreach ( gasf_crm_notify_recipients() as $addr => $streams ) {
+		if ( in_array( 'photos', (array) $streams, true ) ) { $to[] = $addr; }
+	}
+
+	if ( ! $to ) {
+		// Loudly, because from here it looks like success: the submitter has
+		// been thanked and the data is stored, but nobody can see it.
+		gasf_mec_log( 'CRM photos: ' . $invite['email'] . ' described ' . (int) $count
+			. ' photo(s) but NOBODY holds the photos stream — the answers are waiting with no one to review them.' );
+		return;
+	}
+
+	$body = sprintf(
+		"%s has described %d photo%s they sent to the club.\n\n" .
+		"Their answers are waiting for someone to check before they become tags. Nothing they wrote has been applied yet.\n\n" .
+		"%s\n\n" .
+		"Open the message from them and the photos are at the bottom, with what they told us in editable boxes. Correct anything that looks off and press \"Add these tags\".",
+		$invite['name'] ? $invite['name'] . ' (' . $invite['email'] . ')' : $invite['email'],
+		(int) $count,
+		1 === (int) $count ? '' : 's',
+		home_url( '/email' )
+	);
+
+	foreach ( $to as $addr ) {
+		gasf_crm_graph_send( $addr, 'Photo descriptions waiting to be checked', $body, 'photos' );
+	}
+}
+
+/**
+ * Threads holding photos whose tags nobody has confirmed yet, thread => count.
+ *
+ * Drives the banner at the top of /email. Without it the only way to discover
+ * a submission is to reopen the thread it came from and notice.
+ */
+function gasf_crm_photo_pending_threads() {
+	$out = array();
+	foreach ( gasf_crm_photo_pending_ids() as $aid ) {
+		$src = get_post_meta( $aid, '_gasf_photo_source', true );
+		$tid = (int) ( is_array( $src ) ? ( $src['thread'] ?? 0 ) : 0 );
+		if ( $tid ) { $out[ $tid ] = ( $out[ $tid ] ?? 0 ) + 1; }
+	}
+	return $out;
 }
 
 /** Y-m-d or ''. checkdate rejects the 31st of February, which a text input will post. */

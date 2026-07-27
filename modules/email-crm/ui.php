@@ -519,6 +519,32 @@ function gasf_crm_render_inbox() {
 	</div></div>
 	<?php endif; ?>
 
+<?php
+	// Somebody who filled in the tagging form was told a volunteer would check
+	// it over. This is where that becomes visible without having to guess which
+	// thread to reopen. Only shown to people who hold the photos stream, and
+	// only when there is genuinely something waiting.
+	if ( function_exists( 'gasf_crm_photo_pending_threads' ) && gasf_crm_user_can_stream( 'photos' ) ) :
+		$waiting = gasf_crm_photo_pending_threads();
+		$total   = array_sum( $waiting );
+		if ( $total ) : ?>
+	<div class="wrap"><div class="note ok" style="margin-top:16px">
+		<strong><?php printf( '%d photo%s waiting to be checked.', (int) $total, 1 === (int) $total ? '' : 's' ); ?></strong>
+		Somebody has told us what they are. Nothing they wrote is a tag yet &mdash; open the message and confirm it.
+		<div style="margin-top:8px">
+			<?php foreach ( $waiting as $tid => $n ) :
+				$th = gasf_crm_get_thread( (int) $tid );
+				if ( ! $th || ! gasf_crm_user_can_stream( (string) $th['stream'] ) ) { continue; } ?>
+				<button class="btn sec" data-openthread="<?php echo (int) $tid; ?>" style="margin:0 6px 6px 0">
+					<?php echo esc_html( $th['subject'] ? $th['subject'] : '(no subject)' ); ?> &middot; <?php echo (int) $n; ?>
+				</button>
+			<?php endforeach; ?>
+		</div>
+	</div></div>
+		<?php endif;
+	endif;
+	?>
+
 <?php gasf_crm_render_help(); ?>
 
 <div class="wrap"><div class="layout">
@@ -1293,6 +1319,16 @@ function gasf_crm_render_inbox() {
 			}).join('');
 		}).catch(function(){});
 	}
+
+	// The "photos waiting" banner sits outside the pane, so its buttons need
+	// wiring to the same open() the list rows use.
+	Array.prototype.forEach.call(document.querySelectorAll('[data-openthread]'), function(b){
+		b.onclick = function(e){
+			e.preventDefault();
+			open(parseInt(b.dataset.openthread, 10));
+			window.scrollTo(0, 0);
+		};
+	});
 
 	// Status tabs and stream tabs are independent rows, so each only clears the
 	// selection within its own row.
