@@ -55,6 +55,22 @@ function gasf_crm_notify_thread( $thread_id ) {
 		}
 	}
 
+	// Hand-configured addresses. Without these the people who actually run the
+	// club get nothing: notifications otherwise reach only those who signed in
+	// through /email, and an administrator is approved by definition and so
+	// never has to — making them the one person never told.
+	$covered = array();
+	foreach ( $recipients as $u ) {
+		$a         = get_user_meta( $u->ID, 'gasf_crm_email', true );
+		$covered[] = strtolower( $a ? $a : $u->user_email );
+	}
+	foreach ( array_filter( array_map( 'trim', explode( ',', (string) $cfg['notify_extra'] ) ) ) as $addr ) {
+		if ( is_email( $addr ) && ! in_array( strtolower( $addr ), $covered, true )
+			&& gasf_crm_notify_email_to( $addr, $thread ) ) {
+			$sent = true;
+		}
+	}
+
 	return $sent;
 }
 
@@ -62,7 +78,10 @@ function gasf_crm_notify_via_email( $user, array $thread ) {
 	$to = get_user_meta( $user->ID, 'gasf_crm_email', true );
 	if ( ! $to ) { $to = $user->user_email; }
 	if ( ! $to || false !== strpos( $to, '@invalid.local' ) ) { return false; }
+	return gasf_crm_notify_email_to( $to, $thread );
+}
 
+function gasf_crm_notify_email_to( $to, array $thread ) {
 	$from    = $thread['last_from_name'] ? $thread['last_from_name'] : $thread['last_from_addr'];
 	$subject = 'New email to info@: ' . wp_specialchars_decode( (string) $thread['subject'] );
 

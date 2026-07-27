@@ -108,6 +108,16 @@ header.bar .hbtn{background:#2271b1;color:#fff;border:0;padding:5px 12px;border-
 .msg .body table{max-width:100%;border-collapse:collapse}
 .msg .body img{max-width:100%;height:auto}
 textarea{width:100%;min-height:150px;padding:10px;border:1px solid #8c8f94;border-radius:4px;font:inherit;resize:vertical}
+.ed{border:1px solid #8c8f94;border-radius:4px;overflow:hidden;background:#fff}
+.edbar{display:flex;flex-wrap:wrap;align-items:center;gap:2px;padding:6px;border-bottom:1px solid #dcdcde;background:#f6f7f7}
+.edbar button{min-width:32px;height:28px;padding:0 9px;border:1px solid transparent;background:none;border-radius:3px;cursor:pointer;font:inherit;font-size:13px;color:#1d2327;line-height:1}
+.edbar button:hover{background:#fff;border-color:#dcdcde}
+.edbar .sep{width:1px;height:18px;background:#dcdcde;margin:0 5px}
+.edbody{min-height:170px;max-height:50vh;overflow:auto;padding:10px;outline:none;font:inherit;overflow-wrap:anywhere}
+.edbody:empty::before{content:attr(data-ph);color:#8c8f94}
+.edbody:focus{box-shadow:inset 0 0 0 1px #2271b1}
+.edbody p{margin:0 0 10px}
+.edbody ul,.edbody ol{margin:0 0 10px;padding-left:24px}
 .actions{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
 .note{padding:10px 12px;border-radius:4px;font-size:13px;margin:12px 0}
 .note.warn{background:#fcf9e8;border-left:4px solid #dba617}
@@ -352,7 +362,20 @@ function gasf_crm_render_inbox() {
 				html += '<div class="note warn">This was marked as spam or junk, so it stays out of the Open list even if the sender writes again.</div>' +
 					'<div class="actions"><button class="btn sec" id="restore">Put back in Open</button></div><div id="msg"></div>';
 			} else if(t.can_reply){
-				html += '<textarea id="reply" placeholder="Write your reply…"></textarea>' +
+				html += '<div class="ed"><div class="edbar">' +
+						'<button type="button" data-cmd="bold" title="Bold (Ctrl+B)"><b>B</b></button>' +
+						'<button type="button" data-cmd="italic" title="Italic (Ctrl+I)"><i>I</i></button>' +
+						'<button type="button" data-cmd="underline" title="Underline (Ctrl+U)"><u>U</u></button>' +
+						'<span class="sep"></span>' +
+						'<button type="button" data-cmd="insertUnorderedList" title="Bulleted list">&bull; List</button>' +
+						'<button type="button" data-cmd="insertOrderedList" title="Numbered list">1. List</button>' +
+						'<span class="sep"></span>' +
+						'<button type="button" id="edlink" title="Add a link">&#128279; Link</button>' +
+						'<button type="button" data-cmd="unlink" title="Remove the link">Unlink</button>' +
+						'<span class="sep"></span>' +
+						'<button type="button" data-cmd="removeFormat" title="Clear formatting">Clear</button>' +
+					'</div>' +
+					'<div class="edbody" id="reply" contenteditable="true" data-ph="Write your reply…"></div></div>' +
 					'<div class="actions">' +
 					'<button class="btn" id="send">Send reply</button>' +
 					'<button class="btn sec" id="draft">Draft with AI</button>' +
@@ -386,9 +409,57 @@ function gasf_crm_render_inbox() {
 		}).catch(function(e){ pane.innerHTML = '<div class="note err">' + esc(e.message) + '</div>'; });
 	}
 
+	// Minimal rich text on a contenteditable div. execCommand is deprecated but
+	// universally supported, and pulling in an editor library would be a large
+	// dependency on a page whose entire requirement is bold, italic and links.
+	function setupEditor(ed){
+		Array.prototype.forEach.call(document.querySelectorAll('.edbar button[data-cmd]'), function(b){
+			// mousedown default would move focus out of the editor and collapse
+			// the selection before the command could apply to it.
+			b.onmousedown = function(ev){ ev.preventDefault(); };
+			b.onclick = function(){ document.execCommand(b.dataset.cmd, false, null); ed.focus(); };
+		});
+
+		var link = document.getElementById('edlink');
+		if(link){
+			link.onmousedown = function(ev){ ev.preventDefault(); };
+			link.onclick = function(){
+				var url = prompt('Link address:', 'https://');
+				if(!url) return;
+				// Only protocols that cannot execute anything. The server checks
+				// this again — a client-side filter is a convenience, not a control.
+				if(!/^(https?:|mailto:)/i.test(url.trim())){
+					alert('Links must start with http://, https:// or mailto:');
+					return;
+				}
+				ed.focus();
+				document.execCommand('createLink', false, url.trim());
+			};
+		}
+
+		// Paste as plain text. Pasting from Word or a web page otherwise drags in
+		// fonts, colours and background shading that look wrong in an email and
+		// get stripped by the server regardless.
+		ed.addEventListener('paste', function(ev){
+			ev.preventDefault();
+			var text = ((ev.clipboardData || window.clipboardData).getData('text/plain') || '');
+			document.execCommand('insertText', false, text);
+		});
+	}
+
+	function edText(ed){ return (ed.textContent || '').trim(); }
+	function edSet(ed, plain){
+		// The AI draft arrives as plain text. Split on blank lines so it lands in
+		// the editor already looking like an email rather than one long block.
+		ed.innerHTML = String(plain).split(/\n{2,}/).map(function(p){
+			return '<p>' + esc(p).replace(/\n/g, '<br>') + '</p>';
+		}).join('');
+	}
+
 	function wire(id, tstatus){
 		var out = document.getElementById('msg');
 		var ta = document.getElementById('reply');
+		if(ta){ setupEditor(ta); }
 		var send = document.getElementById('send'), draft = document.getElementById('draft');
 		var done = document.getElementById('done'), ignore = document.getElementById('ignore');
 		var restore = document.getElementById('restore');
@@ -406,7 +477,7 @@ function gasf_crm_render_inbox() {
 				out.innerHTML = '<div class="note ok">Asking Claude…</div>';
 				busy(true, draft);
 				api('/threads/' + id + '/draft', {method:'POST'}).then(function(r){
-					ta.value = r.draft;
+					edSet(ta, r.draft);
 					out.innerHTML = '<div class="note ok">Draft inserted — read it through before sending.</div>';
 					busy(false, draft);
 				}).catch(function(e){ fail(e, draft); });
@@ -415,9 +486,9 @@ function gasf_crm_render_inbox() {
 
 		if(send){
 			send.onclick = function(){
-				if(!ta.value.trim()){ out.innerHTML = '<div class="note err">Write something first.</div>'; return; }
+				if(!edText(ta)){ out.innerHTML = '<div class="note err">Write something first.</div>'; return; }
 				busy(true, send);
-				api('/threads/' + id + '/reply', {method:'POST', body: JSON.stringify({body: ta.value})})
+				api('/threads/' + id + '/reply', {method:'POST', body: JSON.stringify({body: ta.innerHTML})})
 					.then(function(){ open(id); })
 					.catch(function(e){ fail(e, send); });
 			};

@@ -65,6 +65,7 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 			'ms_secret'      => '',
 			'signature_org'  => 'German-American Society Friendship of Pinellas County',
 			'notify_channel' => 'email',
+			'notify_extra'   => '',
 			'last_sync'      => 0,
 		) );
 	}

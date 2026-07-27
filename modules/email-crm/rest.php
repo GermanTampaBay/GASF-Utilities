@@ -282,8 +282,25 @@ function gasf_crm_rest_reply( WP_REST_Request $req ) {
 	$thread_id = (int) $req['id'];
 	$user_id   = get_current_user_id();
 
-	$text = trim( (string) $req->get_param( 'body' ) );
-	if ( '' === $text ) {
+	// The body is HTML now, from the contenteditable composer. Only approved
+	// users can reach here, but it is still sanitised on arrival: an account can
+	// be compromised, and this markup is both stored and re-rendered to every
+	// other volunteer who opens the thread. Links are restricted to protocols
+	// that cannot execute anything — the editor checks that too, but a
+	// client-side check is a convenience, not a control.
+	$clean = wp_kses( (string) $req->get_param( 'body' ), array(
+		'p'          => array(),
+		'br'         => array(),
+		'strong'     => array(), 'b' => array(),
+		'em'         => array(), 'i' => array(), 'u' => array(),
+		'ul'         => array(), 'ol' => array(), 'li' => array(),
+		'blockquote' => array(),
+		'a'          => array( 'href' => array(), 'title' => array() ),
+	), array( 'http', 'https', 'mailto' ) );
+
+	// Emptiness is judged on the text, not the markup: a composer left untouched
+	// can still hand back "<p><br></p>", which is not a reply.
+	if ( '' === trim( wp_strip_all_tags( $clean ) ) ) {
 		return new WP_Error( 'gasf_crm_empty', 'The reply is empty.', array( 'status' => 400 ) );
 	}
 
@@ -317,7 +334,7 @@ function gasf_crm_rest_reply( WP_REST_Request $req ) {
 	$name = get_user_meta( $user_id, 'gasf_crm_name', true );
 	$name = $name ? $name : $user->display_name;
 
-	$html = wpautop( esc_html( $text ) )
+	$html = $clean
 		. '<p>--<br>' . esc_html( $name ) . '<br>' . esc_html( $cfg['signature_org'] ) . '</p>';
 
 	$sent = gasf_crm_graph_reply( $target['graph_message_id'], $html );
@@ -338,7 +355,7 @@ function gasf_crm_rest_reply( WP_REST_Request $req ) {
 		'from_addr'        => $cfg['mailbox'],
 		'to_addrs'         => wp_json_encode( array( $thread['last_from_addr'] ) ),
 		'sent_at'          => current_time( 'mysql', true ),
-		'body_preview'     => mb_substr( $text, 0, 500 ),
+		'body_preview'     => mb_substr( trim( wp_strip_all_tags( $clean ) ), 0, 500 ),
 		'body_html'        => $html,
 		'has_attachments'  => false,
 		'sent_by_user_id'  => $user_id,

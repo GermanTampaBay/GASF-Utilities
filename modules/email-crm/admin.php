@@ -36,6 +36,7 @@ function gasf_crm_admin_tab() {
 			$cfg['ms_id']          = sanitize_text_field( wp_unslash( $_POST['ms_id'] ?? '' ) );
 			$cfg['signature_org']  = sanitize_text_field( wp_unslash( $_POST['signature_org'] ?? '' ) );
 			$cfg['notify_channel'] = sanitize_key( wp_unslash( $_POST['notify_channel'] ?? 'email' ) );
+			$cfg['notify_extra']   = sanitize_text_field( wp_unslash( $_POST['notify_extra'] ?? '' ) );
 
 			// Blank = keep. Secrets are not echoed back, so an empty box means the
 			// admin didn't retype it, not that they want it cleared.
@@ -174,6 +175,9 @@ function gasf_crm_admin_tab() {
 					<?php endforeach; ?>
 				</select>
 				<p class="description">WhatsApp needs a WhatsApp Business Account, a dedicated number, Meta verification and an approved template. Register a channel on <code>gasf_crm_notify_channels</code> and it appears here.</p></td></tr>
+			<tr><th scope="row">Also notify</th>
+				<td><input type="text" class="large-text" name="notify_extra" value="<?php echo esc_attr( $cfg['notify_extra'] ); ?>" placeholder="you@germantampabay.com, someone-else@example.com">
+					<p class="description">Comma-separated. Approved volunteers are notified automatically, but only once they have signed in at <code>/email</code> — an administrator is approved by default and never has to, so without an address here the person running this is the one person never told about new mail.</p></td></tr>
 		</table>
 
 		<?php submit_button( 'Save' ); ?>
