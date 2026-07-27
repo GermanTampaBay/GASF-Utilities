@@ -307,6 +307,68 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 		return $hits ? $hits[0]['term_id'] : 0;
 	}
 
+	/**
+	 * Places as a flat, depth-tagged, display-ordered list.
+	 *
+	 * $first pulls one branch to the top — the geofence's answer, so the likely
+	 * choices are the first thing a thumb reaches on a phone rather than
+	 * something to scroll for.
+	 *
+	 * This is where the rooms live. A room inside a building has no coordinates
+	 * and never will: GPS is 50 m out indoors on a good day and Bierstube to
+	 * Main Hall is a few paces, so a coordinate on a room is a claim the
+	 * hardware cannot support. The geofence resolves to the BUILDING and the
+	 * person picks the room, which is the only thing that actually knows.
+	 *
+	 * @return array<array{term:WP_Term,depth:int,geo:bool}>
+	 */
+	function gasf_photo_place_tree( $first = 0 ) {
+		$terms = get_terms( array( 'taxonomy' => 'gasf_photo_place', 'hide_empty' => false ) );
+		if ( is_wp_error( $terms ) || ! $terms ) { return array(); }
+
+		$by_parent = array();
+		foreach ( $terms as $t ) { $by_parent[ (int) $t->parent ][] = $t; }
+		foreach ( $by_parent as &$kids ) {
+			usort( $kids, function ( $a, $b ) { return strnatcasecmp( $a->name, $b->name ); } );
+		}
+		unset( $kids );
+
+		$out = array();
+		$walk = function ( $parent, $depth ) use ( &$walk, &$out, &$by_parent ) {
+			foreach ( ( $by_parent[ $parent ] ?? array() ) as $t ) {
+				$out[] = array(
+					'term'  => $t,
+					'depth' => $depth,
+					'geo'   => '' !== (string) get_term_meta( $t->term_id, 'gasf_lat', true ),
+				);
+				$walk( (int) $t->term_id, $depth + 1 );
+			}
+		};
+		$walk( 0, 0 );
+
+		if ( ! $first ) { return $out; }
+
+		// Lift the suggested place and everything under it to the front, keeping
+		// the rest in order behind it.
+		$root = (int) $first;
+		$branch = array();
+		$rest   = array();
+		$in     = false;
+		foreach ( $out as $row ) {
+			$id = (int) $row['term']->term_id;
+			if ( $id === $root ) { $in = true; $branch[] = $row; continue; }
+			if ( $in ) {
+				// Still inside the branch while we are deeper than its root.
+				$anc = (array) get_ancestors( $id, 'gasf_photo_place', 'taxonomy' );
+				if ( in_array( $root, array_map( 'intval', $anc ), true ) ) { $branch[] = $row; continue; }
+				$in = false;
+			}
+			$rest[] = $row;
+		}
+
+		return array_merge( $branch, $rest );
+	}
+
 	/* ---------------------------------------------------------------------
 	 * Place coordinates — term meta fields on the Places screen
 	 * ------------------------------------------------------------------- */
@@ -318,6 +380,7 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 			<input type="text" name="gasf_lat" id="gasf_lat" placeholder="27.8756" style="width:47%">
 			<input type="text" name="gasf_lon" placeholder="-82.7784" style="width:47%">
 			<p>Optional. Fill these in and a submitted photo carrying GPS is matched to this place automatically. Copy them from Google Maps: right-click the spot, and the first line of the menu is the pair.</p>
+			<p><strong>Leave these blank for a room.</strong> Coordinates belong only on places GPS can actually tell apart — the grounds, a separate building, a large outdoor area. Indoors GPS is 50&nbsp;m out on a good day, so the Bierstube, the Main Hall and the Kitchen cannot be separated by it at any radius. Set their <em>Parent</em> instead: the geofence then answers with the building, and the tagging form offers the rooms for the person to choose. Giving two places the same coordinates does not split the difference &mdash; it makes the winner arbitrary.</p>
 		</div>
 		<div class="form-field">
 			<label for="gasf_radius">Radius (metres)</label>
@@ -340,6 +403,25 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 				<input type="text" name="gasf_lat" id="gasf_lat" value="<?php echo esc_attr( $lat ); ?>" placeholder="27.8756" style="width:47%">
 				<input type="text" name="gasf_lon" value="<?php echo esc_attr( $lon ); ?>" placeholder="-82.7784" style="width:47%">
 				<p class="description">A submitted photo carrying GPS inside the radius below is matched to this place automatically. Copy the pair from Google Maps: right-click the spot and the first menu line is the coordinates.</p>
+				<p class="description"><strong>Leave blank for a room.</strong> Coordinates belong only on places GPS can tell apart — the grounds, a separate building, a large outdoor area. Indoors GPS is 50&nbsp;m out on a good day, so rooms in one building cannot be separated by it at any radius. Set the <em>Parent</em> instead: the geofence answers with the building and the tagging form offers the rooms.</p>
+				<?php
+				// Two places on the same fix is not a tie the ranking can break —
+				// it falls through to term ID, which is stable and meaningless.
+				// Better said here than discovered from a run of photos all
+				// filed in the same wrong room.
+				if ( '' !== $lat && '' !== $lon ) {
+					$clash = array();
+					foreach ( (array) get_terms( array( 'taxonomy' => 'gasf_photo_place', 'hide_empty' => false, 'exclude' => array( $term->term_id ) ) ) as $o ) {
+						if ( (string) get_term_meta( $o->term_id, 'gasf_lat', true ) === (string) $lat
+							&& (string) get_term_meta( $o->term_id, 'gasf_lon', true ) === (string) $lon ) {
+							$clash[] = $o->name;
+						}
+					}
+					if ( $clash ) {
+						echo '<p class="description" style="color:#b32d2e"><strong>Same coordinates as ' . esc_html( implode( ', ', $clash ) ) . '.</strong> GPS cannot choose between places sharing a fix, so whichever wins is arbitrary and will be the same one every time — which looks like an answer. Clear the coordinates on the more specific ones and make them children instead.</p>';
+					}
+				}
+				?>
 			</td>
 		</tr>
 		<tr class="form-field">

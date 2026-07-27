@@ -110,22 +110,58 @@ function gasf_crm_photo_page( $state, $invite = null, $notice = '' ) {
 		? 'We read this from the photo itself — change it if it looks wrong.'
 		: 'The photos did not carry a date. A rough one is much better than none.' ) . '</em></label>';
 
-	echo '<label class="f"><span>Where?</span><select name="place">';
-	echo '<option value="">— not sure —</option>';
-	foreach ( $places as $p ) {
-		printf(
-			'<option value="%s"%s>%s%s</option>',
-			esc_attr( $p->name ),
-			selected( (int) $p->term_id, $suggest_place, false ),
-			$p->parent ? '&nbsp;&nbsp;&mdash; ' : '',
-			esc_html( $p->name )
-		);
-	}
-	echo '</select><em>Or type somewhere else below.</em></label>';
+	/*
+	 * Where.
+	 *
+	 * Radio buttons rather than a <select>, and hierarchical. GPS can put a
+	 * photo on the club's grounds but it can never say which room — indoors it
+	 * is 50 m out on a good day, and the Bierstube and the Main Hall are a few
+	 * paces apart. So the geofence answers "the club" and the ONE thing that
+	 * actually knows which room, the person who was there, is asked directly.
+	 *
+	 * The suggested branch is lifted to the top so the likely answers are the
+	 * first thing a thumb reaches, rather than something to scroll for.
+	 */
+	$tree = gasf_photo_place_tree( $suggest_place );
 
-	echo '<label class="f"><span>Somewhere else</span>';
-	echo '<input type="text" name="place_other" maxlength="120" placeholder="England Brothers Park">';
-	echo '<em>Fill this in only if the list above does not have it. This wins if both are set.</em></label>';
+	echo '<div class="f"><span>Where?</span>';
+
+	if ( $suggest_place ) {
+		$sp = get_term( $suggest_place, 'gasf_photo_place' );
+		if ( $sp && ! is_wp_error( $sp ) ) {
+			printf(
+				'<p class="hint">The camera put %s at <strong>%s</strong>. If you know which part, say so &mdash; and change it altogether if it looks wrong.</p>',
+				1 === count( $ids ) ? 'this' : 'these',
+				esc_html( $sp->name )
+			);
+		}
+	}
+
+	if ( $tree ) {
+		echo '<div class="places">';
+		foreach ( $tree as $row ) {
+			$term = $row['term'];
+			printf(
+				'<label class="pl d%d"><input type="radio" name="place" value="%s"%s> <span>%s</span>%s</label>',
+				min( 2, (int) $row['depth'] ),
+				esc_attr( $term->name ),
+				checked( (int) $term->term_id, $suggest_place, false ),
+				esc_html( $term->name ),
+				// Say which entries are a whole area rather than a specific
+				// spot, so "German-American Society" does not look like a
+				// worse answer than "Main Hall" when it is simply broader.
+				$row['depth'] ? '' : ' <em>anywhere here</em>'
+			);
+		}
+		printf(
+			'<label class="pl d0"><input type="radio" name="place" value=""%s> <span>Somewhere else &mdash; or not sure</span></label>',
+			checked( 0, $suggest_place, false )
+		);
+		echo '</div>';
+	}
+
+	echo '<input type="text" name="place_other" maxlength="120" placeholder="Somewhere not on the list">';
+	echo '<em>Only if it is not above. Anything typed here wins.</em></div>';
 
 	echo '<label class="f"><span>What was the occasion?</span>';
 	echo '<input type="text" name="event" maxlength="120" placeholder="Oktoberfest 2026, Dinner Night, a work day…">';
@@ -195,6 +231,20 @@ input[type=text],input[type=date],select,textarea{
 textarea{resize:vertical}
 input:focus,select:focus,textarea:focus{outline:2px solid var(--gasf-accent);outline-offset:1px;border-color:var(--gasf-accent)}
 .people input{margin-bottom:8px}
+.hint{font-size:14px;color:var(--muted);margin:0 0 10px;background:var(--chip);border-radius:6px;padding:9px 11px}
+.places{margin:0 0 10px}
+/* Rows, not a dropdown: a phone renders a <select> as a modal wheel, which
+   hides the hierarchy that is the whole point of this control. */
+.pl{display:flex;align-items:center;gap:10px;padding:11px 12px;border:1px solid var(--border);
+	border-radius:6px;margin:0 0 6px;cursor:pointer;background:#fff}
+.pl:has(input:checked){border-color:var(--gasf-accent);background:var(--chip);box-shadow:inset 0 0 0 1px var(--gasf-accent)}
+.pl input{width:auto;flex:none;margin:0}
+.pl span{font-weight:600;font-size:15px}
+.pl em{font-style:normal;font-size:13px;color:var(--muted)}
+.pl.d1{margin-left:22px}
+.pl.d2{margin-left:44px}
+/* :has() is unsupported on older Android browsers, where the radio dot alone
+   still shows the selection — degraded, never broken. */
 .addp{background:none;border:1px dashed var(--border);color:var(--ink);border-radius:6px;padding:8px 14px;font:inherit;font-size:14px;cursor:pointer}
 .addp:hover{background:var(--chip)}
 .photo{display:flex;gap:0;align-items:flex-start}
