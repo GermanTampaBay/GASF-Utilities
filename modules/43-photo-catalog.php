@@ -501,16 +501,73 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 	}, 10, 2 );
 
 	/* ---------------------------------------------------------------------
-	 * Any image uploaded through wp-admin gets read too — not only ones that
-	 * arrive through the CRM. The metadata filter runs while the original file
-	 * is still on disk, which is the last moment it exists in its original form.
+	 * Catching EXIF before something else eats it
+	 *
+	 * This host runs the Bluehost/Newfold performance module, which converts
+	 * uploads to WebP from wp_handle_upload and add_attachment (both at priority
+	 * 10) — and the conversion discards EXIF completely.
+	 *
+	 * This is not a guess. The first version of this file read EXIF at
+	 * wp_generate_attachment_metadata priority 5, which sounds early and is not:
+	 * it runs after both of those. The test uploaded a JPEG carrying a date, a
+	 * camera and GPS, and the attachment came out with none of the three.
+	 *
+	 * So the read happens at wp_handle_upload / wp_handle_sideload priority 1 —
+	 * the first moment the file is on disk and still the original — and the
+	 * result waits there until the attachment exists to hang it on.
+	 *
+	 * It waits KEYED BY PATH rather than in a queue. An upload rejected after
+	 * this point never reaches add_attachment, and a queue would then hand its
+	 * coordinates to the next photo along. One photo wearing another's GPS is
+	 * far worse than a photo with no GPS.
 	 * ------------------------------------------------------------------- */
 
-	add_filter( 'wp_generate_attachment_metadata', function ( $metadata, $attachment_id ) {
+	/** Directory + filename without extension: conversion changes only the extension. */
+	function gasf_photo_park_key( $path ) {
+		return dirname( $path ) . '/' . pathinfo( $path, PATHINFO_FILENAME );
+	}
+
+	function gasf_photo_park_exif( $path, array $exif ) {
+		$GLOBALS['gasf_photo_exif_park'][ gasf_photo_park_key( $path ) ] = $exif;
+	}
+
+	/** Retrieve and remove — nothing should be able to consume the same read twice. */
+	function gasf_photo_take_exif( $path ) {
+		$k = gasf_photo_park_key( $path );
+		if ( ! isset( $GLOBALS['gasf_photo_exif_park'][ $k ] ) ) { return null; }
+		$e = $GLOBALS['gasf_photo_exif_park'][ $k ];
+		unset( $GLOBALS['gasf_photo_exif_park'][ $k ] );
+		return $e;
+	}
+
+	foreach ( array( 'wp_handle_upload', 'wp_handle_sideload' ) as $gasf_photo_hook ) {
+		add_filter( $gasf_photo_hook, function ( $upload ) {
+			if ( empty( $upload['file'] ) || empty( $upload['type'] ) ) { return $upload; }
+			if ( 0 !== strpos( (string) $upload['type'], 'image/' ) ) { return $upload; }
+
+			$exif = gasf_photo_read_exif( $upload['file'] );
+			// Only park a read that found something. Parking an empty result
+			// would consume the fallback below for no benefit.
+			if ( $exif['taken'] || $exif['camera'] || null !== $exif['lat'] ) {
+				gasf_photo_park_exif( $upload['file'], $exif );
+			}
+			return $upload;
+		}, 1 );
+	}
+	unset( $gasf_photo_hook );
+
+	add_action( 'add_attachment', function ( $attachment_id ) {
 		$file = get_attached_file( $attachment_id );
-		if ( $file && file_exists( $file ) ) {
-			gasf_photo_store_exif( $attachment_id, gasf_photo_read_exif( $file ) );
-		}
-		return $metadata;
-	}, 5, 2 ); // priority 5: before anything that rewrites or replaces the file
+		if ( ! $file ) { return; }
+
+		$exif = gasf_photo_take_exif( $file );
+
+		// Nothing parked — an attachment created by some path that does not go
+		// through the upload handlers. Read the file as it stands: correct when
+		// nothing has converted it, and harmlessly empty when something has.
+		// gasf_photo_store_exif ignores empty values, so this can never clobber.
+		if ( null === $exif ) { $exif = gasf_photo_read_exif( $file ); }
+
+		gasf_photo_store_exif( $attachment_id, $exif );
+	}, 1 );
 }
