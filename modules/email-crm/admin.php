@@ -39,6 +39,7 @@ function gasf_crm_admin_tab() {
 			$cfg['board_address']  = sanitize_email( wp_unslash( $_POST['board_address'] ?? '' ) );
 			$cfg['notify_channel'] = sanitize_key( wp_unslash( $_POST['notify_channel'] ?? 'email' ) );
 			$cfg['notify_extra']   = sanitize_text_field( wp_unslash( $_POST['notify_extra'] ?? '' ) );
+			$cfg['route_wp_mail']  = empty( $_POST['route_wp_mail'] ) ? 0 : 1;
 
 			// Blank = keep. Secrets are not echoed back, so an empty box means the
 			// admin didn't retype it, not that they want it cleared.
@@ -228,6 +229,10 @@ function gasf_crm_admin_tab() {
 					<?php endforeach; ?>
 				</select>
 				<p class="description">WhatsApp needs a WhatsApp Business Account, a dedicated number, Meta verification and an approved template. Register a channel on <code>gasf_crm_notify_channels</code> and it appears here.</p></td></tr>
+			<tr><th scope="row">All WordPress email</th>
+				<td><label><input type="checkbox" name="route_wp_mail" value="1" <?php checked( ! empty( $cfg['route_wp_mail'] ) ); ?>>
+					Send every email this site produces through Microsoft, as <code><?php echo esc_html( $cfg['mailbox'] ); ?></code></label>
+					<p class="description">Not only this module &mdash; password resets, approval notices, anything any plugin sends. Without it none of them arrive: this domain's SPF record authorises Microsoft and hard-fails everything else, and DMARC says quarantine, so mail leaving the web server is discarded on your own instructions. Changing the sender address does not help; SPF judges the domain, not the name in front of the <code>@</code>. If Graph refuses, messages fall back to the ordinary WordPress mailer rather than being dropped.</p></td></tr>
 			<tr><th scope="row">Also notify</th>
 				<td><input type="text" class="large-text" name="notify_extra" value="<?php echo esc_attr( $cfg['notify_extra'] ); ?>" placeholder="you@germantampabay.com, someone-else@example.com">
 					<p class="description">Comma-separated. Approved volunteers are notified automatically, but only once they have signed in at <code>/email</code> — an administrator is approved by default and never has to, so without an address here the person running this is the one person never told about new mail.</p></td></tr>

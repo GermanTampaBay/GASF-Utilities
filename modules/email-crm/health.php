@@ -172,29 +172,22 @@ function gasf_crm_health_admins() {
 /**
  * Deliver an operational alert.
  *
- * wp_mail is the primary path, deliberately, because an alarm about Graph
- * being broken must not travel over Graph. That is sound reasoning and it is
- * why this does not simply call gasf_crm_notify_send.
+ * One wp_mail call is all this needs, and it covers both cases on its own now
+ * that WordPress mail is routed through Graph:
  *
- * The catch is that wp_mail does not currently reach anyone from this host: the
- * domain publishes "v=spf1 include:spf.protection.outlook.com -all" with DMARC
- * p=quarantine, so WordPress mail sent from the web server as
- * wordpress@germantampabay.com is quarantined by Microsoft. That affects every
- * email this site sends, not just these — password resets included.
+ *   - Graph healthy (the mailbox broke for some other reason) — the message
+ *     leaves via Microsoft and arrives properly.
+ *   - Graph itself broken — the routing filter fails, hands the message back to
+ *     WordPress's own mailer, and it goes out over PHP mail instead. Very
+ *     likely quarantined by the domain's SPF record, but it is the only path
+ *     that does not depend on the thing being reported as broken, and not
+ *     trying is strictly worse.
  *
- * So a Graph copy goes out too, and will keep going out until an SMTP plugin
- * makes wp_mail genuinely deliverable. Between them the cases are covered: if
- * Graph is what broke, wp_mail is the one that can still get through; if mail
- * routing is what broke, Graph is. Two copies of a once-a-day alarm is a small
- * price for it actually arriving. Drop the Graph line once SMTP works.
+ * No duplicate copies: the fallback happens inside wp_mail, not around it.
  */
 function gasf_crm_health_notify( $subject, $body ) {
 	foreach ( gasf_crm_health_admins() as $addr ) {
 		wp_mail( $addr, $subject, $body );
-
-		if ( gasf_crm_ready() ) {
-			gasf_crm_graph_send( $addr, $subject, $body );
-		}
 	}
 }
 

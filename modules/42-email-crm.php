@@ -48,6 +48,7 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 	require_once GASF_CRM_DIR . '/attachments.php';
 	require_once GASF_CRM_DIR . '/sync.php';
 	require_once GASF_CRM_DIR . '/health.php';
+	require_once GASF_CRM_DIR . '/wpmail.php';
 	require_once GASF_CRM_DIR . '/auth.php';
 	require_once GASF_CRM_DIR . '/ai.php';
 	require_once GASF_CRM_DIR . '/notify.php';
@@ -80,6 +81,10 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 			'board_address'  => 'board@germantampabay.com',
 			'notify_channel' => 'email',
 			'notify_extra'   => '',
+			// Send ALL WordPress mail through Graph, not just this module's.
+			// Nothing wp_mail sends from this server reaches anyone otherwise —
+			// the domain's own SPF and DMARC records see to that.
+			'route_wp_mail'  => 1,
 			// Y-m-d the Graph client secret stops working. Entra will not tell us
 			// this after the fact, so it is recorded by hand at creation time.
 			// Empty means nobody wrote it down, which the admin tab nags about —
