@@ -1,0 +1,361 @@
+<?php
+/**
+ * Email CRM — Microsoft Graph client (modules/email-crm/graph.php)
+ *
+ * App-only (client credentials) against ONE shared mailbox. Every call goes
+ * through /users/{mailbox}/... — there is no /me, because there is no signed-in
+ * Microsoft user in this flow.
+ *
+ * If a call comes back 403 with ErrorAccessDenied, the usual cause is the
+ * Exchange Application Access Policy: either it has not propagated yet (allow
+ * ~30 minutes after creation) or the mailbox is not a member of the
+ * gasf-crm-scope group the policy is scoped to.
+ */
+if ( ! defined( 'ABSPATH' ) ) { exit; }
+
+define( 'GASF_CRM_GRAPH', 'https://graph.microsoft.com/v1.0' );
+
+/**
+ * App-only access token, cached until shortly before it expires.
+ *
+ * The 300-second haircut on the TTL matters: tokens are good for ~60 minutes
+ * and an hourly cron lands close enough to the boundary that an un-shaved
+ * cache would hand out a token that expires mid-sync.
+ */
+function gasf_crm_graph_token( $force = false ) {
+	$cached = get_transient( 'gasf_crm_graph_token' );
+	if ( ! $force && is_string( $cached ) && '' !== $cached ) { return $cached; }
+
+	$c = gasf_crm_cfg();
+	if ( '' === $c['tenant_id'] || '' === $c['client_id'] || '' === $c['client_secret'] ) {
+		return new WP_Error( 'gasf_crm_nocfg', 'Graph credentials are not configured.' );
+	}
+
+	$r = wp_remote_post(
+		'https://login.microsoftonline.com/' . rawurlencode( $c['tenant_id'] ) . '/oauth2/v2.0/token',
+		array(
+			'timeout' => 20,
+			'body'    => array(
+				'client_id'     => $c['client_id'],
+				'client_secret' => $c['client_secret'],
+				'scope'         => 'https://graph.microsoft.com/.default',
+				'grant_type'    => 'client_credentials',
+			),
+		)
+	);
+	if ( is_wp_error( $r ) ) { return $r; }
+
+	$body = json_decode( wp_remote_retrieve_body( $r ), true );
+	$code = (int) wp_remote_retrieve_response_code( $r );
+	if ( $code < 200 || $code >= 300 || empty( $body['access_token'] ) ) {
+		// error_description carries the actionable part (expired secret, wrong
+		// tenant, consent not granted). Truncated so a stray HTML error page
+		// can't flood the log.
+		return new WP_Error( 'gasf_crm_token', 'Token HTTP ' . $code . ': ' . substr( (string) ( $body['error_description'] ?? wp_remote_retrieve_body( $r ) ), 0, 300 ) );
+	}
+
+	$ttl = max( 60, (int) ( $body['expires_in'] ?? 3600 ) - 300 );
+	set_transient( 'gasf_crm_graph_token', $body['access_token'], $ttl );
+	return $body['access_token'];
+}
+
+/**
+ * Authenticated Graph request. $path is either a path under /v1.0 or a full
+ * URL (so @odata.nextLink can be passed straight back in).
+ *
+ * Retries once on 401 with a forced token refresh: a token can be revoked
+ * mid-life (secret rotated, app consent changed) and the cached copy would
+ * otherwise keep failing until its TTL ran out.
+ */
+function gasf_crm_graph( $method, $path, $body = null, $retry = true ) {
+	$token = gasf_crm_graph_token();
+	if ( is_wp_error( $token ) ) { return $token; }
+
+	$url  = ( 0 === strpos( $path, 'http' ) ) ? $path : GASF_CRM_GRAPH . $path;
+	$args = array(
+		'method'  => $method,
+		'timeout' => 30,
+		'headers' => array(
+			'Authorization' => 'Bearer ' . $token,
+			'Content-Type'  => 'application/json',
+		),
+	);
+	if ( null !== $body ) { $args['body'] = wp_json_encode( $body ); }
+
+	$r = wp_remote_request( $url, $args );
+	if ( is_wp_error( $r ) ) { return $r; }
+
+	$code = (int) wp_remote_retrieve_response_code( $r );
+	$raw  = wp_remote_retrieve_body( $r );
+
+	if ( 401 === $code && $retry ) {
+		delete_transient( 'gasf_crm_graph_token' );
+		gasf_crm_graph_token( true );
+		return gasf_crm_graph( $method, $path, $body, false );
+	}
+
+	// 202/204 are normal for send and for PATCH-with-no-return.
+	if ( 204 === $code || 202 === $code ) { return array(); }
+
+	$json = json_decode( $raw, true );
+	if ( $code < 200 || $code >= 300 ) {
+		$msg = $json['error']['message'] ?? substr( $raw, 0, 300 );
+		if ( 403 === $code ) {
+			// Two very different causes, and the Graph message does not
+			// distinguish them: either the app lacks the permission the endpoint
+			// needs, or the Application Access Policy is excluding this mailbox.
+			$msg .= ' — either the app is missing a permission this endpoint needs,'
+				. ' or the Application Access Policy is excluding the mailbox.'
+				. ' Confirm Mail.ReadWrite + Mail.Send are admin-consented, then run'
+				. ' Test-ApplicationAccessPolicy against ' . gasf_crm_cfg()['mailbox'] . '.';
+		}
+		return new WP_Error( 'gasf_crm_graph', 'Graph HTTP ' . $code . ': ' . $msg );
+	}
+	return is_array( $json ) ? $json : array();
+}
+
+function gasf_crm_mailbox_path() {
+	$c = gasf_crm_cfg();
+	return '/users/' . rawurlencode( $c['mailbox'] );
+}
+
+/** Application roles this module needs on its Graph token. */
+function gasf_crm_required_roles() {
+	return array( 'Mail.ReadWrite', 'Mail.Send' );
+}
+
+/**
+ * Deep links into the Entra blades for this app registration.
+ *
+ * The Enterprise Application and the App registration are separate objects with
+ * separate menus, and secrets/permissions live only on the registration — so
+ * "find it in the portal" is genuinely ambiguous advice. Link the exact blades.
+ */
+function gasf_crm_entra_links() {
+	$id = rawurlencode( gasf_crm_cfg()['client_id'] );
+	$b  = 'https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationMenuBlade/~/';
+	return array(
+		'permissions' => $b . 'CallAnAPI/appId/' . $id,
+		'secrets'     => $b . 'Credentials/appId/' . $id,
+		'overview'    => $b . 'Overview/appId/' . $id,
+	);
+}
+
+/**
+ * Layered Graph health check.
+ *
+ * Credentials, consent and mailbox reach fail independently, but Graph's own
+ * errors conflate them — a token with no roles is issued perfectly happily, and
+ * the only symptom is a mail call returning "Access is denied", which reads
+ * exactly like an Application Access Policy problem. Reporting each layer
+ * separately is the difference between a one-click fix and an hour of guessing.
+ */
+function gasf_crm_graph_diagnostics() {
+	$cfg = gasf_crm_cfg();
+	$out = array(
+		'configured'  => gasf_crm_ready(),
+		'mailbox'     => $cfg['mailbox'],
+		'token'       => null,
+		'token_error' => '',
+		'roles'       => array(),
+		'expires_in'  => null,
+		'reach'       => null,
+		'reach_error' => '',
+		'counts'      => array(),
+	);
+	if ( ! $out['configured'] ) { return $out; }
+
+	// Never diagnose from a cached token — roles are fixed at issue time, so a
+	// stale one describes the permission state from up to an hour ago.
+	delete_transient( 'gasf_crm_graph_token' );
+	$token = gasf_crm_graph_token( true );
+	if ( is_wp_error( $token ) ) {
+		$out['token']       = false;
+		$out['token_error'] = $token->get_error_message();
+		return $out;
+	}
+	$out['token'] = true;
+
+	$parts  = explode( '.', $token );
+	$claims = isset( $parts[1] ) ? json_decode( base64_decode( strtr( $parts[1], '-_', '+/' ) ), true ) : array();
+	$out['roles'] = isset( $claims['roles'] ) ? (array) $claims['roles'] : array();
+	if ( ! empty( $claims['exp'] ) ) { $out['expires_in'] = max( 0, (int) $claims['exp'] - time() ); }
+
+	$r = gasf_crm_graph( 'GET', gasf_crm_mailbox_path()
+		. '/mailFolders/Inbox?$select=displayName,totalItemCount,unreadItemCount' );
+	if ( is_wp_error( $r ) ) {
+		$out['reach']       = false;
+		$out['reach_error'] = $r->get_error_message();
+	} else {
+		$out['reach']  = true;
+		$out['counts'] = array(
+			'total'  => (int) ( $r['totalItemCount'] ?? 0 ),
+			'unread' => (int) ( $r['unreadItemCount'] ?? 0 ),
+		);
+	}
+	return $out;
+}
+
+/**
+ * Cheap reachability probe for the admin tab's Test button.
+ *
+ * Deliberately reads the Inbox FOLDER, not the user object. GET /users/{id}
+ * is a directory read requiring User.Read.All, which this app does not have
+ * and should not be given — it holds Mail.ReadWrite and Mail.Send and nothing
+ * else. Probing the user object made a correctly-configured install fail with
+ * a 403 that pointed at the access policy instead of at the wrong endpoint.
+ */
+function gasf_crm_graph_test() {
+	// Always take a fresh token. The reason anyone presses this button is that
+	// they just changed something in Entra — and roles are baked into the token
+	// at issue time, so a cached one keeps reporting the OLD permission state for
+	// most of an hour after the problem was actually fixed.
+	delete_transient( 'gasf_crm_graph_token' );
+
+	$r = gasf_crm_graph( 'GET', gasf_crm_mailbox_path()
+		. '/mailFolders/Inbox?$select=displayName,totalItemCount,unreadItemCount' );
+
+	// A 403 has two very different causes and Graph's message does not separate
+	// them. The token itself does: no roles claim means consent was never
+	// granted, which is a different fix from a mailbox the policy excludes.
+	if ( is_wp_error( $r ) && false !== strpos( $r->get_error_message(), 'HTTP 403' ) ) {
+		$token = gasf_crm_graph_token();
+		if ( ! is_wp_error( $token ) ) {
+			$parts  = explode( '.', $token );
+			$claims = isset( $parts[1] ) ? json_decode( base64_decode( strtr( $parts[1], '-_', '+/' ) ), true ) : array();
+			if ( empty( $claims['roles'] ) ) {
+				return new WP_Error( 'gasf_crm_noconsent',
+					'The access token carries no application roles, so admin consent has not been granted. In the app registration, open API permissions and click "Grant admin consent" — Mail.ReadWrite and Mail.Send must show Granted in the Status column. (The "Admin consent required" column saying Yes is not the same thing.)' );
+			}
+		}
+	}
+	return $r;
+}
+
+/**
+ * Messages in a folder at or after $since (a UTC 'Y-m-d H:i:s').
+ *
+ * Paged, with a hard page cap — a misconfigured $since (epoch 0 on a first run
+ * against a mailbox with history) must not turn one cron tick into a thousand
+ * Graph calls. The cap is a circuit breaker, not a pagination strategy.
+ */
+function gasf_crm_graph_messages( $folder, $since, $max_pages = 10 ) {
+	$select = 'id,conversationId,subject,from,sender,toRecipients,receivedDateTime,sentDateTime,bodyPreview,body,hasAttachments';
+	$field  = ( 'SentItems' === $folder ) ? 'sentDateTime' : 'receivedDateTime';
+	$iso    = gmdate( 'Y-m-d\TH:i:s\Z', strtotime( $since . ' UTC' ) );
+
+	$url = gasf_crm_mailbox_path() . '/mailFolders/' . rawurlencode( $folder ) . '/messages?' . http_build_query( array(
+		'$select'  => $select,
+		'$filter'  => $field . ' ge ' . $iso,
+		'$orderby' => $field . ' asc',
+		'$top'     => 50,
+	) );
+
+	$out   = array();
+	$pages = 0;
+	while ( $url && $pages < $max_pages ) {
+		$res = gasf_crm_graph( 'GET', $url );
+		if ( is_wp_error( $res ) ) { return $res; }
+		foreach ( (array) ( $res['value'] ?? array() ) as $m ) { $out[] = $m; }
+		$url = $res['@odata.nextLink'] ?? null;
+		$pages++;
+	}
+	if ( $url ) {
+		gasf_mec_log( 'CRM: page cap hit in ' . $folder . ' — ' . count( $out ) . ' fetched, more remain.' );
+	}
+	return $out;
+}
+
+/**
+ * Reply to a message, as the shared mailbox.
+ *
+ * Uses Graph's own /reply rather than composing a fresh message so the
+ * In-Reply-To and References headers are built by Exchange. A hand-rolled
+ * sendMail would start a NEW thread in the recipient's client, which quietly
+ * breaks the one thing this whole CRM is organised around.
+ *
+ * The sent copy lands in the shared mailbox's Sent Items, which is also how the
+ * next sync learns the thread was answered.
+ */
+function gasf_crm_graph_reply( $graph_message_id, $html ) {
+	return gasf_crm_graph(
+		'POST',
+		gasf_crm_mailbox_path() . '/messages/' . rawurlencode( $graph_message_id ) . '/reply',
+		array( 'comment' => $html )
+	);
+}
+
+/**
+ * Forward a message to one or more addresses.
+ *
+ * Same reasoning as the reply path: Graph's own /forward action assembles the
+ * forwarded body and headers, so the recipient gets a properly-formed forward
+ * with the original and its attachments intact — rather than a fresh message
+ * that merely quotes something and arrives detached from the conversation.
+ */
+function gasf_crm_graph_forward( $graph_message_id, $to, $comment ) {
+	$recipients = array();
+	foreach ( (array) $to as $addr ) {
+		$addr = sanitize_email( $addr );
+		if ( is_email( $addr ) ) {
+			$recipients[] = array( 'emailAddress' => array( 'address' => $addr ) );
+		}
+	}
+	if ( ! $recipients ) {
+		return new WP_Error( 'gasf_crm_norecip', 'No valid forwarding address was given.' );
+	}
+
+	return gasf_crm_graph(
+		'POST',
+		gasf_crm_mailbox_path() . '/messages/' . rawurlencode( $graph_message_id ) . '/forward',
+		array( 'comment' => $comment, 'toRecipients' => $recipients )
+	);
+}
+
+/**
+ * Send a plain-text message as the shared mailbox.
+ *
+ * Used for notifications, which cannot go out through wp_mail on this host: the
+ * domain publishes "v=spf1 include:spf.protection.outlook.com -all" with DMARC
+ * p=quarantine, so anything sent from the web server claiming to be
+ * @germantampabay.com fails SPF hard and is quarantined by Microsoft. Going out
+ * through Graph means the mail actually originates from Microsoft 365 and
+ * passes SPF and DKIM as itself.
+ *
+ * saveToSentItems is false deliberately. These are machine-generated notices;
+ * letting them land in Sent Items would mean the next sync ingested each one
+ * and opened a CRM thread for every notification the CRM had just sent.
+ */
+function gasf_crm_graph_send( $to, $subject, $text ) {
+	return gasf_crm_graph( 'POST', gasf_crm_mailbox_path() . '/sendMail', array(
+		'message'         => array(
+			'subject'      => $subject,
+			'body'         => array( 'contentType' => 'Text', 'content' => $text ),
+			'toRecipients' => array( array( 'emailAddress' => array( 'address' => $to ) ) ),
+		),
+		'saveToSentItems' => false,
+	) );
+}
+
+function gasf_crm_graph_attachments( $graph_message_id ) {
+	$res = gasf_crm_graph( 'GET', gasf_crm_mailbox_path() . '/messages/' . rawurlencode( $graph_message_id )
+		. '/attachments?$select=id,name,contentType,size' );
+	return is_wp_error( $res ) ? $res : (array) ( $res['value'] ?? array() );
+}
+
+/** Raw attachment bytes. Returns array( name, type, bytes ) or WP_Error. */
+function gasf_crm_graph_attachment( $graph_message_id, $attachment_id ) {
+	$res = gasf_crm_graph( 'GET', gasf_crm_mailbox_path() . '/messages/' . rawurlencode( $graph_message_id )
+		. '/attachments/' . rawurlencode( $attachment_id ) );
+	if ( is_wp_error( $res ) ) { return $res; }
+	if ( ! isset( $res['contentBytes'] ) ) {
+		// itemAttachment / referenceAttachment have no contentBytes — out of
+		// scope for v1 rather than silently handing back an empty file.
+		return new WP_Error( 'gasf_crm_att', 'Unsupported attachment type.' );
+	}
+	return array(
+		'name'  => (string) ( $res['name'] ?? 'attachment' ),
+		'type'  => (string) ( $res['contentType'] ?? 'application/octet-stream' ),
+		'bytes' => base64_decode( $res['contentBytes'] ),
+	);
+}
