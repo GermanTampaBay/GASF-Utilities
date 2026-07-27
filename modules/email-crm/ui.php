@@ -35,7 +35,11 @@ add_action( 'template_redirect', function () {
 	nocache_headers();
 	header( 'Cache-Control: no-store, no-cache, must-revalidate, max-age=0, private', true );
 	header( 'Pragma: no-cache', true );
-	header_remove( 'Expires' );
+	// Forced into the past, NOT removed. Removing it was my own error: it
+	// deleted WordPress's protective "Expires: 1984" and left mod_expires —
+	// which runs after PHP and has ExpiresByType text/html "plus 2 hours" — free
+	// to supply a future one instead. An empty slot is an invitation.
+	header( 'Expires: Wed, 11 Jan 1984 05:00:00 GMT', true );
 
 	$provider = sanitize_key( (string) get_query_var( 'gasf_crm_provider' ) );
 
@@ -378,9 +382,17 @@ function gasf_crm_render_signin() {
 	if ( ! $providers ) {
 		echo '<div class="note err">No sign-in method is configured yet. An administrator needs to add Google or Microsoft credentials in GASF Utilities &rarr; Email CRM.</div>';
 	}
+	// A form, not a link.
+	//
+	// Starting a sign-in is not a read: it mints a one-time state and sets a
+	// cookie. As a GET it was a redirect a browser could cache and replay — and
+	// did, once the host's mod_expires stamped two hours of freshness onto it,
+	// sending people back to Google with a state consumed hours earlier. Browsers
+	// do not reuse POST responses from cache, so this cannot recur however the
+	// host's caching is configured next.
 	foreach ( $providers as $key => $p ) {
 		printf(
-			'<a class="btn block" href="%s">Continue with %s</a>',
+			'<form method="post" action="%s"><button class="btn block" type="submit">Continue with %s</button></form>',
 			esc_url( home_url( '/email/auth/' . $key ) ),
 			esc_html( $p['label'] )
 		);

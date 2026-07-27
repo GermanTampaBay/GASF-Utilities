@@ -552,7 +552,7 @@ add_action( 'template_redirect', function () {
 	if ( ! defined( 'DONOTCACHEPAGE' ) ) { define( 'DONOTCACHEPAGE', true ); }
 	nocache_headers();
 	header( 'Cache-Control: no-store, no-cache, must-revalidate, max-age=0, private', true );
-	header_remove( 'Expires' );
+	header( 'Expires: Wed, 11 Jan 1984 05:00:00 GMT', true );
 	header( 'X-Robots-Tag: noindex, nofollow', true );
 
 	// Wrong or stale tokens are throttled per IP. Not because the token is

@@ -100,6 +100,15 @@ function gasf_crm_auth_start( $provider ) {
 	}
 	$p = $providers[ $provider ];
 
+	// POST only. A GET here would be a cacheable redirect carrying a one-time
+	// value, which is exactly how this broke. Anyone arriving by GET — an old
+	// bookmark, a link in a browser's history — is simply sent to the sign-in
+	// page to press the button.
+	if ( 'POST' !== ( $_SERVER['REQUEST_METHOD'] ?? '' ) ) {
+		wp_safe_redirect( home_url( '/email' ) );
+		exit;
+	}
+
 	$verifier  = rtrim( strtr( base64_encode( random_bytes( 48 ) ), '+/', '-_' ), '=' );
 	$challenge = rtrim( strtr( base64_encode( hash( 'sha256', $verifier, true ) ), '+/', '-_' ), '=' );
 	$state     = bin2hex( random_bytes( 16 ) );
