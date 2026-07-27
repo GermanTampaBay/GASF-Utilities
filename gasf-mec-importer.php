@@ -5,9 +5,9 @@
  * Version:     1.25.0
  * Author:      GASF
  * License:     GPL-2.0-or-later
- * Update URI:  https://github.com/flinchbot/GASF-Utilities
+ * Update URI:  https://github.com/GermanTampaBay/GASF-Utilities
  *
- * Repo: https://github.com/flinchbot/GASF-Utilities
+ * Repo: https://github.com/GermanTampaBay/GASF-Utilities
  *
  * ---------------------------------------------------------------------------
  * SECURITY: This file is tracked in a PUBLIC repo. NEVER hardcode secrets.
@@ -34,6 +34,23 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 define( 'GASF_MEC_VERSION', '1.19.0' );
+
+/**
+ * owner/repo on GitHub, for the auto-updater below.
+ *
+ * A constant because the same slug appeared in five places and the repo moved
+ * from a personal account to the GermanTampaBay organisation in July 2026 —
+ * which silently broke nothing at the time only because it was caught first.
+ * The failure mode is nasty: the version check stores a '0' sentinel when it
+ * cannot reach GitHub, so a wrong slug means updates simply stop appearing,
+ * with no error anywhere.
+ *
+ * The `Update URI:` header above must stay a literal — WordPress parses the
+ * file header before any of this executes — so that one still needs editing by
+ * hand if the repo ever moves again. Its HOSTNAME also selects the
+ * update_plugins_{$hostname} filter used below, so it must remain github.com.
+ */
+define( 'GASF_UTIL_REPO', 'GermanTampaBay/GASF-Utilities' );
 
 // Log lives OUTSIDE the web root (parent of ABSPATH), not web-fetchable.
 // Falls back silently if unwritable (logging is best-effort).
@@ -78,7 +95,7 @@ add_filter( 'update_plugins_github.com', function ( $update, $plugin_data, $plug
 	$ver = get_transient( 'gasf_util_update_check' );
 	if ( ! is_string( $ver ) ) {
 		$ver  = '';
-		$resp = wp_remote_get( 'https://raw.githubusercontent.com/flinchbot/GASF-Utilities/main/gasf-mec-importer.php', array( 'timeout' => 15 ) );
+		$resp = wp_remote_get( 'https://raw.githubusercontent.com/' . GASF_UTIL_REPO . '/main/gasf-mec-importer.php', array( 'timeout' => 15 ) );
 		if ( ! is_wp_error( $resp ) && 200 === (int) wp_remote_retrieve_response_code( $resp )
 			&& preg_match( '/^\s*\*?\s*Version:\s*([0-9][0-9a-z.\-]*)/mi', (string) wp_remote_retrieve_body( $resp ), $m ) ) {
 			$ver = trim( $m[1] );
@@ -92,12 +109,12 @@ add_filter( 'update_plugins_github.com', function ( $update, $plugin_data, $plug
 	}
 	if ( '' === $ver || '0' === $ver || version_compare( $ver, (string) $plugin_data['Version'], '<=' ) ) { return $update; }
 	return array(
-		'id'      => 'https://github.com/flinchbot/GASF-Utilities',
+		'id'      => 'https://github.com/' . GASF_UTIL_REPO,
 		'slug'    => dirname( $plugin_file ),
 		'plugin'  => $plugin_file,
 		'version' => $ver,
-		'url'     => 'https://github.com/flinchbot/GASF-Utilities',
-		'package' => 'https://github.com/flinchbot/GASF-Utilities/archive/refs/heads/main.zip',
+		'url'     => 'https://github.com/' . GASF_UTIL_REPO,
+		'package' => 'https://github.com/' . GASF_UTIL_REPO . '/archive/refs/heads/main.zip',
 	);
 }, 10, 3 );
 

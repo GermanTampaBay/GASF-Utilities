@@ -128,7 +128,7 @@ function gasf_utilities_overview_tab() {
 	echo '<li><strong>Site hardening</strong> — REST user-listing &amp; author-enumeration blocks, misc content 301s.</li>';
 	echo '</ul>';
 
-	echo '<p style="color:#666;margin-top:18px">Git-backed (repo <code>flinchbot/GASF-Utilities</code>); deploy = <code>git pull</code> in <code>/home4/germanta/gasf-muplugin</code>. Never edit these files on the server. Feature gates are <code>gasf_site_enable_*</code> / <code>gasf_mec_enable_*</code> options — toggle them on the <a href="' . $tab( 'settings' ) . '">Settings tab</a> (or <code>wp option update &lt;gate&gt; 0</code>). Related but separate: the <strong>GASF-Events</strong> plugin (events calendar, Facebook feed, Eventbrite publishing — see Events &rarr; Feeds and All Events).</p>';
+	echo '<p style="color:#666;margin-top:18px">Git-backed (repo <code>GermanTampaBay/GASF-Utilities</code>); deploy = <code>git pull</code> in <code>/home4/germanta/gasf-muplugin</code>. Never edit these files on the server. Feature gates are <code>gasf_site_enable_*</code> / <code>gasf_mec_enable_*</code> options — toggle them on the <a href="' . $tab( 'settings' ) . '">Settings tab</a> (or <code>wp option update &lt;gate&gt; 0</code>). Related but separate: the <strong>GASF-Events</strong> plugin (events calendar, Facebook feed, Eventbrite publishing — see Events &rarr; Feeds and All Events).</p>';
 }
 
 // (The old "Event Calendars" tab — gasf_utilities_events_tab — was removed in

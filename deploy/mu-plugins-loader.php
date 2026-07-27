@@ -1,7 +1,7 @@
 <?php
 /**
  * Plugin Name: GASF MEC Importer Fixes (loader)
- * Description: Loads the GASF MEC Advanced Importer mu-plugin from the git working copy at /home4/germanta/gasf-muplugin (repo: github.com/flinchbot/GASF-MUPlugin_MECalendar). Deploy updates with `git pull` in that directory. Replaces Code Snippets #17-#21.
+ * Description: Loads the GASF Utilities mu-plugin from the git working copy at /home4/germanta/gasf-muplugin (repo: github.com/GermanTampaBay/GASF-Utilities). Deploy updates with `git pull` in that directory. Replaces Code Snippets #17-#21.
  * Version:     1.0.0
  * Author:      GASF
  *
