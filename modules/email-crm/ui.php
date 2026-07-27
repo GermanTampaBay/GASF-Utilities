@@ -250,7 +250,8 @@ function gasf_crm_render_help() {
 		<li><strong>This page updates itself every minute.</strong> The list on the left refreshes on its own. You never need to press anything or reload.</li>
 		<li><strong>The club's mailbox is only checked once an hour.</strong> So when somebody sends us an email, it can sit there for up to an hour before it reaches this page.</li>
 	</ul>
-	<p>That gap is normal. If an email you are expecting has not appeared yet, it almost certainly just has not been collected yet — wait a bit and it will turn up on its own. There is no button to hurry it along, and nothing has gone wrong.</p>
+	<p>That gap is normal, and nothing has gone wrong when it happens.</p>
+	<p>If you are expecting something and do not want to wait, press <strong>Check for new mail</strong> at the top of the page. That goes and looks in the mailbox right now, and tells you what it found — including "Nothing new", which is a real answer and not a failure. Otherwise you can simply leave it: everything arrives on its own within the hour.</p>
 </div></div>
 	<?php
 }
@@ -261,6 +262,7 @@ function gasf_crm_render_inbox() {
 <header class="bar"><div class="wrap">
 	<h1>Club inbox &mdash; info@germantampabay.com</h1>
 	<div>
+		<button class="hbtn" id="checkmail">Check for new mail</button>
 		<button class="hbtn" onclick="var h=document.getElementById('help');h.style.display=h.style.display==='none'?'block':'none';window.scrollTo(0,0)">Help</button>
 		<?php echo esc_html( $user->display_name ); ?> &middot;
 		<a href="<?php echo esc_url( home_url( '/email/logout' ) ); ?>">Sign out</a>
@@ -653,6 +655,39 @@ function gasf_crm_render_inbox() {
 	// Refresh the list every minute, always. The open conversation is left
 	// alone — reloading it would wipe a half-written reply — but a banner
 	// appears if it has changed underneath.
+	// Manual "go and look now", so nobody has to wait out the hourly collection
+	// when they are expecting something. The button reports what it found rather
+	// than silently refreshing — "nothing new" is a useful answer, and without it
+	// people press it repeatedly wondering whether it did anything.
+	var check = document.getElementById('checkmail');
+	if(check){
+		check.onclick = function(){
+			check.disabled = true;
+			check.textContent = 'Checking…';
+			api('/sync', {method:'POST'}).then(function(r){
+				if(r.throttled){
+					check.textContent = 'Just checked';
+				} else if(r.new){
+					check.textContent = r.new + (r.new === 1 ? ' new message' : ' new messages');
+				} else {
+					check.textContent = 'Nothing new';
+				}
+				loadList();
+			}).catch(function(e){
+				// A failed check must look different from a quiet mailbox — a
+				// broken connection reading as "nothing new" is the worst
+				// outcome this button could have.
+				check.textContent = 'Check failed';
+				pane.innerHTML = '<div class="note err">Could not reach the mailbox: ' + esc(e.message) + '</div>';
+			}).then(function(){
+				setTimeout(function(){
+					check.disabled = false;
+					check.textContent = 'Check for new mail';
+				}, 3000);
+			});
+		};
+	}
+
 	loadList();
 	loadContacts();
 	setInterval(loadList, 60000);

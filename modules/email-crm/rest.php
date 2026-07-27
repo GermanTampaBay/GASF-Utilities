@@ -177,6 +177,37 @@ add_action( 'rest_api_init', function () {
 		'callback'            => 'gasf_crm_rest_forward',
 	) );
 
+	register_rest_route( 'gasf/v1', '/crm/sync', array(
+		'methods'             => 'POST',
+		'permission_callback' => $guard,
+		'callback'            => function () {
+			// Shared cooldown across all users, not per-user. The expensive thing
+			// is the round trip to Microsoft, and it costs the same whether one
+			// person presses this ten times or ten people press it once. The sync
+			// lock already stops overlapping runs; this stops a queue of
+			// back-to-back runs each fetching the same nothing.
+			if ( get_transient( 'gasf_crm_manual_sync' ) ) {
+				return array( 'throttled' => true, 'new' => 0, 'reopened' => 0 );
+			}
+			set_transient( 'gasf_crm_manual_sync', time(), MINUTE_IN_SECONDS );
+
+			$r = gasf_crm_sync();
+
+			// Report a genuine upstream failure rather than a silent "nothing
+			// new" — otherwise a broken mailbox connection looks identical to a
+			// quiet morning, which is the worst possible failure mode here.
+			if ( ! empty( $r['errors'] ) ) {
+				return new WP_Error( 'gasf_crm_sync', implode( '; ', $r['errors'] ), array( 'status' => 502 ) );
+			}
+
+			return array(
+				'throttled' => false,
+				'new'       => (int) $r['new'],
+				'reopened'  => (int) $r['reopened'],
+			);
+		},
+	) );
+
 	register_rest_route( 'gasf/v1', '/crm/contacts', array(
 		'methods'             => 'GET',
 		'permission_callback' => $guard,
