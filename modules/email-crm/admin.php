@@ -389,11 +389,29 @@ function gasf_crm_admin_tab() {
 		echo '<p class="description">Nobody has signed in yet.</p>';
 	} else {
 		$all_streams = gasf_crm_active_streams();
-		echo '<table class="widefat striped"><thead><tr><th>Name</th><th>Email</th><th>Provider</th><th>Status</th><th>Can see</th><th>Action</th></tr></thead><tbody>';
+
+		// Scoped to this table: `.me` is a two-letter class name and wp-admin is
+		// somebody else's DOM. The front end's copy of these rules lives in
+		// gasf_crm_styles(), which never loads here, and is tuned for white on a
+		// dark bar — this one is dark on light and needs its own values, not a
+		// shared one bent to cover both.
+		echo '<style>
+			.gasf-crm-accounts .who{display:flex;align-items:center;gap:9px}
+			.gasf-crm-accounts .me{position:relative;display:inline-flex;align-items:center;justify-content:center;
+				width:28px;height:28px;border-radius:50%;background:#f3efe6;color:#8a6508;
+				font-size:11px;font-weight:700;line-height:1;overflow:hidden;flex:none}
+			.gasf-crm-accounts .me img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
+		</style>';
+
+		echo '<table class="widefat striped gasf-crm-accounts"><thead><tr><th>Name</th><th>Email</th><th>Provider</th><th>Status</th><th>Can see</th><th>Action</th></tr></thead><tbody>';
 		foreach ( $users as $u ) {
 			$st = get_user_meta( $u->ID, 'gasf_crm_status', true );
 			$colour = 'approved' === $st ? '#2c7a3f' : ( 'denied' === $st ? '#d63638' : '#dba617' );
-			echo '<tr><td>' . esc_html( get_user_meta( $u->ID, 'gasf_crm_name', true ) ?: $u->display_name ) . '</td>';
+			$name   = get_user_meta( $u->ID, 'gasf_crm_name', true ) ?: $u->display_name;
+			// Shown for pending accounts too — knowing what somebody looks like is
+			// most useful at the moment you are deciding whether to approve them.
+			// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped inside the helper.
+			echo '<tr><td><span class="who">' . gasf_crm_avatar_html( $u, $name ) . '<span>' . esc_html( $name ) . '</span></span></td>';
 			echo '<td>' . esc_html( get_user_meta( $u->ID, 'gasf_crm_email', true ) ) . '</td>';
 			echo '<td>' . esc_html( get_user_meta( $u->ID, 'gasf_crm_provider', true ) ) . '</td>';
 			echo '<td><strong style="color:' . esc_attr( $colour ) . '">' . esc_html( $st ?: 'pending' ) . '</strong></td>';
@@ -437,6 +455,7 @@ function gasf_crm_admin_tab() {
 		echo '</tbody></table>';
 		echo '<p class="description"><strong>Approval</strong> says this is a real person; <strong>Can see</strong> says which inbox. A newly approved volunteer with no boxes ticked can sign in and sees nothing at all — that is deliberate, so adding a future mailbox never opens itself to everyone already approved. Accounts approved before this existed keep their General access.</p>';
 		echo '<p class="description">Accounts are identified by provider + subject claim, not email address — the same person signing in with Google and with Microsoft appears twice and needs approving twice.</p>';
+		echo '<p class="description">Profile photos come from Google, and only from a sign-in that happened after the photo was set. Microsoft does not put one in the sign-in token, so those accounts always show initials — initials are not a sign that anything is wrong.</p>';
 	}
 }
 

@@ -429,9 +429,16 @@ function gasf_crm_render_help() {
  *
  * aria-hidden: the name follows in plain text, so this is decoration and a
  * screen reader announcing initials would only say it twice.
+ *
+ * $name overrides which string the initials come from. The admin table shows
+ * the gasf_crm_name meta, which IS refreshed on every sign-in, while
+ * display_name is only set at account creation — so the two drift apart the
+ * first time somebody renames themselves at the provider, and initials that
+ * disagree with the name printed beside them look like a bug.
  */
-function gasf_crm_avatar_html( WP_User $user ) {
-	$words = preg_split( '~\s+~', trim( (string) $user->display_name ), -1, PREG_SPLIT_NO_EMPTY );
+function gasf_crm_avatar_html( WP_User $user, $name = '' ) {
+	$name  = '' !== trim( (string) $name ) ? (string) $name : (string) $user->display_name;
+	$words = preg_split( '~\s+~', trim( $name ), -1, PREG_SPLIT_NO_EMPTY );
 	$cut   = function_exists( 'mb_substr' ) ? 'mb_substr' : 'substr';
 	$upper = function_exists( 'mb_strtoupper' ) ? 'mb_strtoupper' : 'strtoupper';
 
