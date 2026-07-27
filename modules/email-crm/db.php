@@ -105,9 +105,11 @@ function gasf_crm_install_tables() {
 		expires_at DATETIME NOT NULL,
 		opened_at DATETIME NULL,
 		submitted_at DATETIME NULL,
+		reminded_at DATETIME NULL,
 		PRIMARY KEY  (id),
 		UNIQUE KEY token_hash (token_hash),
-		KEY thread_id (thread_id)
+		KEY thread_id (thread_id),
+		KEY chase (submitted_at, reminded_at, created_at)
 	) {$charset};" );
 
 	// Outbound attachments. stored_name is what sits on disk (random), while

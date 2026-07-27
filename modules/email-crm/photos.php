@@ -24,6 +24,21 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 /** How long a tagging link stays usable. */
 define( 'GASF_CRM_PHOTO_INVITE_DAYS', 30 );
 
+/**
+ * The chase.
+ *
+ * A photo whose sender has been asked about it sits in purgatory: kept, but not
+ * shown to a reviewer as needing anything, because the person who actually
+ * knows what it is has been asked and deserves the chance to answer. One
+ * reminder goes out on day 2. If day 5 arrives with nothing, the photo is
+ * released and a volunteer tags it from what they can see.
+ *
+ * Release is DERIVED from the invite date rather than stored, so it cannot
+ * drift out of step with reality or need a migration if these numbers change.
+ */
+define( 'GASF_CRM_PHOTO_REMIND_DAYS', 2 );
+define( 'GASF_CRM_PHOTO_RELEASE_DAYS', 5 );
+
 /** Caps on what one submitter can type, so a form post cannot become a flood. */
 define( 'GASF_CRM_PHOTO_MAX_PEOPLE', 25 );
 define( 'GASF_CRM_PHOTO_CAPTION_MAX', 150 );
@@ -386,18 +401,200 @@ function gasf_crm_photo_notify_review( array $invite, $count ) {
 	}
 }
 
+/* =====================================================================
+ * The chase — remind on day 2, release on day 5
+ * ================================================================== */
+
 /**
- * Threads holding photos whose tags nobody has confirmed yet, thread => count.
+ * Send the one reminder, to anyone asked more than REMIND_DAYS ago who has not
+ * answered.
  *
- * Drives the banner at the top of /email. Without it the only way to discover
- * a submission is to reopen the thread it came from and notice.
+ * A reminder needs a working link and the token is stored hashed, so the
+ * original cannot be re-sent — that is the price of not keeping a replayable
+ * credential in the database, and it is worth paying. So this mints a fresh
+ * invite for the same photos and leaves the first one alive: somebody who digs
+ * the original email out of their inbox on day 4 still gets a page that works,
+ * which rotating the token would have taken away from them.
+ *
+ * Both rows point at the same photos, and either can be filled in.
  */
-function gasf_crm_photo_pending_threads() {
+function gasf_crm_photo_chase() {
+	global $wpdb;
+
+	$t   = gasf_crm_table( 'photo_invites' );
+	$now = current_time( 'mysql', true );
+	$due = $wpdb->get_results( $wpdb->prepare(
+		"SELECT * FROM {$t}
+		  WHERE submitted_at IS NULL
+		    AND reminded_at IS NULL
+		    AND expires_at > %s
+		    AND created_at <= %s
+		  ORDER BY created_at ASC LIMIT 20",
+		$now,
+		gmdate( 'Y-m-d H:i:s', time() - ( GASF_CRM_PHOTO_REMIND_DAYS * DAY_IN_SECONDS ) )
+	), ARRAY_A );
+
+	$sent = 0;
+	foreach ( $due as $row ) {
+		// Mark first. A send that throws must not leave the row eligible to be
+		// chased again on the next run — one reminder is a nudge, four is
+		// nagging somebody who did us a favour.
+		$wpdb->update( $t, array( 'reminded_at' => $now ), array( 'id' => (int) $row['id'] ), array( '%s' ), array( '%d' ) );
+
+		$ids = array_map( 'intval', (array) json_decode( (string) $row['attachment_ids'], true ) );
+		$ids = array_values( array_filter( $ids, function ( $id ) {
+			// A photo deleted since the ask is not worth chasing about.
+			return 'attachment' === get_post_type( $id );
+		} ) );
+		if ( ! $ids ) { continue; }
+
+		$fresh = gasf_crm_photo_invite_create( (int) $row['thread_id'], $row['email'], $row['name'], $ids );
+		if ( is_wp_error( $fresh ) ) {
+			gasf_mec_log( 'CRM photos: reminder for invite ' . (int) $row['id'] . ' could not be minted — ' . $fresh->get_error_message() );
+			continue;
+		}
+		// The fresh row is the reminder, so it never earns one of its own.
+		$wpdb->update( $t, array( 'reminded_at' => $now ), array( 'id' => (int) $fresh['id'] ), array( '%s' ), array( '%d' ) );
+
+		$body = sprintf(
+			"Hello%s,\n\n" .
+			"A little while ago we asked about the %s you sent the club, and said we would love to know what they show. In case it slipped past — it usually does, and no harm done — here is the link again:\n\n" .
+			"%s\n\n" .
+			"It takes a minute, and there is no account or password.\n\n" .
+			"This is the only reminder you will get. If you would rather not, just ignore it: the photos stay with us either way and one of our volunteers will label them as best we can.\n\n" .
+			"With thanks,\n%s",
+			$row['name'] ? ' ' . $row['name'] : '',
+			1 === count( $ids ) ? 'photo' : 'photos',
+			$fresh['url'],
+			gasf_crm_cfg()['signature_org']
+		);
+
+		$ok = gasf_crm_graph_send( $row['email'], 'A gentle nudge about your photos', $body, 'photos' );
+		if ( is_wp_error( $ok ) ) {
+			gasf_mec_log( 'CRM photos: reminder to ' . $row['email'] . ' FAILED — ' . $ok->get_error_message() );
+			continue;
+		}
+
+		gasf_crm_log_event( (int) $row['thread_id'], 'photo_reminded', 'reminder sent to ' . $row['email'] );
+		$sent++;
+	}
+
+	return $sent;
+}
+
+/**
+ * Where one photo sits in the loop.
+ *
+ * @return array{state:string,release:string,invite:int}
+ *   confirmed  tags applied, done
+ *   described  the sender answered; waiting on a volunteer
+ *   waiting    asked, inside the grace period — purgatory, nobody is chased
+ *   released   asked, grace period passed, no answer — a volunteer tags it
+ *   untagged   nobody was ever asked, so nothing is being waited for
+ */
+function gasf_crm_photo_state( $attachment_id ) {
+	global $wpdb;
+	$id = (int) $attachment_id;
+
+	if ( get_post_meta( $id, '_gasf_photo_pending', true ) ) {
+		return array( 'state' => 'described', 'release' => '', 'invite' => 0 );
+	}
+	if ( get_post_meta( $id, '_gasf_photo_confirmed', true ) ) {
+		return array( 'state' => 'confirmed', 'release' => '', 'invite' => 0 );
+	}
+
+	// The EARLIEST invite covering this photo. A reminder mints a second row,
+	// and dating the grace period from that one would silently extend purgatory
+	// by two days every time somebody was nudged.
+	$t   = gasf_crm_table( 'photo_invites' );
+	$row = $wpdb->get_row( $wpdb->prepare(
+		"SELECT id, created_at, submitted_at FROM {$t}
+		  WHERE attachment_ids LIKE %s ORDER BY created_at ASC LIMIT 1",
+		'%' . $wpdb->esc_like( '[' . $id . ',' ) . '%'
+	), ARRAY_A );
+	if ( ! $row ) {
+		// LIKE on a JSON list needs all three positions: first, middle, last/only.
+		$row = $wpdb->get_row( $wpdb->prepare(
+			"SELECT id, created_at, submitted_at FROM {$t}
+			  WHERE attachment_ids LIKE %s OR attachment_ids LIKE %s
+			  ORDER BY created_at ASC LIMIT 1",
+			'%' . $wpdb->esc_like( ',' . $id . ',' ) . '%',
+			'%' . $wpdb->esc_like( ',' . $id . ']' ) . '%'
+		), ARRAY_A );
+	}
+	if ( ! $row ) {
+		$row = $wpdb->get_row( $wpdb->prepare(
+			"SELECT id, created_at, submitted_at FROM {$t} WHERE attachment_ids = %s LIMIT 1",
+			'[' . $id . ']'
+		), ARRAY_A );
+	}
+
+	// Nobody was asked, so nothing is owed and it is a volunteer's to tag now.
+	if ( ! $row ) { return array( 'state' => 'untagged', 'release' => '', 'invite' => 0 ); }
+
+	$free = strtotime( $row['created_at'] . ' UTC' ) + ( GASF_CRM_PHOTO_RELEASE_DAYS * DAY_IN_SECONDS );
+	if ( time() < $free ) {
+		return array( 'state' => 'waiting', 'release' => gmdate( 'Y-m-d H:i:s', $free ), 'invite' => (int) $row['id'] );
+	}
+	return array( 'state' => 'released', 'release' => gmdate( 'Y-m-d H:i:s', $free ), 'invite' => (int) $row['id'] );
+}
+
+/**
+ * What actually needs a volunteer, thread => counts.
+ *
+ * Purgatory is deliberately absent: a photo whose sender has been asked and
+ * still has days to answer is not work, and putting it in front of somebody as
+ * though it were is how a queue stops being believed.
+ *
+ * @return array<int,array{described:int,released:int}>
+ */
+function gasf_crm_photo_actionable_threads() {
 	$out = array();
-	foreach ( gasf_crm_photo_pending_ids() as $aid ) {
+
+	$consider = array_unique( array_merge(
+		gasf_crm_photo_pending_ids(),
+		gasf_crm_photo_untagged_ids()
+	) );
+
+	foreach ( $consider as $aid ) {
 		$src = get_post_meta( $aid, '_gasf_photo_source', true );
 		$tid = (int) ( is_array( $src ) ? ( $src['thread'] ?? 0 ) : 0 );
-		if ( $tid ) { $out[ $tid ] = ( $out[ $tid ] ?? 0 ) + 1; }
+		if ( ! $tid ) { continue; }
+
+		$st = gasf_crm_photo_state( $aid );
+		if ( 'described' !== $st['state'] && 'released' !== $st['state'] ) { continue; }
+
+		if ( ! isset( $out[ $tid ] ) ) { $out[ $tid ] = array( 'described' => 0, 'released' => 0 ); }
+		$out[ $tid ][ $st['state'] ]++;
+	}
+
+	return $out;
+}
+
+/** Photos kept from a submission that carry no tags and no pending answers. */
+function gasf_crm_photo_untagged_ids() {
+	$q = new WP_Query( array(
+		'post_type'      => 'attachment',
+		'post_status'    => 'inherit',
+		'posts_per_page' => 200,
+		'fields'         => 'ids',
+		'no_found_rows'  => true,
+		'meta_query'     => array(
+			'relation' => 'AND',
+			array( 'key' => '_gasf_photo_source', 'compare' => 'EXISTS' ),
+			array( 'key' => '_gasf_photo_confirmed', 'compare' => 'NOT EXISTS' ),
+			array( 'key' => '_gasf_photo_pending', 'compare' => 'NOT EXISTS' ),
+		),
+	) );
+	return array_map( 'intval', $q->posts );
+}
+
+/** Back-compat for anything still asking the old question. */
+function gasf_crm_photo_pending_threads() {
+	$out = array();
+	foreach ( gasf_crm_photo_actionable_threads() as $tid => $n ) {
+		$total = $n['described'] + $n['released'];
+		if ( $total ) { $out[ $tid ] = $total; }
 	}
 	return $out;
 }
@@ -598,6 +795,8 @@ function gasf_crm_photo_thread_block( $thread_id ) {
 		$confirmed = get_post_meta( $id, '_gasf_photo_confirmed', true );
 		$info      = function_exists( 'gasf_photo_info' ) ? gasf_photo_info( $id ) : array();
 
+		$st = gasf_crm_photo_state( $id );
+
 		$out[] = array(
 			'id'        => $id,
 			'thumb'     => wp_get_attachment_image_url( $id, 'thumbnail' ),
@@ -609,6 +808,12 @@ function gasf_crm_photo_thread_block( $thread_id ) {
 			'caption'   => $info['caption'] ?? '',
 			'pending'   => is_array( $pending ) ? $pending : null,
 			'confirmed' => ! empty( $confirmed ),
+			'state'     => $st['state'],
+			// Rendered as a date for the volunteer, so "waiting" has a visible
+			// end rather than being an indefinite shrug.
+			'release'   => $st['release']
+				? mysql2date( get_option( 'date_format' ), $st['release'] )
+				: '',
 		);
 	}
 	return $out;

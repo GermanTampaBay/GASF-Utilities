@@ -33,7 +33,7 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 	// upgrade check below runs dbDelta and flushes rules on any change. This
 	// plugin runs as an mu-plugin on the main site, where activation hooks
 	// never fire, so a version-compare on every load is the only reliable hook.
-	define( 'GASF_CRM_SCHEMA', '1.6.0' );
+	define( 'GASF_CRM_SCHEMA', '1.7.0' );
 
 	/**
 	 * How far ahead to start warning that the Graph client secret is running
@@ -217,12 +217,26 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 	} );
 	add_action( 'gasf_crm_sync_event', 'gasf_crm_sync' );
 
+	/**
+	 * Photo reminders ride the sync.
+	 *
+	 * Not because they belong together, but because the sync is the only thing
+	 * on this site with a real system cron behind it. WP-Cron fires on page
+	 * traffic, and a club site can sit idle overnight — a "two day" reminder
+	 * scheduled that way would go out whenever somebody next happened to visit.
+	 *
+	 * Running hourly costs one indexed query and the work is idempotent:
+	 * reminded_at is stamped before the send, so nothing is chased twice.
+	 */
+	add_action( 'gasf_crm_sync_event', 'gasf_crm_photo_chase', 20 );
+
 	if ( defined( 'WP_CLI' ) && WP_CLI ) {
 		WP_CLI::add_command( 'gasf-crm sync', function () {
-			$r = gasf_crm_sync();
+			$r  = gasf_crm_sync();
+			$ch = function_exists( 'gasf_crm_photo_chase' ) ? (int) gasf_crm_photo_chase() : 0;
 			WP_CLI::success( sprintf(
-				'%d new message(s), %d reopened, %d queued, %d announced.',
-				$r['new'], $r['reopened'], $r['queued'], $r['notified']
+				'%d new message(s), %d reopened, %d queued, %d announced, %d photo reminder(s).',
+				$r['new'], $r['reopened'], $r['queued'], $r['notified'], $ch
 			) );
 		} );
 	}

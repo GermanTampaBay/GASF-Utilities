@@ -418,7 +418,19 @@ function gasf_crm_admin_tab() {
 		$opened  = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$inv_t} WHERE opened_at IS NOT NULL" );
 		$done    = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$inv_t} WHERE submitted_at IS NOT NULL" );
 		$live    = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$inv_t} WHERE submitted_at IS NULL AND expires_at > %s", current_time( 'mysql', true ) ) );
-		$waiting = array_sum( gasf_crm_photo_pending_threads() );
+		$nudged  = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$inv_t} WHERE reminded_at IS NOT NULL" );
+
+		$acts      = gasf_crm_photo_actionable_threads();
+		$described = array_sum( wp_list_pluck( $acts, 'described' ) );
+		$released  = array_sum( wp_list_pluck( $acts, 'released' ) );
+		$waiting   = $described + $released;
+
+		// Purgatory is worth showing here even though it is not work: it is the
+		// answer to "we kept photos days ago and nothing has happened".
+		$grace = 0;
+		foreach ( gasf_crm_photo_untagged_ids() as $aid ) {
+			if ( 'waiting' === gasf_crm_photo_state( $aid )['state'] ) { $grace++; }
+		}
 
 		// Who could actually act on a submission. Zero here means answers arrive
 		// and nobody is told — the failure this panel exists to make visible.
@@ -428,15 +440,24 @@ function gasf_crm_admin_tab() {
 		}
 
 		printf(
-			'<p class="description">%d tagging link(s) sent, %d opened, %d filled in. %d still live and unanswered.</p>',
-			$sent, $opened, $done, $live
+			'<p class="description">%d tagging link(s) sent, %d opened, %d filled in, %d reminded. %d still live and unanswered.</p>',
+			$sent, $opened, $done, $nudged, $live
+		);
+
+		printf(
+			'<p class="description">A submitter is reminded once after %d days and given %d before the photos are handed to a volunteer to label. <strong>%d photo(s)</strong> are inside that grace period now &mdash; nobody is being asked to do anything about those, on purpose.</p>',
+			(int) GASF_CRM_PHOTO_REMIND_DAYS,
+			(int) GASF_CRM_PHOTO_RELEASE_DAYS,
+			(int) $grace
 		);
 
 		if ( $waiting ) {
 			printf(
-				'<div class="notice notice-warning inline"><p><strong>%d photo(s) have descriptions waiting to be checked.</strong> Nothing a submitter typed becomes a tag until a volunteer confirms it at <code>%s</code>.</p></div>',
+				'<div class="notice notice-warning inline"><p><strong>%d photo(s) need a volunteer at <code>%s</code>:</strong> %d described by the sender and waiting to be checked, %d never answered and now theirs to label. Nothing a submitter typed becomes a tag until somebody confirms it.</p></div>',
 				(int) $waiting,
-				esc_html( home_url( '/email' ) )
+				esc_html( home_url( '/email' ) ),
+				(int) $described,
+				(int) $released
 			);
 		}
 

@@ -524,19 +524,34 @@ function gasf_crm_render_inbox() {
 	// it over. This is where that becomes visible without having to guess which
 	// thread to reopen. Only shown to people who hold the photos stream, and
 	// only when there is genuinely something waiting.
-	if ( function_exists( 'gasf_crm_photo_pending_threads' ) && gasf_crm_user_can_stream( 'photos' ) ) :
-		$waiting = gasf_crm_photo_pending_threads();
-		$total   = array_sum( $waiting );
-		if ( $total ) : ?>
+	if ( function_exists( 'gasf_crm_photo_actionable_threads' ) && gasf_crm_user_can_stream( 'photos' ) ) :
+		$waiting   = gasf_crm_photo_actionable_threads();
+		$described = array_sum( wp_list_pluck( $waiting, 'described' ) );
+		$released  = array_sum( wp_list_pluck( $waiting, 'released' ) );
+		if ( $described + $released ) : ?>
 	<div class="wrap"><div class="note ok" style="margin-top:16px">
-		<strong><?php printf( '%d photo%s waiting to be checked.', (int) $total, 1 === (int) $total ? '' : 's' ); ?></strong>
-		Somebody has told us what they are. Nothing they wrote is a tag yet &mdash; open the message and confirm it.
+		<?php
+		// Two different jobs, said separately. "Check what they told us" and
+		// "nobody replied, work it out yourself" take different amounts of
+		// effort, and a single blended number tells you neither.
+		$bits = array();
+		if ( $described ) {
+			$bits[] = sprintf( '<strong>%d photo%s described by the sender</strong>, waiting for you to check',
+				(int) $described, 1 === (int) $described ? '' : 's' );
+		}
+		if ( $released ) {
+			$bits[] = sprintf( '<strong>%d photo%s the sender never replied about</strong>, now yours to label',
+				(int) $released, 1 === (int) $released ? '' : 's' );
+		}
+		echo wp_kses_post( ucfirst( implode( ', and ', $bits ) ) ) . '.';
+		?>
 		<div style="margin-top:8px">
 			<?php foreach ( $waiting as $tid => $n ) :
 				$th = gasf_crm_get_thread( (int) $tid );
 				if ( ! $th || ! gasf_crm_user_can_stream( (string) $th['stream'] ) ) { continue; } ?>
 				<button class="btn sec" data-openthread="<?php echo (int) $tid; ?>" style="margin:0 6px 6px 0">
-					<?php echo esc_html( $th['subject'] ? $th['subject'] : '(no subject)' ); ?> &middot; <?php echo (int) $n; ?>
+					<?php echo esc_html( $th['subject'] ? $th['subject'] : '(no subject)' ); ?>
+					&middot; <?php echo (int) ( $n['described'] + $n['released'] ); ?>
 				</button>
 			<?php endforeach; ?>
 		</div>
@@ -1016,14 +1031,39 @@ function gasf_crm_render_inbox() {
 		});
 	}
 
-	// Photos kept from this submission, and whatever the sender has since told
-	// us about them. Three states, deliberately distinguishable at a glance:
-	// kept but nobody asked; asked and waiting; described and waiting on us.
+	// The labelling form: identical whether the sender filled it in or nobody
+	// did. A volunteer working from scratch needs exactly the fields a
+	// volunteer checking somebody's answers needs, so there is one of them.
+	function photoForm(p, q){
+		var s = '<label class="pf"><span>Who is in it</span>' +
+			'<input type="text" class="p-people" value="' + esc((q.people||[]).join(', ')) + '" placeholder="Nobody named"></label>' +
+			'<label class="pf"><span>What is happening</span>' +
+			'<input type="text" class="p-caption" maxlength="150" value="' + esc(q.caption||'') + '"></label>' +
+			'<div class="prow">' +
+			'<label class="pf"><span>Where</span><input type="text" class="p-place" value="' + esc(q.place||p.guess||'') + '"></label>' +
+			'<label class="pf"><span>Occasion</span><input type="text" class="p-event" value="' + esc(q.event||'') + '"></label>' +
+			'<label class="pf"><span>Date</span><input type="date" class="p-taken" value="' + esc(q.taken||p.taken||'') + '"></label>' +
+			'</div>';
+
+		// The camera's own guess is shown next to what the sender typed, never
+		// merged into it. They disagree often enough — GPS is wider than a tight
+		// geofence — that quietly preferring one would be inventing a fact.
+		if (p.guess) {
+			s += '<p class="pgeo">Camera put this at <strong>' + esc(p.guess) + '</strong>' +
+				(p.alts && p.alts.length ? ' (also inside ' + esc(p.alts.join(', ')) + ')' : '') + '.</p>';
+		}
+		return s + '<div class="actions"><button class="btn p-ok">Add these tags</button>' +
+			'<span class="p-msg muted"></span></div>';
+	}
+
+	// Photos kept from this submission and where each one sits in the chase.
+	// Purgatory shows NO form: the person who actually knows has been asked and
+	// still has days to answer, and putting a blank form in front of a volunteer
+	// meanwhile is asking two people the same question.
 	function photoBlock(t){
 		var ph = t.photos || [];
 		if (!ph.length) { return ''; }
 
-		var waiting = ph.filter(function(p){ return p.pending; });
 		var head = '<div class="photos"><h3>Photos kept from this email (' + ph.length + ')</h3>';
 
 		var cards = ph.map(function(p){
@@ -1032,35 +1072,28 @@ function gasf_crm_render_inbox() {
 				(p.thumb ? '<img src="' + esc(p.thumb) + '" alt="">' : '') + '</a>' +
 				'<div class="pbody">';
 
-			if (p.pending) {
-				var q = p.pending;
-				s += '<div class="pfrom">The sender says:</div>' +
-					'<label class="pf"><span>Who is in it</span>' +
-					'<input type="text" class="p-people" value="' + esc((q.people||[]).join(', ')) + '" placeholder="Nobody named"></label>' +
-					'<label class="pf"><span>What is happening</span>' +
-					'<input type="text" class="p-caption" maxlength="150" value="' + esc(q.caption||'') + '"></label>' +
-					'<div class="prow">' +
-					'<label class="pf"><span>Where</span><input type="text" class="p-place" value="' + esc(q.place||'') + '"></label>' +
-					'<label class="pf"><span>Occasion</span><input type="text" class="p-event" value="' + esc(q.event||'') + '"></label>' +
-					'<label class="pf"><span>Date</span><input type="date" class="p-taken" value="' + esc(q.taken||p.taken||'') + '"></label>' +
-					'</div>';
-
-				// The camera's own guess is shown next to what the sender typed,
-				// never merged into it. They disagree often enough — GPS is wider
-				// than a tight geofence — that quietly preferring one would be
-				// inventing a fact.
-				if (p.guess) {
-					s += '<p class="pgeo">Camera put this at <strong>' + esc(p.guess) + '</strong>' +
-						(p.alts && p.alts.length ? ' (also inside ' + esc(p.alts.join(', ')) + ')' : '') + '.</p>';
-				}
-				s += '<div class="actions"><button class="btn p-ok">Add these tags</button>' +
-					'<span class="p-msg muted"></span></div>';
-			} else if (p.confirmed) {
+			if (p.confirmed) {
 				s += '<div class="pdone">✓ Tagged' + (p.people.length ? ' — ' + esc(p.people.join(', ')) : '') + '</div>' +
 					(p.caption ? '<p class="muted">' + esc(p.caption) + '</p>' : '');
+
+			} else if (p.state === 'waiting') {
+				s += '<div class="muted">Waiting on the sender until <strong>' + esc(p.release) + '</strong>. ' +
+					'They have been asked, and reminded once. If they never reply it becomes yours to label.' +
+					(p.taken ? ' The camera said ' + esc(p.taken) + '.' : '') + '</div>' +
+					// Never blocked, only un-nagged. Somebody who happens to know
+					// should not have to wait five days to say so.
+					'<div class="actions"><button class="btn sec p-early">I know what this is — label it now</button></div>' +
+					'<div class="pedit" hidden>' + photoForm(p, {}) + '</div>';
+
+			} else if (p.pending) {
+				s += '<div class="pfrom">The sender says:</div>' + photoForm(p, p.pending);
+
+			} else if (p.state === 'released') {
+				s += '<div class="pfrom">The sender never replied &mdash; label it from what you can see:</div>' +
+					photoForm(p, {});
+
 			} else {
-				s += '<div class="muted">Kept. Nothing known about it yet' +
-					(p.taken ? ' beyond the date, ' + esc(p.taken) : '') + '.</div>';
+				s += '<div class="pfrom">Nobody has been asked about this one:</div>' + photoForm(p, {});
 			}
 
 			return s + '</div></div>';
@@ -1102,6 +1135,15 @@ function gasf_crm_render_inbox() {
 					.catch(function(e){ ask.disabled = false; askmsg.textContent = e.message; });
 			};
 		}
+
+		// "I know what this is" reveals the form during the grace period.
+		Array.prototype.forEach.call(pane.querySelectorAll('.p-early'), function(b){
+			b.onclick = function(){
+				var box = b.closest('.pcard').querySelector('.pedit');
+				if (box) { box.hidden = false; }
+				b.remove();
+			};
+		});
 
 		Array.prototype.forEach.call(pane.querySelectorAll('.pcard'), function(card){
 			var ok = card.querySelector('.p-ok');
