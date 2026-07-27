@@ -573,7 +573,19 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 			GASF_EVENTS_CPT, $start->getTimestamp(), $end->getTimestamp(), (int) $limit
 		), ARRAY_A );
 
-		return array_map( 'gasf_photo_event_shape', (array) $rows );
+		// Collapse exact duplicates — same name, same minute. The calendar has
+		// some (two "Monthly Cleanup Day" posts share several dates), and two
+		// identical buttons side by side reads as a broken picker rather than as
+		// a real choice. Lowest post ID wins, so the answer is stable.
+		$seen = array();
+		$out  = array();
+		foreach ( (array) $rows as $r ) {
+			$key = strtolower( trim( (string) $r['post_title'] ) ) . '|' . (int) $r['ts'];
+			if ( isset( $seen[ $key ] ) ) { continue; }
+			$seen[ $key ] = true;
+			$out[] = gasf_photo_event_shape( $r );
+		}
+		return $out;
 	}
 
 	/** Events whose title matches, newest first — for when the date is no help. */
@@ -602,7 +614,7 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 	 * dozen names, because the Biergarten runs weekly. A submitter picking from
 	 * a list wants "Biergarten", not 200 Wednesdays.
 	 */
-	function gasf_photo_event_titles( $years = 5, $limit = 300 ) {
+	function gasf_photo_event_titles( $years = 3, $limit = 200 ) {
 		if ( ! gasf_photo_has_calendar() ) { return array(); }
 
 		global $wpdb;
