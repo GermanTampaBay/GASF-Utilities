@@ -614,4 +614,54 @@ function gasf_crm_photo_thread_block( $thread_id ) {
 	return $out;
 }
 
+/**
+ * Provenance on the Media Library screen.
+ *
+ * The question asked about a club photo two years from now is rarely "what is
+ * it" — it is "who gave us this, and may we use it". By then the thread has
+ * long been answered, the volunteer who kept it may have moved on, and the
+ * mailbox may have been tidied. Recording it against the photo and never
+ * showing it would have been filing the answer somewhere nobody looks.
+ *
+ * Read-only. This is a record of what happened, not a field to curate; an
+ * editable provenance is worth less than none.
+ */
+add_filter( 'attachment_fields_to_edit', function ( $fields, $post ) {
+	$src = get_post_meta( $post->ID, '_gasf_photo_source', true );
+	if ( ! is_array( $src ) || empty( $src['email'] ) ) { return $fields; }
+
+	$who = trim( (string) ( $src['name'] ?? '' ) );
+	$out = '<span class="description">' . esc_html( $who ? $who . ' <' . $src['email'] . '>' : $src['email'] ) . '<br>';
+
+	if ( ! empty( $src['subject'] ) ) {
+		$out .= '<em>' . esc_html( $src['subject'] ) . '</em><br>';
+	}
+	if ( ! empty( $src['approved_at'] ) ) {
+		$by = ! empty( $src['approved_by'] ) ? get_userdata( (int) $src['approved_by'] ) : null;
+		$out .= esc_html( sprintf(
+			'Kept %s%s',
+			mysql2date( get_option( 'date_format' ), $src['approved_at'] ),
+			$by ? ' by ' . $by->display_name : ''
+		) ) . '<br>';
+	}
+
+	// Say where it is in the loop, so a half-finished submission is visible
+	// from the photo as well as from the CRM.
+	if ( get_post_meta( $post->ID, '_gasf_photo_pending', true ) ) {
+		$out .= '<strong style="color:#b32d2e">The sender has described this, and it is waiting to be checked.</strong>';
+	} elseif ( get_post_meta( $post->ID, '_gasf_photo_confirmed', true ) ) {
+		$out .= '<strong style="color:#2c7a3f">Described by the sender and confirmed.</strong>';
+	} else {
+		$out .= 'Nobody has described it yet.';
+	}
+
+	$fields['gasf_photo_src'] = array(
+		'label' => __( 'Sent to us by', 'gasf' ),
+		'input' => 'html',
+		'html'  => $out . '</span>',
+	);
+
+	return $fields;
+}, 20, 2 );
+
 require_once __DIR__ . '/photos-page.php';
