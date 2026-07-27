@@ -36,6 +36,7 @@ function gasf_crm_admin_tab() {
 			$cfg['ms_id']          = sanitize_text_field( wp_unslash( $_POST['ms_id'] ?? '' ) );
 			$cfg['signature_org']  = sanitize_text_field( wp_unslash( $_POST['signature_org'] ?? '' ) );
 			$cfg['secret_expiry']  = sanitize_text_field( wp_unslash( $_POST['secret_expiry'] ?? '' ) );
+			$cfg['board_address']  = sanitize_email( wp_unslash( $_POST['board_address'] ?? '' ) );
 			$cfg['notify_channel'] = sanitize_key( wp_unslash( $_POST['notify_channel'] ?? 'email' ) );
 			$cfg['notify_extra']   = sanitize_text_field( wp_unslash( $_POST['notify_extra'] ?? '' ) );
 
@@ -217,6 +218,9 @@ function gasf_crm_admin_tab() {
 			<tr><th scope="row">Signature organisation</th>
 				<td><input type="text" class="large-text" name="signature_org" value="<?php echo esc_attr( $cfg['signature_org'] ); ?>">
 					<p class="description">Appended under the replying volunteer's name. Replies always send as the shared mailbox.</p></td></tr>
+			<tr><th scope="row">Board address</th>
+				<td><input type="email" class="regular-text" name="board_address" value="<?php echo esc_attr( $cfg['board_address'] ); ?>">
+					<p class="description">Destination for the one-click <em>Forward to Board</em> button on <code>/email</code>. It takes two deliberate clicks to fire. Leave blank to remove the button.</p></td></tr>
 			<tr><th scope="row">Notify via</th>
 				<td><select name="notify_channel">
 					<?php foreach ( array( 'email' => 'Email', 'all' => 'Every registered channel' ) as $k => $l ) : ?>

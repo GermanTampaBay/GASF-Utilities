@@ -239,6 +239,7 @@ function gasf_crm_render_help() {
 		<li><strong>Draft with AI</strong> writes a first attempt for you, based on the club website and the replies the rest of us have already sent. <em>Read it before you send it.</em> It can get things wrong, and it only knows what it has been shown. Edit it freely — it is a starting point to save you typing, not an answer.</li>
 		<li><strong>Forward</strong> sends the message on to somebody else — the treasurer, the hall booking person, whoever it really belongs to. You can add a note at the top, and as you type an address it suggests people we have written to before.
 			<br>Once you forward something it moves to <strong>Answered</strong> and leaves your list. That is on purpose: it is now their job, and they will write back to the person themselves. You are not waiting on anything.
+			<br>There is also a <strong>Forward to Board</strong> button for anything the committee should see. It ignores the address box and goes straight to the board address. It needs <strong>two clicks</strong> — the first arms it and it turns red, the second actually sends. That is on purpose, so a stray click cannot mail the Board by accident. If you change your mind, just wait: it disarms itself after a few seconds.
 			<br>Changed your mind, or they need something from us after all? Find it in Answered, open it, and press <em>Put back in Open</em>.</li>
 		<li><strong>Attach</strong> adds a file to your reply, from either place:
 			<br>&mdash; <strong>Your own computer.</strong> Pick the file and press <em>Attach this file</em>. If it is something we send often, tick the box first and it is saved to the shared library so nobody has to go looking for it again.
@@ -301,6 +302,7 @@ function gasf_crm_render_inbox() {
 (function(){
 	var API   = <?php echo wp_json_encode( rest_url( 'gasf/v1/crm' ) ); ?>;
 	var NONCE = <?php echo wp_json_encode( wp_create_nonce( 'wp_rest' ) ); ?>;
+	var BOARD = <?php echo wp_json_encode( (string) gasf_crm_cfg()['board_address'] ); ?>;
 	var list = document.getElementById('list'), pane = document.getElementById('pane');
 	var status = 'open', current = null, currentStamp = null;
 
@@ -459,7 +461,10 @@ function gasf_crm_render_inbox() {
 							'placeholder="e.g. Karl, can you take this one?"></textarea></label>' +
 						'<div class="actions">' +
 						'<button class="btn" id="fwdsend">Send forward</button>' +
+						(BOARD ? '<button class="btn sec" id="fwdboard">Forward to Board</button>' : '') +
 						'<button class="btn sec" id="fwdcancel">Cancel</button></div>' +
+						(BOARD ? '<p class="muted" style="margin:8px 0 0">The Board button ignores the address above and sends to <strong>' +
+							esc(BOARD) + '</strong>. It needs two clicks.</p>' : '') +
 					'</div>' +
 					'<div id="msg"></div>';
 			}
@@ -644,9 +649,10 @@ function gasf_crm_render_inbox() {
 		var restore = document.getElementById('restore');
 		var fwdopen = document.getElementById('fwdopen'), fwd = document.getElementById('fwd');
 		var fwdsend = document.getElementById('fwdsend'), fwdcancel = document.getElementById('fwdcancel');
+		var fwdboard = document.getElementById('fwdboard'), boardArm = null;
 		var attopen = document.getElementById('attopen'), att = document.getElementById('att');
 		var atupload = document.getElementById('atupload'), atclose = document.getElementById('atclose');
-		var all = [send, draft, done, ignore, restore, fwdopen, fwdsend, attopen, atupload].filter(Boolean);
+		var all = [send, draft, done, ignore, restore, fwdopen, fwdsend, fwdboard, attopen, atupload].filter(Boolean);
 
 		function busy(b, el){ all.forEach(function(x){ x.disabled = b; }); if(el){ el.classList.toggle('spin', b); } }
 		function fail(e, el){ out.innerHTML = '<div class="note err">' + esc(e.message) + '</div>'; busy(false, el); }
@@ -737,7 +743,36 @@ function gasf_crm_render_inbox() {
 				fwd.style.display = fwd.style.display === 'none' ? 'block' : 'none';
 				if(fwd.style.display === 'block'){ document.getElementById('fwdto').focus(); }
 			};
-			fwdcancel.onclick = function(){ fwd.style.display = 'none'; };
+			// Two-step, not a confirm() dialog. A confirm gets dismissed
+			// reflexively — people learn to click through them without reading.
+			// A second click on a button that has visibly changed colour and
+			// wording cannot be done by muscle memory, and it disarms itself
+			// after six seconds so a half-pressed one does not lie in wait.
+			var disarmBoard = function(){
+				if(boardArm){ clearTimeout(boardArm); boardArm = null; }
+				if(fwdboard){ fwdboard.className = 'btn sec'; fwdboard.textContent = 'Forward to Board'; }
+			};
+
+			fwdcancel.onclick = function(){ fwd.style.display = 'none'; disarmBoard(); };
+
+			if(fwdboard){
+				fwdboard.onclick = function(){
+					if(!boardArm){
+						fwdboard.className = 'btn warn';
+						fwdboard.textContent = 'Click again to send to ' + BOARD;
+						boardArm = setTimeout(disarmBoard, 6000);
+						return;
+					}
+					disarmBoard();
+					busy(true, fwdboard);
+					api('/threads/' + id + '/forward', {method:'POST', body: JSON.stringify({
+						to: BOARD, comment: document.getElementById('fwdnote').value
+					})}).then(function(){
+						loadContacts();
+						closed('Sent to the Board — moved to Answered.');
+					}).catch(function(e){ fail(e, fwdboard); });
+				};
+			}
 			fwdsend.onclick = function(){
 				var to = document.getElementById('fwdto').value.trim();
 				if(!to){ out.innerHTML = '<div class="note err">Enter an address to forward to.</div>'; return; }

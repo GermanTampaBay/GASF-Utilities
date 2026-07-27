@@ -73,6 +73,10 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 			'ms_id'          => '',
 			'ms_secret'      => '',
 			'signature_org'  => 'German-American Society Friendship of Pinellas County',
+			// One-click forward destination. Configurable rather than hardcoded
+			// so a change of address is a settings edit, not a deploy. Blank
+			// hides the button entirely.
+			'board_address'  => 'board@germantampabay.com',
 			'notify_channel' => 'email',
 			'notify_extra'   => '',
 			// Y-m-d the Graph client secret stops working. Entra will not tell us
