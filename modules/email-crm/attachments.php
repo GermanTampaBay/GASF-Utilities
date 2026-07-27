@@ -60,13 +60,28 @@ function gasf_crm_attach_types() {
 /**
  * Storage directory, created and sealed on first use.
  *
- * Two guards, because they fail differently: the .htaccess covers Apache, and
- * the index.php covers a server that ignores .htaccess but would otherwise
- * happily list the directory.
+ * Lives OUTSIDE the web root (next to the plugin's own log file), so files
+ * from strangers are unreachable by URL no matter what happens to .htaccess
+ * or which web server fronts the site — serving is PHP-streamed either way,
+ * so nothing else changes. The old uploads/gasf-crm location remains as a
+ * fallback for hosts where PHP cannot write above the docroot, and any files
+ * uploaded while storage lived there are adopted on first use.
+ *
+ * The deny guards are written in either location: they cost nothing outside
+ * the webroot and are the whole defence in the fallback. Two guards because
+ * they fail differently — .htaccess covers Apache, index.php covers a server
+ * that ignores .htaccess but would otherwise list the directory.
  */
 function gasf_crm_attach_dir() {
-	$up  = wp_upload_dir();
-	$dir = trailingslashit( $up['basedir'] ) . 'gasf-crm';
+	static $resolved = null;
+	if ( null !== $resolved ) { return $resolved; }
+
+	$outside = dirname( untrailingslashit( ABSPATH ) ) . '/gasf-crm-files';
+	$legacy  = trailingslashit( wp_upload_dir()['basedir'] ) . 'gasf-crm';
+
+	$dir = ( ( is_dir( $outside ) || @mkdir( $outside, 0755, true ) ) && is_writable( $outside ) )
+		? $outside
+		: $legacy;
 
 	if ( ! is_dir( $dir ) ) {
 		wp_mkdir_p( $dir );
@@ -77,6 +92,21 @@ function gasf_crm_attach_dir() {
 	if ( ! file_exists( $dir . '/index.php' ) ) {
 		@file_put_contents( $dir . '/index.php', "<?php // Silence is golden.\n" );
 	}
+
+	// One-time adoption of anything uploaded while storage sat under uploads/.
+	// Same filesystem, so rename() is a metadata move; names never collide
+	// because stored names are random.
+	if ( $dir === $outside && is_dir( $legacy ) ) {
+		foreach ( glob( $legacy . '/*' ) ?: array() as $f ) {
+			$name = basename( $f );
+			if ( in_array( $name, array( '.htaccess', 'index.php' ), true ) ) { continue; }
+			if ( is_file( $f ) && ! file_exists( $dir . '/' . $name ) ) {
+				@rename( $f, $dir . '/' . $name );
+			}
+		}
+	}
+
+	$resolved = $dir;
 	return $dir;
 }
 

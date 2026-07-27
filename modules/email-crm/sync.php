@@ -35,7 +35,8 @@ function gasf_crm_sync() {
 	// One sync at a time. The hourly WP-Cron event and a system cron calling
 	// `wp gasf-crm sync` can both fire, and two concurrent runs would race on
 	// thread status and double-notify.
-	if ( ! gasf_crm_sync_lock() ) {
+	$lock = gasf_crm_sync_lock();
+	if ( ! $lock ) {
 		$result['errors'][] = 'Another sync is already running.';
 		return $result;
 	}
@@ -179,7 +180,7 @@ function gasf_crm_sync() {
 			) );
 		}
 	} finally {
-		gasf_crm_sync_unlock();
+		gasf_crm_sync_unlock( $lock );
 	}
 
 	return $result;
@@ -230,7 +231,7 @@ function gasf_crm_ingest( array $m, $direction ) {
 	// Sent Items. Adopt the placeholder the send path wrote instead of inserting
 	// a second copy — and use that as the signal for where the reply came from.
 	$adopted = ( 'out' === $direction )
-		? gasf_crm_adopt_placeholder( $thread['id'], $graph_id, $sent_at )
+		? gasf_crm_adopt_placeholder( $thread['id'], $graph_id, $sent_at, ! empty( $m['hasAttachments'] ) )
 		: false;
 
 	$inserted = $adopted ? false : gasf_crm_insert_message( array(
@@ -305,6 +306,42 @@ function gasf_crm_settle_thread( $thread_id ) {
  * iframe, no form, no event handlers, and no img (remote images are tracking
  * pixels and are not worth the pixel).
  */
+/**
+ * The one email-HTML sanitiser, shared by every path that stores or emits it:
+ * inbound ingest, the reply composer, and the REST output boundary. It was
+ * three hand-copied allowlists before, which is how sanitisers drift apart.
+ *
+ * $context 'display' is the rich inbound set; 'compose' is the tight subset
+ * the reply toolbar can produce, with links pinned to http/https/mailto.
+ * Script and style blocks are stripped WITH their contents first — wp_kses
+ * drops the tags but would otherwise leave the CSS or JS body as visible text.
+ */
+function gasf_crm_email_kses( $html, $context = 'display' ) {
+	$html = preg_replace( '#<(script|style)\b[^>]*>.*?</\1>#is', '', (string) $html );
+
+	$base = array(
+		'p'          => array(),
+		'br'         => array(),
+		'strong'     => array(), 'b' => array(),
+		'em'         => array(), 'i' => array(), 'u' => array(),
+		'ul'         => array(), 'ol' => array(), 'li' => array(),
+		'blockquote' => array(),
+		'a'          => array( 'href' => array(), 'title' => array() ),
+	);
+
+	if ( 'compose' === $context ) {
+		return wp_kses( $html, $base, array( 'http', 'https', 'mailto' ) );
+	}
+
+	return wp_kses( $html, $base + array(
+		'h1'    => array(), 'h2' => array(), 'h3' => array(), 'h4' => array(),
+		'table' => array(), 'thead' => array(), 'tbody' => array(),
+		'tr'    => array(), 'td' => array(), 'th' => array(),
+		'div'   => array(), 'span' => array(),
+		'hr'    => array(),
+	) );
+}
+
 function gasf_crm_clean_body( $body ) {
 	$content = (string) ( $body['content'] ?? '' );
 	$type    = strtolower( (string) ( $body['contentType'] ?? 'text' ) );
@@ -313,24 +350,7 @@ function gasf_crm_clean_body( $body ) {
 		return wpautop( esc_html( $content ) );
 	}
 
-	// Strip script/style blocks WITH their contents first — wp_kses drops the
-	// tags but would otherwise leave the CSS or JS body as visible text.
-	$content = preg_replace( '#<(script|style)\b[^>]*>.*?</\1>#is', '', $content );
-
-	return wp_kses( $content, array(
-		'p'          => array(),
-		'br'         => array(),
-		'strong'     => array(), 'b' => array(),
-		'em'         => array(), 'i' => array(), 'u' => array(),
-		'ul'         => array(), 'ol' => array(), 'li' => array(),
-		'blockquote' => array(),
-		'a'          => array( 'href' => array(), 'title' => array() ),
-		'h1'         => array(), 'h2' => array(), 'h3' => array(), 'h4' => array(),
-		'table'      => array(), 'thead' => array(), 'tbody' => array(),
-		'tr'         => array(), 'td' => array(), 'th' => array(),
-		'div'        => array(), 'span' => array(),
-		'hr'         => array(),
-	) );
+	return gasf_crm_email_kses( $content, 'display' );
 }
 
 /* --------------------------------------------------------------------------
@@ -365,9 +385,26 @@ function gasf_crm_sync_lock( $ttl = 600 ) {
 		wp_cache_delete( 'alloptions', 'options' );
 	}
 
-	return (bool) add_option( 'gasf_crm_sync_lock', (string) time(), '', false );
+	$token = (string) time();
+	return add_option( 'gasf_crm_sync_lock', $token, '', false ) ? $token : false;
 }
 
-function gasf_crm_sync_unlock() {
-	delete_option( 'gasf_crm_sync_lock' );
+/**
+ * Owner-token release. A plain delete_option let a process that overran the
+ * TTL delete the REPLACEMENT lock some newer sync had legitimately taken —
+ * the one hole left in the stale-breaking scheme. Compare-and-delete on the
+ * exact token closes it: you can only release the lock you still hold.
+ */
+function gasf_crm_sync_unlock( $token = '' ) {
+	global $wpdb;
+	if ( '' === $token ) {
+		delete_option( 'gasf_crm_sync_lock' );
+		return;
+	}
+	$wpdb->query( $wpdb->prepare(
+		"DELETE FROM {$wpdb->options} WHERE option_name = %s AND option_value = %s",
+		'gasf_crm_sync_lock', $token
+	) );
+	wp_cache_delete( 'gasf_crm_sync_lock', 'options' );
+	wp_cache_delete( 'alloptions', 'options' );
 }

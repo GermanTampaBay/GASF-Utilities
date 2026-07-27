@@ -72,7 +72,18 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 				$base = esc_url_raw( trim( (string) wp_unslash( $_POST['base'] ?? '' ) ) );
 				$code = in_array( (int) ( $_POST['code'] ?? 307 ), array( 301, 302, 307 ), true ) ? (int) $_POST['code'] : 307;
 				$orig = gasf_sl_slug( sanitize_text_field( wp_unslash( $_POST['orig'] ?? '' ) ) );
-				if ( '' !== $slug && '' !== $url ) {
+				// A shortlink fires at template_redirect before the page renders,
+				// so a slug that collides with a real page SILENTLY shadows it —
+				// /dinner-night the shortlink would eat /dinner-night the page,
+				// and nothing anywhere would say why the page stopped loading.
+				// Refuse the collision at save time, where it is cheap and visible.
+				$collides = '' !== $slug && (
+					url_to_postid( home_url( '/' . $slug . '/' ) )
+					|| get_page_by_path( $slug, OBJECT, array( 'page', 'post' ) )
+				);
+				if ( $collides ) {
+					echo '<div class="notice notice-error"><p><code>/' . esc_html( $slug ) . '</code> is a real page or post on this site — a short link there would silently replace it. Pick a different slug.</p></div>';
+				} elseif ( '' !== $slug && '' !== $url ) {
 					$all = gasf_sl_get();
 					// preserve clicks if editing an existing slug
 					$clicks = 0;

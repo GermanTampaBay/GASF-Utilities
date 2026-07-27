@@ -570,7 +570,17 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 				// against the new bar. ('compressed'/'skipped' marks stay.)
 				if ( $new_thr < $prev_thr ) {
 					global $wpdb;
-					$n = (int) $wpdb->query( "DELETE FROM {$wpdb->postmeta} WHERE meta_key = '_gasf_imgc' AND meta_value = 'small'" ); // phpcs:ignore
+					// The mark is a serialized array — array('status'=>'small','ts'=>...)
+					// — so the old equality against the bare string 'small' matched
+					// nothing, ever: lowering the threshold never requeued a single
+					// file, and the success notice below simply never printed. Match
+					// the serialized fragment instead; its shape is fixed because this
+					// module is the only writer of the key.
+					$n = (int) $wpdb->query( $wpdb->prepare(
+						"DELETE FROM {$wpdb->postmeta} WHERE meta_key = %s AND meta_value LIKE %s",
+						GASF_IMGC_META,
+						'%' . $wpdb->esc_like( 's:6:"status";s:5:"small"' ) . '%'
+					) );
 					if ( $n ) {
 						echo '<div class="notice notice-info is-dismissible"><p>Threshold lowered — ' . (int) $n . ' previously-skipped "small" image(s) are eligible again.</p></div>';
 					}

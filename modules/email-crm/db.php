@@ -213,7 +213,7 @@ function gasf_crm_insert_message( array $m ) {
  * Returns true if a placeholder was adopted — which also tells the caller the
  * reply came from the CRM rather than from someone working in Outlook.
  */
-function gasf_crm_adopt_placeholder( $thread_id, $graph_id, $sent_at ) {
+function gasf_crm_adopt_placeholder( $thread_id, $graph_id, $sent_at, $has_attachments = null ) {
 	global $wpdb;
 	$t = gasf_crm_table( 'messages' );
 
@@ -228,7 +228,13 @@ function gasf_crm_adopt_placeholder( $thread_id, $graph_id, $sent_at ) {
 
 	if ( ! $id ) { return false; }
 
-	$wpdb->update( $t, array( 'graph_message_id' => $graph_id ), array( 'id' => (int) $id ) );
+	$data = array( 'graph_message_id' => $graph_id );
+	// Reconcile the paperclip from the real Sent Items copy — the mailbox
+	// knows better than the placeholder what actually went out.
+	if ( null !== $has_attachments ) {
+		$data['has_attachments'] = $has_attachments ? 1 : 0;
+	}
+	$wpdb->update( $t, $data, array( 'id' => (int) $id ) );
 	return true;
 }
 
@@ -393,8 +399,14 @@ function gasf_crm_list_threads( $status = 'open', $limit = 100 ) {
  */
 function gasf_crm_claim_thread( $thread_id, $user_id, $lock_minutes = 15 ) {
 	global $wpdb;
-	$t      = gasf_crm_table( 'threads' );
-	$now    = current_time( 'mysql' );
+	$t = gasf_crm_table( 'threads' );
+	// GMT, like every other timestamp in these tables. This one line spent two
+	// days as plain current_time('mysql') — an aligned-whitespace variant that a
+	// replace-all missed — writing locked_at in LOCAL time while expire_locks
+	// compared against a GMT cutoff. On this UTC-4 site every claim looked four
+	// hours stale the moment it was taken, and the hourly sync released it: the
+	// entire "somebody is replying to this" lock was quietly decorative.
+	$now    = current_time( 'mysql', true );
 	$cutoff = gmdate( 'Y-m-d H:i:s', strtotime( $now ) - ( $lock_minutes * 60 ) );
 
 	$rows = $wpdb->query( $wpdb->prepare(

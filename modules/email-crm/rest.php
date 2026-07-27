@@ -67,7 +67,11 @@ add_action( 'rest_api_init', function () {
 					'from'        => $m['from_name'] ? $m['from_name'] : $m['from_addr'],
 					'from_addr'   => (string) $m['from_addr'],
 					'sent_at'     => (string) $m['sent_at'],
-					'body'        => (string) $m['body_html'],
+					// Sanitised again on the way OUT, not only at ingest: rows
+					// written before the sanitiser existed, or altered in the
+					// database by anything else, would otherwise reach innerHTML
+					// on trust. Costs microseconds on a handful of messages.
+					'body'        => gasf_crm_email_kses( (string) $m['body_html'] ),
 					'attachments' => ! empty( $m['has_attachments'] )
 						? gasf_crm_attachment_list( $m['graph_message_id'] )
 						: array(),
@@ -325,12 +329,12 @@ function gasf_crm_rest_forward( WP_REST_Request $req ) {
 
 	// Forward the newest message, whichever direction it came from — that is the
 	// one carrying whatever prompted the forward.
-	$target = $wpdb->get_var( $wpdb->prepare(
-		'SELECT graph_message_id FROM ' . gasf_crm_table( 'messages' ) . '
+	$target = $wpdb->get_row( $wpdb->prepare(
+		'SELECT graph_message_id, has_attachments FROM ' . gasf_crm_table( 'messages' ) . '
 		  WHERE thread_id = %d AND graph_message_id NOT LIKE %s
 		  ORDER BY sent_at DESC, id DESC LIMIT 1',
 		$thread_id, 'local-%'
-	) );
+	), ARRAY_A );
 
 	// Placeholders are excluded above: they are rows the CRM wrote for its own
 	// replies and carry synthetic ids Graph has never heard of.
@@ -347,7 +351,7 @@ function gasf_crm_rest_forward( WP_REST_Request $req ) {
 	$comment = ( '' !== $note ? wpautop( esc_html( $note ) ) : '' )
 		. '<p>--<br>Forwarded by ' . esc_html( $name ) . '<br>' . esc_html( $cfg['signature_org'] ) . '</p>';
 
-	$sent = gasf_crm_graph_forward( $target, $to, $comment );
+	$sent = gasf_crm_graph_forward( $target['graph_message_id'], $to, $comment );
 	if ( is_wp_error( $sent ) ) {
 		gasf_mec_log( 'CRM forward failed (thread ' . $thread_id . '): ' . $sent->get_error_message() );
 		return new WP_Error( 'gasf_crm_send', $sent->get_error_message(), array( 'status' => 502 ) );
@@ -378,7 +382,9 @@ function gasf_crm_rest_forward( WP_REST_Request $req ) {
 		'body_preview'     => 'Forwarded to ' . implode( ', ', $to ) . ( '' !== $note ? ' — ' . $note : '' ),
 		'body_html'        => '<p><em>Forwarded to ' . esc_html( implode( ', ', $to ) ) . '</em></p>'
 			. ( '' !== $note ? wpautop( esc_html( $note ) ) : '' ),
-		'has_attachments'  => false,
+		// Graph /forward carries the original's attachments with it, so the
+		// history row reflects what the forwarded message actually had.
+		'has_attachments'  => ! empty( $target['has_attachments'] ),
 		'sent_by_user_id'  => 0,
 	) );
 
@@ -408,20 +414,7 @@ function gasf_crm_rest_reply( WP_REST_Request $req ) {
 	// other volunteer who opens the thread. Links are restricted to protocols
 	// that cannot execute anything — the editor checks that too, but a
 	// client-side check is a convenience, not a control.
-	// Strip script/style WITH their contents first. wp_kses drops the tags but
-	// keeps the text inside them, which would otherwise arrive in the sent email
-	// as a stray line of code. Matches what the inbound path already does.
-	$raw = preg_replace( '#<(script|style)\b[^>]*>.*?</\1>#is', '', (string) $req->get_param( 'body' ) );
-
-	$clean = wp_kses( $raw, array(
-		'p'          => array(),
-		'br'         => array(),
-		'strong'     => array(), 'b' => array(),
-		'em'         => array(), 'i' => array(), 'u' => array(),
-		'ul'         => array(), 'ol' => array(), 'li' => array(),
-		'blockquote' => array(),
-		'a'          => array( 'href' => array(), 'title' => array() ),
-	), array( 'http', 'https', 'mailto' ) );
+	$clean = gasf_crm_email_kses( (string) $req->get_param( 'body' ), 'compose' );
 
 	// Emptiness is judged on the text, not the markup: a composer left untouched
 	// can still hand back "<p><br></p>", which is not a reply.
@@ -520,7 +513,9 @@ function gasf_crm_rest_reply( WP_REST_Request $req ) {
 		'sent_at'          => current_time( 'mysql', true ),
 		'body_preview'     => mb_substr( trim( wp_strip_all_tags( $clean ) ), 0, 500 ),
 		'body_html'        => $html,
-		'has_attachments'  => false,
+		// From the files actually sent — a hardcoded false here meant a reply
+		// that carried the membership form showed no paperclip in History.
+		'has_attachments'  => ! empty( $attachments ),
 		'sent_by_user_id'  => $user_id,
 	) );
 

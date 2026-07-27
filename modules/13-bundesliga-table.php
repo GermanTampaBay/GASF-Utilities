@@ -4,6 +4,42 @@
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 if ( gasf_site_enabled( 'gasf_site_enable_bundesliga' ) ) {
 /**
+ * The shared .gasf-buli-* stylesheet, emitted once per request by whichever
+ * Bundesliga shortcode renders first. It used to live inside [bundesliga_table]
+ * alone, so a page carrying only the scorer widgets rendered them unstyled —
+ * the styling depended on the table happening to be on the same page. All
+ * three modules share one gate and load in file order (13 → 14 → 15), so this
+ * definition always exists before the scorer shortcodes run.
+ */
+function gasf_buli_styles() {
+    static $printed = false;
+    if ( $printed ) { return ''; }
+    $printed = true;
+    return '
+<style>
+.gasf-buli-wrap{font-family:"Rubik",Arial,sans-serif;max-width:420px;background:#fff;color:var(--gasf-dark-bg,#222);border:1px solid #ddd;border-radius:6px;overflow:hidden;font-size:13px;}
+.gasf-buli-header{background:var(--gasf-bundesliga-red,#dc052d);color:#fff;display:flex;align-items:center;gap:8px;padding:10px 14px;font-weight:700;font-size:15px;}
+.gasf-buli-logo{font-size:18px;}
+.gasf-buli-table{width:100%;border-collapse:collapse;}
+.gasf-buli-th{background:var(--gasf-dark-bg,#1a1a1a);color:#fff;padding:5px 6px;text-align:center;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.4px;}
+.gasf-buli-th.gasf-buli-club{text-align:left;padding-left:10px;}
+.gasf-buli-td{padding:5px 6px;text-align:center;border-bottom:1px solid #eee;vertical-align:middle;color:var(--gasf-dark-bg,#222);}
+.gasf-buli-td.gasf-buli-club{text-align:left;padding-left:10px;white-space:nowrap;}
+.gasf-buli-rank{width:32px;position:relative;padding-left:14px !important;}
+.gasf-buli-zone{display:inline-block;width:4px;height:20px;border-radius:2px;position:absolute;left:4px;top:50%;transform:translateY(-50%);}
+.gasf-buli-logo-img{width:18px;height:18px;object-fit:contain;margin-right:6px;vertical-align:middle;}
+.gasf-buli-name{vertical-align:middle;}
+.gasf-buli-pts{font-weight:700;}
+.gasf-buli-num{width:28px;}
+.gasf-buli-legend{display:flex;flex-wrap:wrap;gap:8px;padding:8px 12px;background:#f5f5f5;border-top:1px solid #eee;}
+.gasf-buli-legend-item{display:flex;align-items:center;gap:4px;font-size:11px;color:#555;}
+.gasf-buli-legend-dot{display:inline-block;width:10px;height:10px;border-radius:50%;}
+.gasf-buli-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;}
+.gasf-buli-source{text-align:right;font-size:10px;color:#aaa;margin:0;padding:4px 10px 6px;background:#f5f5f5;}
+</style>';
+}
+
+/**
  * Bundesliga Table Shortcode [bundesliga_table]
  *
  * Data: OpenLigaDB (free, no API key) — https://api.openligadb.de/
@@ -140,32 +176,7 @@ add_shortcode( 'bundesliga_table', function( $atts ) {
     $html .= '<p class="gasf-buli-source">Data: <a href="https://openligadb.de" target="_blank" rel="noopener" style="color:inherit;">OpenLigaDB</a></p>';
     $html .= '</div>';
 
-    static $css_printed = false;
-    if ( ! $css_printed ) {
-        $css_printed = true;
-        $html .= '
-<style>
-.gasf-buli-wrap{font-family:"Rubik",Arial,sans-serif;max-width:420px;background:#fff;color:var(--gasf-dark-bg,#222);border:1px solid #ddd;border-radius:6px;overflow:hidden;font-size:13px;}
-.gasf-buli-header{background:var(--gasf-bundesliga-red,#dc052d);color:#fff;display:flex;align-items:center;gap:8px;padding:10px 14px;font-weight:700;font-size:15px;}
-.gasf-buli-logo{font-size:18px;}
-.gasf-buli-table{width:100%;border-collapse:collapse;}
-.gasf-buli-th{background:var(--gasf-dark-bg,#1a1a1a);color:#fff;padding:5px 6px;text-align:center;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.4px;}
-.gasf-buli-th.gasf-buli-club{text-align:left;padding-left:10px;}
-.gasf-buli-td{padding:5px 6px;text-align:center;border-bottom:1px solid #eee;vertical-align:middle;color:var(--gasf-dark-bg,#222);}
-.gasf-buli-td.gasf-buli-club{text-align:left;padding-left:10px;white-space:nowrap;}
-.gasf-buli-rank{width:32px;position:relative;padding-left:14px !important;}
-.gasf-buli-zone{display:inline-block;width:4px;height:20px;border-radius:2px;position:absolute;left:4px;top:50%;transform:translateY(-50%);}
-.gasf-buli-logo-img{width:18px;height:18px;object-fit:contain;margin-right:6px;vertical-align:middle;}
-.gasf-buli-name{vertical-align:middle;}
-.gasf-buli-pts{font-weight:700;}
-.gasf-buli-num{width:28px;}
-.gasf-buli-legend{display:flex;flex-wrap:wrap;gap:8px;padding:8px 12px;background:#f5f5f5;border-top:1px solid #eee;}
-.gasf-buli-legend-item{display:flex;align-items:center;gap:4px;font-size:11px;color:#555;}
-.gasf-buli-legend-dot{display:inline-block;width:10px;height:10px;border-radius:50%;}
-.gasf-buli-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;}
-.gasf-buli-source{text-align:right;font-size:10px;color:#aaa;margin:0;padding:4px 10px 6px;background:#f5f5f5;}
-</style>';
-    }
+    $html .= gasf_buli_styles();
 
     return $html;
 } );

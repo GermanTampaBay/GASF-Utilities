@@ -71,7 +71,18 @@ function gasf_crm_graph( $method, $path, $body = null, $retry = true ) {
 	$token = gasf_crm_graph_token();
 	if ( is_wp_error( $token ) ) { return $token; }
 
-	$url  = ( 0 === strpos( $path, 'http' ) ) ? $path : GASF_CRM_GRAPH . $path;
+	// Absolute URLs are accepted so @odata.nextLink can be passed straight back
+	// in — but only Graph's own host. This function attaches a bearer token to
+	// whatever it is given, so an absolute URL from anywhere else (a poisoned
+	// pagination link, a future bug) must not be able to walk off with it.
+	if ( 0 === strpos( $path, 'http' ) ) {
+		if ( 0 !== strpos( $path, 'https://graph.microsoft.com/' ) ) {
+			return new WP_Error( 'gasf_crm_badhost', 'Refusing to send the Graph token to a non-Graph URL.' );
+		}
+		$url = $path;
+	} else {
+		$url = GASF_CRM_GRAPH . $path;
+	}
 	$args = array(
 		'method'  => $method,
 		'timeout' => 30,

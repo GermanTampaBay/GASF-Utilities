@@ -48,8 +48,16 @@ add_shortcode( 'bundesliga_top_scorers', function( $atts ) {
         return '<p style="color:#999;font-size:13px;">Bundesliga top scorers unavailable — please check back later.</p>';
     }
 
-    // Pull Bayern player IDs from shared transient set by [bundesliga_scorers]
+    // Bayern ids for row highlighting. Read the shared cache first, and when
+    // it is cold compute it directly — highlighting used to depend on
+    // [bundesliga_scorers] having already rendered somewhere and left this
+    // transient behind, so this widget silently lost its Bayern rows whenever
+    // it rendered first (or alone) after a cache expiry.
     $bayern_ids = get_transient( 'gasf_buli_bayern_ids_' . $season ) ?: [];
+    if ( ! $bayern_ids && function_exists( 'gasf_buli_bayern_data' ) ) {
+        $d = gasf_buli_bayern_data( $season );
+        if ( $d ) { $bayern_ids = $d['ids']; }
+    }
 
     $season_display = $season . '/' . substr( $season + 1, -2 );
     $display        = array_slice( $scorers, 0, $limit );
@@ -90,6 +98,10 @@ add_shortcode( 'bundesliga_top_scorers', function( $atts ) {
     $html .= '</tbody></table></div>';
     $html .= '<p class="gasf-buli-source">Data: <a href="https://openligadb.de" target="_blank" rel="noopener" style="color:inherit;">OpenLigaDB</a></p>';
     $html .= '</div>';
+
+    // Shared stylesheet (once per request) — this widget used to render bare
+    // unless [bundesliga_table] happened to be on the same page.
+    $html .= gasf_buli_styles();
 
     return $html;
 } );

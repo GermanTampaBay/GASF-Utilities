@@ -162,19 +162,33 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 				gasf_gh_save( $c );
 				echo '<div class="notice notice-success is-dismissible"><p>Location selected.</p></div>';
 			} elseif ( 'save_regular' === $act && $c['location'] ) {
+				// Validate the whole week BEFORE any PATCH. A day whose times fail
+				// to parse used to be silently dropped from the periods list — and
+				// to Google, an omitted day IS a closed day. Mistype one time and
+				// the club publishes itself closed that day, under a success
+				// notice. Whole-request rejection, never a partial push.
 				$periods = array();
+				$bad     = array();
 				foreach ( $days as $d ) {
 					if ( ! empty( $_POST[ 'closed_' . $d ] ) ) { continue; }
 					$open  = gasf_gh_tod( wp_unslash( $_POST[ 'open_' . $d ] ?? '' ) );
 					$close = gasf_gh_tod( wp_unslash( $_POST[ 'close_' . $d ] ?? '' ) );
-					if ( $open && $close ) {
-						$periods[] = array( 'openDay' => $d, 'openTime' => $open, 'closeDay' => $d, 'closeTime' => $close );
+					if ( ! $open || ! $close ) {
+						$bad[] = ucfirst( strtolower( $d ) );
+						continue;
 					}
+					$periods[] = array( 'openDay' => $d, 'openTime' => $open, 'closeDay' => $d, 'closeTime' => $close );
 				}
-				$res = gasf_gh_api( 'PATCH', GASF_GH_INFO . '/' . $c['location'] . '?updateMask=regularHours', array( 'regularHours' => array( 'periods' => $periods ) ) );
-				echo is_wp_error( $res )
-					? '<div class="notice notice-error"><p>' . esc_html( $res->get_error_message() ) . '</p></div>'
-					: '<div class="notice notice-success is-dismissible"><p>Weekly hours pushed to Google — Maps/Search usually reflect it within minutes.</p></div>';
+				if ( $bad ) {
+					echo '<div class="notice notice-error"><p>Nothing was pushed to Google. These day(s) have missing or invalid times: <strong>'
+						. esc_html( implode( ', ', $bad ) )
+						. '</strong>. Enter both times as HH:MM, or tick <em>Closed</em> for that day.</p></div>';
+				} else {
+					$res = gasf_gh_api( 'PATCH', GASF_GH_INFO . '/' . $c['location'] . '?updateMask=regularHours', array( 'regularHours' => array( 'periods' => $periods ) ) );
+					echo is_wp_error( $res )
+						? '<div class="notice notice-error"><p>' . esc_html( $res->get_error_message() ) . '</p></div>'
+						: '<div class="notice notice-success is-dismissible"><p>Weekly hours pushed to Google — Maps/Search usually reflect it within minutes.</p></div>';
+				}
 			} elseif ( 'save_special' === $act && $c['location'] ) {
 				// One override per line: "2026-12-24 closed" or "2026-12-24 11:00-15:00".
 				$rows = array(); $bad = array();

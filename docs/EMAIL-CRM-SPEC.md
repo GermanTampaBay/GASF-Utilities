@@ -75,6 +75,11 @@ Test-ApplicationAccessPolicy -Identity info@germantampabay.com -AppId <app-id>
 Test-ApplicationAccessPolicy -Identity michael@germantampabay.com -AppId <app-id>
 ```
 
+**Re-run both checks after ANY later change to the app registration, the scope
+group's membership, or the policy itself.** Consent edits and group changes can
+silently widen access to every mailbox in the tenant, and nothing will tell you
+— the app keeps working either way, which is exactly the problem.
+
 **Provisioned values** (IDs are not secrets; the client secret is, and lives only
 in `wp_options`):
 

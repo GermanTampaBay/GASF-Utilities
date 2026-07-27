@@ -336,32 +336,62 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 		$c  = gasf_fbs_cfg();
 		$st = array( 'ts' => time(), 'ok' => false, 'msg' => '', 'seen' => 0, 'imported' => 0 );
 
-		$posts = gasf_fbs_fetch_posts();
-		if ( is_wp_error( $posts ) ) {
-			$st['msg'] = $posts->get_error_message();
-			$c['last'] = $st; gasf_fbs_save( $c );
+		// One scan at a time. The hourly cron and the admin "Scan now" button
+		// can genuinely overlap, and the dedupe is check-then-insert — two
+		// concurrent scans both pass gasf_fbs_existing_post() for the same FB
+		// post and both import it. add_option is an INSERT against the
+		// option_name UNIQUE key, so exactly one concurrent caller wins; the
+		// stale-break is compare-and-delete so two breakers cannot each clear
+		// the other's fresh lock. (Same pattern as the Email CRM sync lock.)
+		global $wpdb;
+		$held = get_option( 'gasf_fbs_scan_lock' );
+		if ( $held && ( time() - (int) $held ) < 5 * MINUTE_IN_SECONDS ) {
+			$st['msg'] = 'another scan is already running';
+			return $st;
+		}
+		if ( $held ) {
+			$wpdb->query( $wpdb->prepare(
+				"DELETE FROM {$wpdb->options} WHERE option_name = %s AND option_value = %s",
+				'gasf_fbs_scan_lock', (string) $held
+			) );
+			wp_cache_delete( 'gasf_fbs_scan_lock', 'options' );
+			wp_cache_delete( 'alloptions', 'options' );
+		}
+		if ( ! add_option( 'gasf_fbs_scan_lock', (string) time(), '', false ) ) {
+			$st['msg'] = 'another scan is already running';
 			return $st;
 		}
 
-		$st['seen'] = count( $posts );
-		foreach ( $posts as $raw ) {
-			$fb_id = (string) ( $raw['id'] ?? '' );
-			if ( '' === $fb_id || ! gasf_fbs_matches( (string) ( $raw['message'] ?? '' ), $c['tag'] ) ) { continue; }
-			if ( gasf_fbs_existing_post( $fb_id ) ) { continue; }
-			$pid = gasf_fbs_import_post( $raw, $c );
-			if ( ! is_wp_error( $pid ) ) {
-				$st['imported']++;
-				array_unshift( $c['log'], array( 'fb_id' => $fb_id, 'post_id' => $pid, 'ts' => time(), 'title' => get_the_title( $pid ) ) );
-				$c['log'] = array_slice( $c['log'], 0, 20 );
-				if ( function_exists( 'gasf_mec_log' ) ) { gasf_mec_log( "fbshare: imported FB {$fb_id} → post {$pid}" ); }
-			} elseif ( function_exists( 'gasf_mec_log' ) ) {
-				gasf_mec_log( 'fbshare: import failed for FB ' . $fb_id . ': ' . $pid->get_error_message() );
+		try {
+			$posts = gasf_fbs_fetch_posts();
+			if ( is_wp_error( $posts ) ) {
+				$st['msg'] = $posts->get_error_message();
+				$c['last'] = $st; gasf_fbs_save( $c );
+				return $st;
 			}
-		}
 
-		$st['ok'] = true; $st['msg'] = 'ok';
-		$c['last'] = $st; gasf_fbs_save( $c );
-		return $st;
+			$st['seen'] = count( $posts );
+			foreach ( $posts as $raw ) {
+				$fb_id = (string) ( $raw['id'] ?? '' );
+				if ( '' === $fb_id || ! gasf_fbs_matches( (string) ( $raw['message'] ?? '' ), $c['tag'] ) ) { continue; }
+				if ( gasf_fbs_existing_post( $fb_id ) ) { continue; }
+				$pid = gasf_fbs_import_post( $raw, $c );
+				if ( ! is_wp_error( $pid ) ) {
+					$st['imported']++;
+					array_unshift( $c['log'], array( 'fb_id' => $fb_id, 'post_id' => $pid, 'ts' => time(), 'title' => get_the_title( $pid ) ) );
+					$c['log'] = array_slice( $c['log'], 0, 20 );
+					if ( function_exists( 'gasf_mec_log' ) ) { gasf_mec_log( "fbshare: imported FB {$fb_id} → post {$pid}" ); }
+				} elseif ( function_exists( 'gasf_mec_log' ) ) {
+					gasf_mec_log( 'fbshare: import failed for FB ' . $fb_id . ': ' . $pid->get_error_message() );
+				}
+			}
+
+			$st['ok'] = true; $st['msg'] = 'ok';
+			$c['last'] = $st; gasf_fbs_save( $c );
+			return $st;
+		} finally {
+			delete_option( 'gasf_fbs_scan_lock' );
+		}
 	}
 
 	/* ============================ cron ============================ */
