@@ -35,7 +35,11 @@ add_action( 'template_redirect', function () {
 			gasf_crm_render_app();
 			exit;
 	}
-} );
+	// Priority 1, ahead of WordPress's own redirect_canonical. Left at the
+	// default it 301s /email/auth/google/callback to a trailing-slash variant
+	// in the middle of an OAuth callback. The query string does survive that
+	// hop, but an extra redirect mid-callback is a well-known way to lose it.
+}, 1 );
 
 function gasf_crm_render_app() {
 	nocache_headers();

@@ -71,7 +71,10 @@ function gasf_crm_auth_start( $provider ) {
 	setcookie( 'gasf_crm_oauth', $browser, array(
 		'expires'  => time() + 900,
 		'path'     => '/email',
-		'secure'   => is_ssl(),
+		// Derived from the site URL, not is_ssl(). This host terminates TLS at a
+		// proxy and never sets $_SERVER['HTTPS'], so is_ssl() reports false on a
+		// perfectly good HTTPS request and the flag would silently be dropped.
+		'secure'   => ( 0 === strpos( home_url(), 'https://' ) ),
 		'httponly' => true,
 		'samesite' => 'Lax',
 	) );
