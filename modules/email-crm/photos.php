@@ -1199,9 +1199,10 @@ function gasf_crm_photo_card( $attachment_id ) {
 		'places'  => $info['places'] ?? array(),
 		'events'  => $info['events'] ?? array(),
 		'caption' => $info['caption'] ?? '',
-		'pending' => is_array( $pending ) ? $pending : null,
-		'title'   => get_the_title( $id ),
-		'missing' => $missing,
+		'pending'   => is_array( $pending ) ? $pending : null,
+		'confirmed' => 'confirmed' === $st['state'],
+		'title'     => get_the_title( $id ),
+		'missing'   => $missing,
 	);
 }
 
@@ -1272,36 +1273,14 @@ function gasf_crm_photo_gallery( $state = '' ) {
  * about it, and what is still waiting on somebody.
  */
 function gasf_crm_photo_thread_block( $thread_id ) {
+	// The same shape the Photos screen uses. It was a second, slightly
+	// different array until the sender's address and whether we had ever heard
+	// from them turned out to be missing here and present there — two shapes
+	// for one thing means the next field will go missing too.
 	$out = array();
 	foreach ( gasf_crm_photo_for_thread( $thread_id ) as $id ) {
-		$pending   = get_post_meta( $id, '_gasf_photo_pending', true );
-		$confirmed = get_post_meta( $id, '_gasf_photo_confirmed', true );
-		$info      = function_exists( 'gasf_photo_info' ) ? gasf_photo_info( $id ) : array();
-
-		$st = gasf_crm_photo_state( $id );
-
-		$out[] = array(
-			'id'        => $id,
-			'thumb'     => wp_get_attachment_image_url( $id, 'thumbnail' ),
-			'link'      => admin_url( 'post.php?post=' . $id . '&action=edit' ),
-			// The file never moves; only the saved copy is renamed, by the
-			// browser, from the tags as they stand right now.
-			'url'       => wp_get_attachment_url( $id ),
-			'dlname'    => function_exists( 'gasf_photo_filename' ) ? gasf_photo_filename( $id ) : '',
-			'taken'     => $info['taken'] ?? '',
-			'guess'     => ( ! empty( $info['place_guess'] ) && ! is_wp_error( $info['place_guess'] ) ) ? $info['place_guess']->name : '',
-			'alts'      => ! empty( $info['place_alts'] ) ? wp_list_pluck( $info['place_alts'], 'name' ) : array(),
-			'people'    => $info['people'] ?? array(),
-			'caption'   => $info['caption'] ?? '',
-			'pending'   => is_array( $pending ) ? $pending : null,
-			'confirmed' => ! empty( $confirmed ),
-			'state'     => $st['state'],
-			// Rendered as a date for the volunteer, so "waiting" has a visible
-			// end rather than being an indefinite shrug.
-			'release'   => $st['release']
-				? mysql2date( get_option( 'date_format' ), $st['release'] )
-				: '',
-		);
+		$card = gasf_crm_photo_card( $id );
+		if ( $card ) { $out[] = $card; }
 	}
 	return $out;
 }

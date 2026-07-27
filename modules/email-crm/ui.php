@@ -796,14 +796,17 @@ function gasf_crm_render_inbox() {
 				html += '<div class="note warn">' + esc(t.locked_by) + ' is replying to this. You can read it, but not send.</div>';
 			}
 
-			// When there are photos wanting a decision, they ARE the job — so
-			// they go above the message and the reply box goes under it. On a
-			// submission the email is usually "see attached"; putting a reply
-			// form first asks the wrong question and buries the right one.
+			// On a submission thread the photos ARE the job, so they go above the
+			// message and the reply box goes under it. The email on these is
+			// almost always "see attached"; leading with a reply form asks the
+			// wrong question and buries the right one.
+			//
+			// True whenever the thread has photos at all, not only when one is
+			// waiting on somebody: even a card that just says "with the sender
+			// until the 1st" tells a volunteer more, at a glance, than the words
+			// "See attached." ever will.
 			var pb = photoBlock(t);
-			var photosFirst = (t.photos || []).some(function(p){
-				return p.pending || 'released' === p.state || 'untagged' === p.state;
-			});
+			var photosFirst = (t.photos || []).length > 0;
 			if (photosFirst) {
 				html += pb;
 				html += '<h3 class="mailhead">The email it arrived with</h3>';
