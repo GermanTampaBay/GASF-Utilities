@@ -158,6 +158,56 @@ function gasf_crm_photo_publish( $attachment_id ) {
 	return true;
 }
 
+/**
+ * Move an unreviewed photo the other way — out of public uploads and into the
+ * private folder.
+ *
+ * Needed because photos taken in before this existed are sitting in the open.
+ * Claiming "unreviewed photos are not public" while some of them are is worse
+ * than not claiming it, so they get moved rather than explained away.
+ *
+ * Runs on demand, not on a schedule: it is a one-off correction of history.
+ */
+function gasf_crm_photo_unpublish( $attachment_id ) {
+	$id = (int) $attachment_id;
+	if ( gasf_crm_photo_is_private( $id ) ) { return true; }
+
+	$review = gasf_crm_photo_review_dir();
+	if ( is_wp_error( $review ) ) { return $review; }
+
+	$rel  = (string) get_post_meta( $id, '_wp_attached_file', true );
+	if ( '' === $rel ) { return new WP_Error( 'gasf_crm_unpub', 'No file on that attachment.' ); }
+
+	$base = trailingslashit( wp_upload_dir()['basedir'] );
+	$from = trailingslashit( dirname( $base . $rel ) );
+	$meta = (array) wp_get_attachment_metadata( $id );
+
+	$names = array( basename( $rel ) );
+	if ( ! empty( $meta['original_image'] ) ) { $names[] = $meta['original_image']; }
+	foreach ( (array) ( $meta['sizes'] ?? array() ) as $s ) {
+		if ( ! empty( $s['file'] ) ) { $names[] = $s['file']; }
+	}
+
+	foreach ( array_unique( $names ) as $n ) {
+		$src = $from . $n;
+		$dst = trailingslashit( $review ) . $n;
+		if ( ! file_exists( $src ) || file_exists( $dst ) ) { continue; }
+		if ( ! @rename( $src, $dst ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors
+			return new WP_Error( 'gasf_crm_unpub', 'Could not move ' . $n . ' into the review folder.' );
+		}
+	}
+
+	$new_rel = GASF_CRM_PHOTO_REVIEW_DIR . '/' . basename( $rel );
+	update_post_meta( $id, '_wp_attached_file', $new_rel );
+	if ( $meta ) {
+		$meta['file'] = $new_rel;
+		wp_update_attachment_metadata( $id, $meta );
+	}
+
+	gasf_mec_log( 'CRM photos: media #' . $id . ' withdrawn from public uploads pending review' );
+	return true;
+}
+
 /* =====================================================================
  * Approval — Graph attachment to Media Library
  * ================================================================== */
