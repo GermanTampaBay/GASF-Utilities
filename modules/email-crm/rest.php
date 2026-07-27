@@ -129,9 +129,21 @@ add_action( 'rest_api_init', function () {
 		'permission_callback' => $guard,
 		'callback'            => function ( WP_REST_Request $req ) {
 			$id     = (int) $req['id'];
-			$reason = sanitize_text_field( (string) $req->get_param( 'reason' ) );
+			$reason = trim( sanitize_text_field( (string) $req->get_param( 'reason' ) ) );
+
+			// A reason is required, and validated here rather than only in the
+			// browser: this is what the audit log will show months later, and
+			// "ignored" with no stated cause is the entry nobody can act on.
+			if ( '' === $reason ) {
+				return new WP_Error( 'gasf_crm_noreason',
+					'Choose a reason for ignoring this message.', array( 'status' => 400 ) );
+			}
+			if ( mb_strlen( $reason ) > 120 ) {
+				$reason = mb_substr( $reason, 0, 120 ) . '…';
+			}
+
 			gasf_crm_set_status( $id, 'ignored' );
-			gasf_crm_log_event( $id, 'ignored', $reason ? $reason : 'Spam or no reply needed' );
+			gasf_crm_log_event( $id, 'ignored', $reason );
 			return array( 'ok' => true );
 		},
 	) );

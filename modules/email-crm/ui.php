@@ -168,6 +168,8 @@ textarea{width:100%;min-height:150px;padding:10px;border:1px solid #8c8f94;borde
 .fwd label{display:block;font-size:13px;font-weight:600;margin-bottom:12px}
 .fwd input[type=text]{width:100%;max-width:440px;padding:8px;border:1px solid #8c8f94;border-radius:4px;font:inherit;font-weight:400;margin-top:3px}
 .fwd textarea{min-height:70px;font-weight:400;margin-top:3px}
+.ignpicks{display:flex;flex-wrap:wrap;gap:8px}
+.ignpicks .btn{margin:0}
 .chip{display:inline-block;background:#f0f6fc;border:1px solid #c5d9ed;border-radius:14px;padding:3px 6px 3px 11px;font-size:12px;margin:4px 6px 0 0}
 .chip button{border:0;background:none;cursor:pointer;font:inherit;font-size:14px;color:#b32d2e;padding:0 5px;line-height:1}
 .lib{margin-top:14px;border-top:1px solid #dcdcde;padding-top:12px}
@@ -256,7 +258,9 @@ function gasf_crm_render_help() {
 			<br>&mdash; <strong>Your own computer.</strong> Pick the file and press <em>Attach this file</em>. If it is something we send often, tick the box first and it is saved to the shared library so nobody has to go looking for it again.
 			<br>&mdash; <strong>The shared library.</strong> Documents we send regularly &mdash; the membership form, for instance &mdash; are already there. Press <em>Attach</em> next to the one you want.
 			<br>Attached files show as small tags above the buttons; press the &times; on one to take it off again. Up to 3 MB per file.</li>
-		<li><strong>Ignore</strong> is for spam, junk and mailing lists. Nothing is sent and the sender hears nothing back.</li>
+		<li><strong>Ignore</strong> is for spam, junk and mailing lists. Nothing is sent and the sender hears nothing back.
+			<br>It asks you why first &mdash; <em>Spam</em>, <em>Sales pitch</em>, <em>Not relevant</em>, <em>Political</em>, or <em>Other</em> where you type a few words. Picking a reason ignores it straight away, so it takes two deliberate clicks and a stray one cannot bin a message.
+			<br>The reason is recorded in the message's History, so months later anyone can see not just that it was ignored but why.</li>
 		<li><strong>Mark answered</strong> is for when you handled it some other way — you rang them, or caught them at the club. Nothing is sent, it just clears it off the list.</li>
 	</ul>
 
@@ -334,6 +338,7 @@ function gasf_crm_render_inbox() {
 	var API   = <?php echo wp_json_encode( rest_url( 'gasf/v1/crm' ) ); ?>;
 	var NONCE = <?php echo wp_json_encode( wp_create_nonce( 'wp_rest' ) ); ?>;
 	var BOARD = <?php echo wp_json_encode( (string) gasf_crm_cfg()['board_address'] ); ?>;
+	var IGNORE_REASONS = <?php echo wp_json_encode( array_values( gasf_crm_ignore_reasons() ) ); ?>;
 	var list = document.getElementById('list'), pane = document.getElementById('pane');
 	var status = 'open', current = null, currentStamp = null;
 
@@ -496,6 +501,25 @@ function gasf_crm_render_inbox() {
 					'<button class="btn sec" id="fwdopen">Forward…</button>' +
 					'<button class="btn sec" id="done">Mark answered</button>' +
 					'<button class="btn warn" id="ignore">Ignore (spam)</button>' +
+					'</div>' +
+					// The reason picker IS the confirmation — opening it is one
+					// deliberate click and choosing a reason is a second, so a
+					// stray click cannot bin a message, and we get a real audit
+					// entry instead of a yes/no nobody can interpret later.
+					'<div class="fwd" id="ign" style="display:none">' +
+						'<label>Why are you ignoring this? Picking a reason ignores it straight away.</label>' +
+						'<div class="ignpicks">' +
+						IGNORE_REASONS.map(function(r){
+							return '<button type="button" class="btn sec ignpick" data-r="' + esc(r) + '">' + esc(r) + '</button>';
+						}).join('') +
+						'<button type="button" class="btn sec" id="ignother">Other…</button>' +
+						'<button type="button" class="btn sec" id="igncancel">Cancel</button>' +
+						'</div>' +
+						'<div id="ignotherbox" style="display:none;margin-top:12px">' +
+							'<label>Say why, in a few words<input type="text" id="ignreason" maxlength="120" ' +
+								'placeholder="e.g. Not relevant to our organization"></label>' +
+							'<div class="actions"><button class="btn warn" id="ignsend">Ignore this message</button></div>' +
+						'</div>' +
 					'</div>' +
 					'<div class="fwd" id="att" style="display:none">' +
 						'<label>Attach a file from your computer<input type="file" id="atfile"></label>' +
@@ -747,13 +771,48 @@ function gasf_crm_render_inbox() {
 		}
 
 		if(ignore){
+			var ign = document.getElementById('ign');
+			var ignOtherBox = document.getElementById('ignotherbox');
+
+			function doIgnore(reason, btn){
+				busy(true, btn);
+				api('/threads/' + id + '/ignore', {method:'POST', body: JSON.stringify({reason: reason})})
+					.then(function(){ closed('Ignored — ' + esc(reason) + '.'); })
+					.catch(function(e){ fail(e, btn); });
+			}
+
 			ignore.onclick = function(){
-				if(!confirm('Ignore this as spam or junk?\n\nNothing is sent, and it will not come back even if the sender emails again.')) return;
-				busy(true, ignore);
-				api('/threads/' + id + '/ignore', {method:'POST', body: JSON.stringify({reason:'Marked as spam or junk'})})
-					.then(function(){ closed('Ignored.'); })
-					.catch(function(e){ fail(e, ignore); });
+				var open = ign.style.display !== 'none';
+				ign.style.display = open ? 'none' : 'block';
+				if(open){ ignOtherBox.style.display = 'none'; }
 			};
+			document.getElementById('igncancel').onclick = function(){
+				ign.style.display = 'none';
+				ignOtherBox.style.display = 'none';
+			};
+
+			// A quick pick is the second click, so it acts immediately.
+			Array.prototype.forEach.call(ign.querySelectorAll('.ignpick'), function(b){
+				b.onclick = function(){ doIgnore(b.getAttribute('data-r'), b); };
+			});
+
+			// "Other" needs typing, so it opens a field instead of firing.
+			document.getElementById('ignother').onclick = function(){
+				ignOtherBox.style.display = 'block';
+				document.getElementById('ignreason').focus();
+			};
+			document.getElementById('ignsend').onclick = function(){
+				var r = document.getElementById('ignreason').value.trim();
+				if(!r){
+					out.innerHTML = '<div class="note err">Type a short reason, or pick one of the buttons above.</div>';
+					document.getElementById('ignreason').focus();
+					return;
+				}
+				doIgnore(r, document.getElementById('ignsend'));
+			};
+			document.getElementById('ignreason').addEventListener('keydown', function(ev){
+				if('Enter' === ev.key){ ev.preventDefault(); document.getElementById('ignsend').click(); }
+			});
 		}
 
 		if(restore){

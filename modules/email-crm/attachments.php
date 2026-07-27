@@ -203,6 +203,24 @@ function gasf_crm_attach_can_use( array $row, $user_id ) {
 		|| user_can( (int) $user_id, 'manage_options' );
 }
 
+/**
+ * The one-click reasons offered when ignoring a message.
+ *
+ * Chosen from what this mailbox actually receives rather than from a generic
+ * list: "Sales pitch" is here because a hall-and-hosting venue gets cold
+ * vendor mail constantly, and lumping that under Spam would lose the
+ * distinction on the one axis the club might later care about. Filterable so
+ * the set can change without touching the UI.
+ */
+function gasf_crm_ignore_reasons() {
+	return (array) apply_filters( 'gasf_crm_ignore_reasons', array(
+		'Spam',
+		'Sales pitch',
+		'Not relevant',
+		'Political',
+	) );
+}
+
 /** Shape a row for the browser. stored_name is never exposed. */
 function gasf_crm_attach_public( $row ) {
 	if ( ! is_array( $row ) ) { return null; }
