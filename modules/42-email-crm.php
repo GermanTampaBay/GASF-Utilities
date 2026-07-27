@@ -33,7 +33,7 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 	// upgrade check below runs dbDelta and flushes rules on any change. This
 	// plugin runs as an mu-plugin on the main site, where activation hooks
 	// never fire, so a version-compare on every load is the only reliable hook.
-	define( 'GASF_CRM_SCHEMA', '1.7.0' );
+	define( 'GASF_CRM_SCHEMA', '1.8.0' );
 
 	/**
 	 * How far ahead to start warning that the Graph client secret is running
@@ -118,6 +118,13 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 			// Second watched mailbox. Blank disables the stream entirely rather
 			// than half-enabling it.
 			'mailbox_photos' => '',
+		// Take photos in and ask the sender about them without waiting for a
+		// volunteer. Somebody who bothered to send photos AND is willing to
+		// label them wants us to have them; making them wait days because
+		// nobody got round to pressing a button loses the one moment they were
+		// motivated. Approval still happens — afterwards, when there is
+		// something worth approving.
+		'photos_auto'    => 1,
 			'tenant_id'      => '',
 			'client_id'      => '',
 			'client_secret'  => '',
@@ -228,15 +235,17 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 	 * Running hourly costs one indexed query and the work is idempotent:
 	 * reminded_at is stamped before the send, so nothing is chased twice.
 	 */
+	add_action( 'gasf_crm_sync_event', 'gasf_crm_photo_autoprocess', 15 );
 	add_action( 'gasf_crm_sync_event', 'gasf_crm_photo_chase', 20 );
 
 	if ( defined( 'WP_CLI' ) && WP_CLI ) {
 		WP_CLI::add_command( 'gasf-crm sync', function () {
 			$r  = gasf_crm_sync();
+			$ph = function_exists( 'gasf_crm_photo_autoprocess' ) ? (int) gasf_crm_photo_autoprocess() : 0;
 			$ch = function_exists( 'gasf_crm_photo_chase' ) ? (int) gasf_crm_photo_chase() : 0;
 			WP_CLI::success( sprintf(
-				'%d new message(s), %d reopened, %d queued, %d announced, %d photo reminder(s).',
-				$r['new'], $r['reopened'], $r['queued'], $r['notified'], $ch
+				'%d new message(s), %d reopened, %d queued, %d announced, %d photo(s) taken in, %d reminder(s).',
+				$r['new'], $r['reopened'], $r['queued'], $r['notified'], $ph, $ch
 			) );
 		} );
 	}

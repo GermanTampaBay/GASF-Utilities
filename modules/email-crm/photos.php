@@ -405,6 +405,100 @@ function gasf_crm_photo_notify_review( array $invite, $count ) {
 }
 
 /* =====================================================================
+ * Automatic intake
+ * ================================================================== */
+
+/**
+ * Take in photos as they arrive and ask the sender about them, unprompted.
+ *
+ * The first version made a volunteer press "Keep photo" before anything could
+ * be asked. That was the wrong way round. Somebody who bothered to email photos
+ * in AND is willing to say what they are wants us to have them — and the moment
+ * they are willing is now, not whenever a volunteer next opens the CRM. Holding
+ * the ask behind a manual step spends that goodwill for nothing.
+ *
+ * Approval still happens. It moved to where there is actually something to
+ * approve: the photo AND what it turned out to be, together, in the Photos
+ * screen. A photo admin can reject anything at that point, and nothing is
+ * published anywhere in the meantime.
+ *
+ * Runs after each sync. photos_done on the message row is the guard, so a
+ * message is never taken in twice however often this runs.
+ */
+function gasf_crm_photo_autoprocess() {
+	global $wpdb;
+
+	$cfg = gasf_crm_cfg();
+	if ( empty( $cfg['photos_auto'] ) ) { return 0; }
+
+	$photo_streams = array();
+	foreach ( gasf_crm_active_streams() as $key => $s ) {
+		if ( 'general' !== $key ) { $photo_streams[] = $key; }
+	}
+	if ( ! $photo_streams ) { return 0; }
+
+	$in = implode( ',', array_fill( 0, count( $photo_streams ), '%s' ) );
+	$rows = $wpdb->get_results( $wpdb->prepare(
+		'SELECT m.id, m.graph_message_id, m.thread_id
+		   FROM ' . gasf_crm_table( 'messages' ) . ' m
+		   JOIN ' . gasf_crm_table( 'threads' ) . ' t ON t.id = m.thread_id
+		  WHERE m.direction = \'in\' AND m.has_attachments = 1 AND m.photos_done = 0
+		    AND t.stream IN (' . $in . ')
+		  ORDER BY m.id ASC LIMIT 10', // phpcs:ignore WordPress.DB.PreparedSQL
+		$photo_streams
+	), ARRAY_A );
+
+	$taken = 0;
+	foreach ( $rows as $row ) {
+		// Marked before the work, not after. A Graph timeout halfway through
+		// must not leave this message eligible again next hour and hand the
+		// sender a second copy of everything.
+		$wpdb->update( gasf_crm_table( 'messages' ), array( 'photos_done' => 1 ), array( 'id' => (int) $row['id'] ), array( '%d' ), array( '%d' ) );
+
+		$thread = gasf_crm_get_thread( (int) $row['thread_id'] );
+		if ( ! $thread ) { continue; }
+
+		$kept = array();
+		foreach ( gasf_crm_graph_attachments( $row['graph_message_id'], (string) $thread['stream'] ) as $a ) {
+			$type = strtolower( (string) ( $a['contentType'] ?? '' ) );
+			$kind = (string) ( $a['@odata.type'] ?? '' );
+			if ( 0 !== strpos( $type, 'image/' ) ) { continue; }
+			if ( false !== strpos( $kind, 'referenceAttachment' ) || false !== strpos( $kind, 'itemAttachment' ) ) { continue; }
+
+			$id = gasf_crm_photo_approve( $thread, (string) $row['graph_message_id'], (string) ( $a['id'] ?? '' ) );
+			if ( is_wp_error( $id ) ) {
+				gasf_mec_log( 'CRM photos: auto-keep failed for ' . ( $a['name'] ?? '?' ) . ' — ' . $id->get_error_message() );
+				continue;
+			}
+			$kept[] = (int) $id;
+		}
+
+		if ( ! $kept ) { continue; }
+		$taken += count( $kept );
+
+		$inv = gasf_crm_photo_invite_create(
+			(int) $thread['id'],
+			(string) $thread['last_from_addr'],
+			(string) $thread['last_from_name'],
+			$kept
+		);
+		if ( is_wp_error( $inv ) ) {
+			gasf_mec_log( 'CRM photos: took in ' . count( $kept ) . ' photo(s) from thread ' . (int) $thread['id']
+				. ' but could not mint a tagging link — ' . $inv->get_error_message() );
+			continue;
+		}
+
+		gasf_crm_photo_invite_send( array(
+			'thread_id' => (int) $thread['id'],
+			'email'     => (string) $thread['last_from_addr'],
+			'name'      => (string) $thread['last_from_name'],
+		), $inv['token'], (string) $thread['stream'] );
+	}
+
+	return $taken;
+}
+
+/* =====================================================================
  * The chase — remind on day 2, release on day 5
  * ================================================================== */
 
@@ -775,6 +869,87 @@ add_action( 'rest_api_init', function () {
 		},
 	) );
 
+	/*
+	 * The Photos screen.
+	 *
+	 * Every route here is gated on holding the photos stream, NOT on a
+	 * WordPress capability. Photo volunteers are created with no role at all,
+	 * so current_user_can() refuses every one of them — a photo admin and a
+	 * WordPress admin are different people and the code has to say so.
+	 */
+	$photo_guard = function () {
+		$sess = gasf_crm_rest_guard();
+		if ( is_wp_error( $sess ) || ! $sess ) { return $sess; }
+		return gasf_crm_user_can_stream( 'photos' )
+			? true
+			: new WP_Error( 'gasf_crm_403', 'You do not look after photo submissions.', array( 'status' => 403 ) );
+	};
+
+	register_rest_route( 'gasf/v1', '/crm/photos/list', array(
+		'methods'             => 'GET',
+		'permission_callback' => $photo_guard,
+		'callback'            => function ( WP_REST_Request $req ) {
+			return gasf_crm_photo_gallery( (string) $req->get_param( 'state' ) );
+		},
+	) );
+
+	register_rest_route( 'gasf/v1', '/crm/photos/detail', array(
+		'methods'             => 'GET',
+		'permission_callback' => $photo_guard,
+		'callback'            => function ( WP_REST_Request $req ) {
+			$one = gasf_crm_photo_card( (int) $req->get_param( 'photo' ) );
+			return $one ? $one : new WP_Error( 'gasf_crm_404', 'No such photo.', array( 'status' => 404 ) );
+		},
+	) );
+
+	register_rest_route( 'gasf/v1', '/crm/photos/save', array(
+		'methods'             => 'POST',
+		'permission_callback' => $photo_guard,
+		'callback'            => function ( WP_REST_Request $req ) {
+			$aid = (int) $req->get_param( 'photo' );
+			if ( ! gasf_crm_photo_card( $aid ) ) {
+				return new WP_Error( 'gasf_crm_404', 'No such photo.', array( 'status' => 404 ) );
+			}
+			$ok = gasf_crm_photo_confirm( $aid, array(
+				'people'   => (array) $req->get_param( 'people' ),
+				'place'    => (string) $req->get_param( 'place' ),
+				'event'    => (string) $req->get_param( 'event' ),
+				'event_id' => (int) $req->get_param( 'event_id' ),
+				'taken'    => (string) $req->get_param( 'taken' ),
+				'caption'  => (string) $req->get_param( 'caption' ),
+			) );
+			return is_wp_error( $ok ) ? $ok : gasf_crm_photo_card( $aid );
+		},
+	) );
+
+	register_rest_route( 'gasf/v1', '/crm/photos/reject', array(
+		'methods'             => 'POST',
+		'permission_callback' => $photo_guard,
+		'callback'            => function ( WP_REST_Request $req ) {
+			$aid  = (int) $req->get_param( 'photo' );
+			$card = gasf_crm_photo_card( $aid );
+			if ( ! $card ) { return new WP_Error( 'gasf_crm_404', 'No such photo.', array( 'status' => 404 ) ); }
+
+			// Only ever a photo that came in through a submission. Without this
+			// the route would delete any attachment ID in the Media Library.
+			$src = get_post_meta( $aid, '_gasf_photo_source', true );
+			if ( ! is_array( $src ) || empty( $src['email'] ) ) {
+				return new WP_Error( 'gasf_crm_403', 'That is not a submitted photo.', array( 'status' => 403 ) );
+			}
+
+			gasf_mec_log( sprintf(
+				'CRM photos: media #%d (%s, from %s) rejected by user %d',
+				$aid, get_the_title( $aid ), $src['email'], get_current_user_id()
+			) );
+			if ( ! empty( $src['thread'] ) ) {
+				gasf_crm_log_event( (int) $src['thread'], 'photo_rejected', 'media #' . $aid . ' removed' );
+			}
+
+			wp_delete_attachment( $aid, true );
+			return array( 'ok' => true, 'photo' => $aid );
+		},
+	) );
+
 	// What was on at the club that day, or a name search when the date is no
 	// help. Authenticated: the public tagging form gets its suggestions
 	// server-rendered instead, so the calendar is not queryable by anyone
@@ -826,6 +1001,85 @@ add_action( 'rest_api_init', function () {
 		},
 	) );
 } );
+
+/**
+ * One photo, everything the Photos screen shows about it.
+ *
+ * Returns null for anything that did not arrive through a submission, which is
+ * what keeps the routes above from reaching arbitrary Media Library items.
+ */
+function gasf_crm_photo_card( $attachment_id ) {
+	$id = (int) $attachment_id;
+	if ( ! $id || 'attachment' !== get_post_type( $id ) ) { return null; }
+
+	$src = get_post_meta( $id, '_gasf_photo_source', true );
+	if ( ! is_array( $src ) ) { return null; }
+
+	$st      = gasf_crm_photo_state( $id );
+	$info    = function_exists( 'gasf_photo_info' ) ? gasf_photo_info( $id ) : array();
+	$pending = get_post_meta( $id, '_gasf_photo_pending', true );
+
+	return array(
+		'id'      => $id,
+		'thumb'   => wp_get_attachment_image_url( $id, 'medium' ),
+		'full'    => wp_get_attachment_image_url( $id, 'large' ),
+		'url'     => wp_get_attachment_url( $id ),
+		'dlname'  => function_exists( 'gasf_photo_filename' ) ? gasf_photo_filename( $id ) : '',
+		'state'   => $st['state'],
+		'release' => $st['release'] ? mysql2date( get_option( 'date_format' ), $st['release'] ) : '',
+		'from'    => trim( (string) ( $src['name'] ?? '' ) ) ?: (string) ( $src['email'] ?? '' ),
+		'email'   => (string) ( $src['email'] ?? '' ),
+		'subject' => (string) ( $src['subject'] ?? '' ),
+		'thread'  => (int) ( $src['thread'] ?? 0 ),
+		'taken'   => $info['taken'] ?? '',
+		'guess'   => ( ! empty( $info['place_guess'] ) && ! is_wp_error( $info['place_guess'] ) ) ? $info['place_guess']->name : '',
+		'alts'    => ! empty( $info['place_alts'] ) ? wp_list_pluck( $info['place_alts'], 'name' ) : array(),
+		'people'  => $info['people'] ?? array(),
+		'places'  => $info['places'] ?? array(),
+		'events'  => $info['events'] ?? array(),
+		'caption' => $info['caption'] ?? '',
+		'pending' => is_array( $pending ) ? $pending : null,
+		'title'   => get_the_title( $id ),
+	);
+}
+
+/**
+ * The gallery, newest first.
+ *
+ * 'review' is the default because it is the only bucket that is actually work:
+ * a sender has answered, or the grace period ran out and nobody did.
+ */
+function gasf_crm_photo_gallery( $state = '' ) {
+	$q = new WP_Query( array(
+		'post_type'      => 'attachment',
+		'post_status'    => 'inherit',
+		'posts_per_page' => 300,
+		'orderby'        => 'ID',
+		'order'          => 'DESC',
+		'fields'         => 'ids',
+		'no_found_rows'  => true,
+		'meta_query'     => array( array( 'key' => '_gasf_photo_source', 'compare' => 'EXISTS' ) ),
+	) );
+
+	$out    = array();
+	$counts = array( 'review' => 0, 'waiting' => 0, 'done' => 0, 'all' => 0 );
+
+	foreach ( $q->posts as $id ) {
+		$card = gasf_crm_photo_card( (int) $id );
+		if ( ! $card ) { continue; }
+
+		$bucket = 'confirmed' === $card['state'] ? 'done'
+			: ( 'waiting' === $card['state'] ? 'waiting' : 'review' );
+		$card['bucket'] = $bucket;
+
+		$counts[ $bucket ]++;
+		$counts['all']++;
+
+		if ( '' === $state || 'all' === $state || $state === $bucket ) { $out[] = $card; }
+	}
+
+	return array( 'photos' => $out, 'counts' => $counts );
+}
 
 /**
  * The photo block for a thread, as the reading pane needs it.

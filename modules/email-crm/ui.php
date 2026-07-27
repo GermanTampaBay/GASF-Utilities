@@ -312,6 +312,20 @@ textarea{width:100%;min-height:150px;padding:10px;border:1px solid var(--gasf-bo
 .evpick.on em{color:rgba(255,255,255,.75)}
 .p-evsearch{width:100%;padding:5px 8px;border:1px dashed var(--gasf-border);border-radius:4px;font:inherit;font-size:12px}
 .pdone{font-size:13px;font-weight:600;color:var(--ok)}
+/* Photos screen */
+.tabs.pstates button{font-size:12px}
+.pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px;padding:10px}
+.pgrid .pane{grid-column:1/-1;padding:14px 4px}
+.pthumbcard{border:1px solid var(--gasf-border);background:var(--gasf-surface);border-radius:6px;
+	padding:0;cursor:pointer;overflow:hidden;display:block;text-align:left;font:inherit}
+.pthumbcard img{width:100%;aspect-ratio:1/1;object-fit:cover;display:block;background:var(--gasf-chip)}
+.pthumbcard .pmeta{display:block;padding:5px 7px;font-size:11px;color:var(--gasf-muted);
+	overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pthumbcard .pmeta em{display:block;font-style:normal;font-weight:600;color:var(--s-ink)}
+.pthumbcard:hover{border-color:var(--s-accent)}
+.pthumbcard.on{border-color:var(--s-ink);box-shadow:inset 0 0 0 2px var(--s-ink)}
+.pbig{display:block;border-radius:6px;overflow:hidden;background:var(--gasf-chip)}
+.pbig img{width:100%;max-height:46vh;object-fit:contain;display:block}
 .badge{display:inline-block;font-size:11px;padding:1px 7px;border-radius:9px;background:var(--gasf-chip);color:var(--gasf-muted);vertical-align:middle}
 .badge.ig{background:#fcf0f1;color:var(--danger)}
 .badge.an{background:#edf4ea;color:var(--ok)}
@@ -502,6 +516,9 @@ function gasf_crm_render_inbox() {
 <header class="bar"><div class="wrap">
 	<h1>Club inbox<span class="box" id="hbox"><?php echo $one_box ? ' &mdash; ' . esc_html( $one_box ) : ''; ?></span></h1>
 	<div>
+		<?php if ( gasf_crm_user_can_stream( 'photos' ) ) : ?>
+			<button class="hbtn" id="toview" data-view="photos">Photos</button>
+		<?php endif; ?>
 		<button class="hbtn" id="checkmail">Check for new mail</button>
 		<button class="hbtn" onclick="var h=document.getElementById('help');h.style.display=h.style.display==='none'?'block':'none';window.scrollTo(0,0)">Help</button>
 		<?php
@@ -572,7 +589,24 @@ function gasf_crm_render_inbox() {
 
 <?php gasf_crm_render_help(); ?>
 
-<div class="wrap"><div class="layout">
+<?php if ( gasf_crm_user_can_stream( 'photos' ) ) : ?>
+<div class="wrap" id="photoview" hidden><div class="layout">
+	<div class="card">
+		<div class="tabs pstates">
+			<button class="on" data-pstate="review">Needs you</button>
+			<button data-pstate="waiting">With the sender</button>
+			<button data-pstate="done">Done</button>
+			<button data-pstate="all">All</button>
+		</div>
+		<div class="list pgrid" id="pgrid"><div class="pane muted">Loading…</div></div>
+	</div>
+	<div class="card"><div class="pane" id="ppane" data-stream="photos">
+		<p class="muted">Pick a photo on the left.</p>
+	</div></div>
+</div></div>
+<?php endif; ?>
+
+<div class="wrap" id="mailview"><div class="layout">
 	<div class="card">
 		<?php
 		// The mailbox switcher only appears for somebody who holds more than one
@@ -1185,9 +1219,40 @@ function gasf_crm_render_inbox() {
 			};
 		});
 
-		// Calendar suggestions per card.
-		Array.prototype.forEach.call(pane.querySelectorAll('.pev'), function(box){
-			var card   = box.closest('.pcard');
+		wireEventPickers(pane);
+
+		Array.prototype.forEach.call(pane.querySelectorAll('.pcard'), function(card){
+			var ok = card.querySelector('.p-ok');
+			if (!ok) { return; }
+			ok.onclick = function(){
+				var msg = card.querySelector('.p-msg');
+				ok.disabled = true; msg.textContent = 'Saving…';
+				var v = function(sel){ var el = card.querySelector(sel); return el ? el.value : ''; };
+				api('/photos/confirm', { method:'POST', body: JSON.stringify({
+					id: id,
+					photo: parseInt(card.dataset.photo, 10),
+					// Split on commas rather than asking the volunteer to manage
+					// separate boxes: they are correcting a list, not composing one.
+					people: v('.p-people').split(',').map(function(s){ return s.trim(); }).filter(Boolean),
+					place: v('.p-place'), event: v('.p-event'),
+					// Set only when the occasion was picked from the calendar, so
+					// a hand-typed name never claims to be a specific event.
+					event_id: parseInt(v('.p-evid'), 10) || 0,
+					taken: v('.p-taken'), caption: v('.p-caption')
+				})}).then(function(){ open(id); })
+				  .catch(function(e){ ok.disabled = false; msg.textContent = e.message; });
+			};
+		});
+	}
+
+	// Calendar suggestions, shared by the thread cards and the Photos screen —
+	// the same control doing the same job in two places, so it is written once.
+	// root is whichever pane the form currently lives in.
+	function wireEventPickers(root){
+		Array.prototype.forEach.call(root.querySelectorAll('.pev'), function(box){
+			// The form sits inside a .pcard on a thread and directly in the pane
+			// on the Photos screen, so fall back to the root itself.
+			var card   = box.closest('.pcard') || root;
 			var list   = box.querySelector('.pevlist');
 			var date   = card.querySelector('.p-taken');
 			var name   = card.querySelector('.p-event');
@@ -1239,30 +1304,6 @@ function gasf_crm_render_inbox() {
 				};
 			}
 			load('');
-		});
-
-		Array.prototype.forEach.call(pane.querySelectorAll('.pcard'), function(card){
-			var ok = card.querySelector('.p-ok');
-			if (!ok) { return; }
-			ok.onclick = function(){
-				var msg = card.querySelector('.p-msg');
-				ok.disabled = true; msg.textContent = 'Saving…';
-				var v = function(sel){ var el = card.querySelector(sel); return el ? el.value : ''; };
-				api('/photos/confirm', { method:'POST', body: JSON.stringify({
-					id: id,
-					photo: parseInt(card.dataset.photo, 10),
-					// Split on commas here rather than asking the volunteer to
-					// manage separate boxes: they are correcting a list, not
-					// composing one.
-					people: v('.p-people').split(',').map(function(s){ return s.trim(); }).filter(Boolean),
-					place: v('.p-place'), event: v('.p-event'),
-					// Set only when the occasion was picked from the calendar, so
-					// a hand-typed name never claims to be a specific event.
-					event_id: parseInt(v('.p-evid'), 10) || 0,
-					taken: v('.p-taken'), caption: v('.p-caption')
-				})}).then(function(){ open(id); })
-				  .catch(function(e){ ok.disabled = false; msg.textContent = e.message; });
-			};
 		});
 	}
 
@@ -1460,6 +1501,146 @@ function gasf_crm_render_inbox() {
 			}).join('');
 		}).catch(function(){});
 	}
+
+	/* ---------------------------------------------------------------
+	 * The Photos screen.
+	 *
+	 * A photo admin is not a WordPress admin — these accounts have no role at
+	 * all and cannot open wp-admin — so everything they need to do with a
+	 * photo has to be here: see it, see who sent it, fix the tags, approve it,
+	 * throw it out, download it.
+	 * ------------------------------------------------------------- */
+	var pgrid  = document.getElementById('pgrid');
+	var ppane  = document.getElementById('ppane');
+	var pstate = 'review', pcur = null;
+
+	function showView(which){
+		var mail = document.getElementById('mailview'), ph = document.getElementById('photoview');
+		if (!ph) { return; }
+		var toPhotos = (which === 'photos');
+		mail.hidden = toPhotos;
+		ph.hidden   = !toPhotos;
+		var b = document.getElementById('toview');
+		b.textContent = toPhotos ? 'Back to mail' : 'Photos';
+		b.dataset.view = toPhotos ? 'mail' : 'photos';
+		if (toPhotos) { loadPhotos(); }
+		window.scrollTo(0, 0);
+	}
+
+	function loadPhotos(){
+		if (!pgrid) { return; }
+		return api('/photos/list?state=' + encodeURIComponent(pstate)).then(function(r){
+			// Counts on the tabs, so "nothing to do" is visible without clicking
+			// through all four.
+			Array.prototype.forEach.call(document.querySelectorAll('.pstates button'), function(b){
+				var k = b.dataset.pstate, n = r.counts[k === 'all' ? 'all' : k];
+				b.textContent = b.textContent.replace(/\s*\(\d+\)$/, '') + (n ? ' (' + n + ')' : '');
+			});
+
+			if (!r.photos.length) {
+				pgrid.innerHTML = '<div class="pane muted">' + (pstate === 'review'
+					? 'Nothing needs you. Photos appear here once the sender has described them, or once they have had five days to and have not.'
+					: 'Nothing here.') + '</div>';
+				return;
+			}
+			pgrid.innerHTML = r.photos.map(function(p){
+				return '<button class="pthumbcard' + (pcur === p.id ? ' on' : '') + '" data-photo="' + p.id + '">' +
+					(p.thumb ? '<img src="' + esc(p.thumb) + '" alt="" loading="lazy">' : '') +
+					'<span class="pmeta">' + esc(p.from) +
+					(p.taken ? ' · ' + esc(p.taken) : '') +
+					(p.bucket === 'review' && p.pending ? '<em>described</em>'
+						: (p.bucket === 'review' ? '<em>no reply</em>' : '')) +
+					'</span></button>';
+			}).join('');
+			Array.prototype.forEach.call(pgrid.querySelectorAll('.pthumbcard'), function(b){
+				b.onclick = function(){ openPhoto(parseInt(b.dataset.photo, 10)); };
+			});
+		}).catch(function(e){ pgrid.innerHTML = '<div class="pane note err">' + esc(e.message) + '</div>'; });
+	}
+
+	function openPhoto(id){
+		pcur = id;
+		ppane.innerHTML = '<p class="muted">Loading…</p>';
+		api('/photos/detail?photo=' + id).then(function(p){
+			var q = p.pending || {};
+			var h = '<a href="' + esc(p.url) + '" target="_blank" rel="noopener" class="pbig">' +
+				'<img src="' + esc(p.full || p.thumb) + '" alt=""></a>';
+
+			h += '<p class="muted" style="margin:10px 0 4px">Sent by <strong>' + esc(p.from) + '</strong>' +
+				(p.email ? ' &lt;' + esc(p.email) + '&gt;' : '') +
+				(p.subject ? ' &middot; ' + esc(p.subject) : '') + '</p>';
+
+			if (p.state === 'waiting') {
+				h += '<div class="note warn">Asked, and reminded once. They have until <strong>' + esc(p.release) +
+					'</strong> to answer. You can label it yourself now if you know.</div>';
+			} else if (p.state === 'released') {
+				h += '<div class="note warn">The sender never answered. Label it from what you can see.</div>';
+			} else if (p.pending) {
+				h += '<div class="note ok">The sender described this. Check it and approve.</div>';
+			} else if (p.state === 'confirmed') {
+				h += '<div class="note ok">Approved and tagged.</div>';
+			}
+
+			h += photoForm(p, q);
+			h += '<div class="actions" style="margin-top:6px">' +
+				(p.dlname ? '<a class="btn sec" href="' + esc(p.url) + '" download="' + esc(p.dlname) + '">Download</a>' : '') +
+				'<button class="btn warn" id="preject">Reject &amp; delete</button></div>';
+			if (p.dlname) { h += '<p class="muted" style="margin:6px 0 0">Saves as <code>' + esc(p.dlname) + '</code></p>'; }
+
+			ppane.innerHTML = h;
+			wirePhotoPane(id, p);
+		}).catch(function(e){ ppane.innerHTML = '<div class="note err">' + esc(e.message) + '</div>'; });
+	}
+
+	function wirePhotoPane(id, p){
+		wireEventPickers(ppane);
+
+		var ok = ppane.querySelector('.p-ok');
+		if (ok) {
+			ok.textContent = 'Approve with these tags';
+			ok.onclick = function(){
+				var msg = ppane.querySelector('.p-msg');
+				ok.disabled = true; msg.textContent = 'Saving…';
+				var v = function(s){ var el = ppane.querySelector(s); return el ? el.value : ''; };
+				api('/photos/save', { method:'POST', body: JSON.stringify({
+					photo: id,
+					people: v('.p-people').split(',').map(function(s){ return s.trim(); }).filter(Boolean),
+					place: v('.p-place'), event: v('.p-event'),
+					event_id: parseInt(v('.p-evid'), 10) || 0,
+					taken: v('.p-taken'), caption: v('.p-caption')
+				})}).then(function(){ loadPhotos(); openPhoto(id); })
+				  .catch(function(e){ ok.disabled = false; msg.textContent = e.message; });
+			};
+		}
+
+		var rej = document.getElementById('preject');
+		if (rej) {
+			rej.onclick = function(){
+				if (!confirm('Delete this photo for good?\n\nIt is removed from the club\'s collection and cannot be recovered. The email it came from is not touched, so it can be taken in again if that was a mistake.')) { return; }
+				rej.disabled = true;
+				api('/photos/reject', { method:'POST', body: JSON.stringify({ photo: id }) })
+					.then(function(){
+						pcur = null;
+						ppane.innerHTML = '<p class="muted">Deleted. Pick another photo on the left.</p>';
+						loadPhotos();
+					}).catch(function(e){ rej.disabled = false; alert(e.message); });
+			};
+		}
+	}
+
+	Array.prototype.forEach.call(document.querySelectorAll('.pstates button'), function(b){
+		b.onclick = function(){
+			Array.prototype.forEach.call(document.querySelectorAll('.pstates button'), function(x){ x.classList.remove('on'); });
+			b.classList.add('on');
+			pstate = b.dataset.pstate;
+			pcur = null;
+			ppane.innerHTML = '<p class="muted">Pick a photo on the left.</p>';
+			loadPhotos();
+		};
+	});
+
+	var toview = document.getElementById('toview');
+	if (toview) { toview.onclick = function(){ showView(toview.dataset.view); }; }
 
 	// The "photos waiting" banner sits outside the pane, so its buttons need
 	// wiring to the same open() the list rows use.

@@ -142,6 +142,7 @@ function gasf_crm_install_tables() {
 		body_preview TEXT NULL,
 		body_html LONGTEXT NULL,
 		has_attachments TINYINT(1) NOT NULL DEFAULT 0,
+		photos_done TINYINT(1) NOT NULL DEFAULT 0,
 		sent_by_user_id BIGINT UNSIGNED NULL,
 		PRIMARY KEY  (id),
 		UNIQUE KEY graph_message_id (graph_message_id),
