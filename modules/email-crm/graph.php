@@ -461,6 +461,74 @@ function gasf_crm_graph_attachments( $graph_message_id ) {
 	) );
 }
 
+/**
+ * Attachment metadata WITHOUT its bytes.
+ *
+ * $select omits contentBytes deliberately: the download path needs the name,
+ * size and kind before deciding what to do, and pulling a 30 MB photo into
+ * memory just to read its filename is how a photo submission takes the site
+ * down. The bytes come separately, streamed.
+ */
+function gasf_crm_graph_attachment_meta( $graph_message_id, $attachment_id ) {
+	return gasf_crm_graph( 'GET', gasf_crm_mailbox_path() . '/messages/' . rawurlencode( $graph_message_id )
+		. '/attachments/' . rawurlencode( $attachment_id ) . '?$select=id,name,contentType,size' );
+}
+
+/**
+ * Stream one attachment's raw bytes to a file on disk.
+ *
+ * Uses the /$value endpoint, which returns the file itself rather than a JSON
+ * envelope with base64 inside it, and hands WordPress a filename so the HTTP
+ * layer writes straight to disk. Memory stays flat regardless of size — where
+ * the JSON route held the encoded copy AND the decoded copy in RAM at once,
+ * roughly 2.4x the file, which on shared hosting is a fatal error somewhere
+ * around a 40 MB photo.
+ *
+ * Returns true, or WP_Error.
+ */
+function gasf_crm_graph_attachment_stream( $graph_message_id, $attachment_id, $dest ) {
+	$token = gasf_crm_graph_token();
+	if ( is_wp_error( $token ) ) { return $token; }
+
+	$r = wp_remote_get(
+		GASF_CRM_GRAPH . gasf_crm_mailbox_path() . '/messages/' . rawurlencode( $graph_message_id )
+			. '/attachments/' . rawurlencode( $attachment_id ) . '/$value',
+		array(
+			// Generous: a large file over a slow link is the whole point here.
+			'timeout'  => 300,
+			'stream'   => true,
+			'filename' => $dest,
+			'headers'  => array( 'Authorization' => 'Bearer ' . $token ),
+		)
+	);
+
+	if ( is_wp_error( $r ) ) { return $r; }
+
+	$code = (int) wp_remote_retrieve_response_code( $r );
+	if ( $code < 200 || $code >= 300 ) {
+		@unlink( $dest );
+		return new WP_Error( 'gasf_crm_att_http', 'Graph returned HTTP ' . $code . ' fetching the attachment.' );
+	}
+	if ( ! file_exists( $dest ) || ! filesize( $dest ) ) {
+		@unlink( $dest );
+		return new WP_Error( 'gasf_crm_att_empty', 'The attachment came back empty.' );
+	}
+	return true;
+}
+
+/**
+ * OWA deep link for a message.
+ *
+ * Only useful to someone whose account can open the mailbox — a volunteer
+ * signed in with Google will hit a Microsoft sign-in wall — so callers must
+ * gate it on capability rather than showing it to everyone.
+ */
+function gasf_crm_graph_message_weblink( $graph_message_id ) {
+	$r = gasf_crm_graph( 'GET', gasf_crm_mailbox_path() . '/messages/'
+		. rawurlencode( $graph_message_id ) . '?$select=webLink' );
+	return is_wp_error( $r ) ? '' : (string) ( $r['webLink'] ?? '' );
+}
+
 /** Raw attachment bytes. Returns array( name, type, bytes ) or WP_Error. */
 function gasf_crm_graph_attachment( $graph_message_id, $attachment_id ) {
 	$res = gasf_crm_graph( 'GET', gasf_crm_mailbox_path() . '/messages/' . rawurlencode( $graph_message_id )

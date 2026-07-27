@@ -587,19 +587,44 @@ function gasf_crm_rest_attachment( WP_REST_Request $req ) {
 		gasf_crm_attachment_problem( 'That download link is incomplete. Go back and open the message again.' );
 	}
 
-	$file = gasf_crm_graph_attachment( $msg, $att );
-	if ( is_wp_error( $file ) ) {
-		// A plain WP_Error return would render as a JSON blob, because this link
-		// is a top-level navigation rather than a fetch — the volunteer would
-		// get {"code":"gasf_crm_att_ref","message":...} filling the tab. Say it
-		// in a sentence instead.
-		gasf_crm_attachment_problem( $file->get_error_message() );
+	// Metadata first, without the bytes: name and kind decide what happens next,
+	// and pulling a 30 MB photo into memory to read its filename is exactly the
+	// failure this path is built to avoid.
+	$meta = gasf_crm_graph_attachment_meta( $msg, $att );
+	if ( is_wp_error( $meta ) ) {
+		gasf_crm_attachment_problem( $meta->get_error_message(), $msg );
+	}
+
+	$kind = (string) ( $meta['@odata.type'] ?? '' );
+	if ( false !== strpos( $kind, 'referenceAttachment' ) ) {
+		gasf_crm_attachment_problem( sprintf(
+			'"%s" is a cloud link (OneDrive or SharePoint), not a file — there is nothing here to download. The sender shared it rather than attaching it.',
+			(string) ( $meta['name'] ?? 'That attachment' )
+		), $msg );
+	}
+	if ( false !== strpos( $kind, 'itemAttachment' ) ) {
+		gasf_crm_attachment_problem( sprintf(
+			'"%s" is another email attached to this one, rather than a file.',
+			(string) ( $meta['name'] ?? 'That attachment' )
+		), $msg );
+	}
+
+	$name = sanitize_file_name( (string) ( $meta['name'] ?? 'attachment' ) );
+	$tmp  = wp_tempnam( 'gasf-crm-att' );
+	if ( ! $tmp ) {
+		gasf_crm_attachment_problem( 'The server could not make room to fetch that file.', $msg );
+	}
+
+	$ok = gasf_crm_graph_attachment_stream( $msg, $att, $tmp );
+	if ( is_wp_error( $ok ) ) {
+		@unlink( $tmp );
+		gasf_crm_attachment_problem( $ok->get_error_message(), $msg );
 	}
 
 	nocache_headers();
 	header( 'Content-Type: application/octet-stream' );
-	header( 'Content-Disposition: attachment; filename="' . sanitize_file_name( $file['name'] ) . '"' );
-	header( 'Content-Length: ' . strlen( $file['bytes'] ) );
+	header( 'Content-Disposition: attachment; filename="' . ( '' !== $name ? $name : 'attachment' ) . '"' );
+	header( 'Content-Length: ' . filesize( $tmp ) );
 	header( 'X-Content-Type-Options: nosniff' );
 
 	// Drop any buffered output before writing binary. WordPress or a plugin may
@@ -608,12 +633,26 @@ function gasf_crm_rest_attachment( WP_REST_Request $req ) {
 	// error anywhere, just a download that will not open.
 	while ( ob_get_level() > 0 ) { ob_end_clean(); }
 
-	echo $file['bytes']; // phpcs:ignore WordPress.Security.EscapeOutput
+	readfile( $tmp ); // streams in chunks; never holds the file in memory
+	@unlink( $tmp );
 	exit;
 }
 
-/** Human-readable dead end for a download that cannot be served. Never returns. */
-function gasf_crm_attachment_problem( $message ) {
+/**
+ * Human-readable dead end for a download that cannot be served. Never returns.
+ *
+ * Offers the Outlook deep link ONLY to someone who could actually use it.
+ * webLink opens the message in the shared mailbox's own OWA, so an
+ * administrator gets the message and a Google-signed-in volunteer gets a
+ * Microsoft sign-in wall — showing it to everyone would be sending most of
+ * your volunteers to a locked door.
+ */
+function gasf_crm_attachment_problem( $message, $graph_message_id = '' ) {
+	$outlook = '';
+	if ( $graph_message_id && current_user_can( 'manage_options' ) ) {
+		$outlook = gasf_crm_graph_message_weblink( $graph_message_id );
+	}
+
 	nocache_headers();
 	status_header( 404 );
 	header( 'Content-Type: text/html; charset=utf-8' );
@@ -622,11 +661,17 @@ function gasf_crm_attachment_problem( $message ) {
 		. '<style>body{font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;'
 		. 'max-width:34em;margin:14vh auto;padding:0 20px;color:#1d2327}'
 		. 'h1{font-size:19px;margin:0 0 10px}p{color:#50575e}'
-		. 'a{display:inline-block;margin-top:18px;padding:9px 16px;background:#2271b1;color:#fff;'
-		. 'border-radius:4px;text-decoration:none}</style></head><body>'
-		. '<h1>That attachment cannot be downloaded</h1><p>%s</p><a href="%s">Back to the inbox</a></body></html>',
+		. '.btns{margin-top:18px;display:flex;gap:10px;flex-wrap:wrap}'
+		. 'a{display:inline-block;padding:9px 16px;background:#2271b1;color:#fff;'
+		. 'border-radius:4px;text-decoration:none}a.sec{background:#f6f7f7;color:#2271b1;border:1px solid #dcdcde}'
+		. '</style></head><body>'
+		. '<h1>That attachment cannot be downloaded</h1><p>%s</p><div class="btns">'
+		. '<a href="%s">Back to the inbox</a>%s</div></body></html>',
 		esc_html( $message ),
-		esc_url( home_url( '/email/' ) )
+		esc_url( home_url( '/email/' ) ),
+		$outlook
+			? '<a class="sec" href="' . esc_url( $outlook ) . '" target="_blank" rel="noopener">Open the message in Outlook</a>'
+			: ''
 	);
 	exit;
 }
