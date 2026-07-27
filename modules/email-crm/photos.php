@@ -43,6 +43,17 @@ define( 'GASF_CRM_PHOTO_RELEASE_DAYS', 5 );
 define( 'GASF_CRM_PHOTO_MAX_PEOPLE', 25 );
 define( 'GASF_CRM_PHOTO_CAPTION_MAX', 150 );
 
+/**
+ * Most images one email may bring in by itself.
+ *
+ * A club submission is a handful of photos. A message carrying dozens is either
+ * a mistake or somebody dumping something, and either way it should stop and
+ * wait for a person rather than pour into the Media Library unattended. The
+ * remainder is NOT silently dropped — the message stays unprocessed and says so
+ * in the log, so a volunteer can take them in deliberately.
+ */
+define( 'GASF_CRM_PHOTO_MAX_PER_MESSAGE', 30 );
+
 /* =====================================================================
  * Approval — Graph attachment to Media Library
  * ================================================================== */
@@ -550,7 +561,29 @@ function gasf_crm_photo_autoprocess_run() {
 		$fresh  = 0;        // how many this run actually fetched
 		$failed = false;
 
-		foreach ( gasf_crm_graph_attachments( $row['graph_message_id'], (string) $thread['stream'] ) as $a ) {
+		$all = gasf_crm_graph_attachments( $row['graph_message_id'], (string) $thread['stream'] );
+		if ( is_wp_error( $all ) ) {
+			gasf_mec_log( 'CRM photos: could not list attachments on message ' . (int) $row['id'] . ' — ' . $all->get_error_message() );
+			continue; // left unmarked, so the next run tries again
+		}
+
+		// Too many to take unattended. Left entirely unprocessed rather than
+		// part-imported: half a submission is worse than none, because it looks
+		// finished. A volunteer keeps them by hand from the thread.
+		$images = 0;
+		foreach ( (array) $all as $a ) {
+			if ( 0 === strpos( strtolower( (string) ( $a['contentType'] ?? '' ) ), 'image/' ) ) { $images++; }
+		}
+		if ( $images > GASF_CRM_PHOTO_MAX_PER_MESSAGE ) {
+			gasf_mec_log( sprintf(
+				'CRM photos: message %d from %s carries %d images, over the %d limit — NOT taken in automatically, needs a volunteer.',
+				(int) $row['id'], $thread['last_from_addr'], $images, GASF_CRM_PHOTO_MAX_PER_MESSAGE
+			) );
+			gasf_crm_log_event( (int) $thread['id'], 'photo_held', $images . ' images — too many to take in automatically' );
+			continue;
+		}
+
+		foreach ( (array) $all as $a ) {
 			$type = strtolower( (string) ( $a['contentType'] ?? '' ) );
 			$kind = (string) ( $a['@odata.type'] ?? '' );
 			if ( 0 !== strpos( $type, 'image/' ) ) { continue; }
@@ -1152,6 +1185,11 @@ function gasf_crm_photo_card( $attachment_id ) {
 		'release' => $st['release'] ? mysql2date( get_option( 'date_format' ), $st['release'] ) : '',
 		'from'    => trim( (string) ( $src['name'] ?? '' ) ) ?: (string) ( $src['email'] ?? '' ),
 		'email'   => (string) ( $src['email'] ?? '' ),
+		// Whether the club has heard from this address before. Not a verdict —
+		// most first-timers are exactly who they say they are — but "we have
+		// never had a word from this person and here are photos" is worth a
+		// second look, and it costs one indexed read to say.
+		'known'   => gasf_crm_photo_sender_known( (string) ( $src['email'] ?? '' ) ),
 		'subject' => (string) ( $src['subject'] ?? '' ),
 		'thread'  => (int) ( $src['thread'] ?? 0 ),
 		'taken'   => $info['taken'] ?? '',
@@ -1165,6 +1203,27 @@ function gasf_crm_photo_card( $attachment_id ) {
 		'title'   => get_the_title( $id ),
 		'missing' => $missing,
 	);
+}
+
+/**
+ * Has the club exchanged anything with this address before this submission?
+ *
+ * The address book counts the message that carried these photos, so "seen more
+ * than once, or ever written to" is what distinguishes a correspondent from a
+ * complete stranger.
+ */
+function gasf_crm_photo_sender_known( $email ) {
+	global $wpdb;
+	$email = sanitize_email( $email );
+	if ( ! is_email( $email ) ) { return false; }
+
+	$row = $wpdb->get_row( $wpdb->prepare(
+		'SELECT sent_count, recv_count FROM ' . gasf_crm_table( 'contacts' ) . ' WHERE email = %s LIMIT 1',
+		$email
+	), ARRAY_A );
+	if ( ! $row ) { return false; }
+
+	return ( (int) $row['sent_count'] > 0 ) || ( (int) $row['recv_count'] > 1 );
 }
 
 /**

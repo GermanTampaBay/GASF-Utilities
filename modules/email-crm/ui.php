@@ -289,6 +289,11 @@ textarea{width:100%;min-height:150px;padding:10px;border:1px solid var(--gasf-bo
 .keep:hover{background:var(--s-tint)}
 .keep[disabled]{opacity:.6;cursor:default}
 .photos{margin-top:28px;border-top:1px solid var(--gasf-border);padding-top:14px}
+/* When photos lead, the first block needs no rule above it and the message
+   below needs one, so the order reads as deliberate rather than jumbled. */
+.pane > .photos:first-of-type{margin-top:0;border-top:0;padding-top:0}
+.mailhead{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--gasf-muted);
+	margin:26px 0 12px;padding-top:14px;border-top:1px solid var(--gasf-border)}
 .photos h3{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--gasf-muted);margin:0 0 12px}
 .pcard{display:flex;gap:14px;border:1px solid var(--gasf-border);border-radius:6px;padding:12px;margin:0 0 10px;background:var(--s-wash)}
 .pthumb{flex:0 0 90px;height:90px;border-radius:4px;overflow:hidden;background:var(--gasf-chip);display:block}
@@ -326,6 +331,8 @@ textarea{width:100%;min-height:150px;padding:10px;border:1px solid var(--gasf-bo
 .pthumbcard.on{border-color:var(--s-ink);box-shadow:inset 0 0 0 2px var(--s-ink)}
 .pbig{display:block;border-radius:6px;overflow:hidden;background:var(--gasf-chip)}
 .pbig img{width:100%;max-height:46vh;object-fit:contain;display:block}
+.firsttime{display:inline-block;font-size:11px;font-weight:600;background:#fdf8e7;color:#8a6508;
+	border:1px solid #dba617;border-radius:9px;padding:1px 8px;margin-left:4px}
 .badge{display:inline-block;font-size:11px;padding:1px 7px;border-radius:9px;background:var(--gasf-chip);color:var(--gasf-muted);vertical-align:middle}
 .badge.ig{background:#fcf0f1;color:var(--danger)}
 .badge.an{background:#edf4ea;color:var(--ok)}
@@ -789,6 +796,19 @@ function gasf_crm_render_inbox() {
 				html += '<div class="note warn">' + esc(t.locked_by) + ' is replying to this. You can read it, but not send.</div>';
 			}
 
+			// When there are photos wanting a decision, they ARE the job — so
+			// they go above the message and the reply box goes under it. On a
+			// submission the email is usually "see attached"; putting a reply
+			// form first asks the wrong question and buries the right one.
+			var pb = photoBlock(t);
+			var photosFirst = (t.photos || []).some(function(p){
+				return p.pending || 'released' === p.state || 'untagged' === p.state;
+			});
+			if (photosFirst) {
+				html += pb;
+				html += '<h3 class="mailhead">The email it arrived with</h3>';
+			}
+
 			t.messages.forEach(function(m){
 				// A cloud link or an attached email has nothing to download, so it
 				// is labelled rather than dressed up as a file — clicking still
@@ -902,7 +922,7 @@ function gasf_crm_render_inbox() {
 					'<div id="msg"></div>';
 			}
 
-			html += photoBlock(t);
+			if (!photosFirst) { html += pb; }
 			html += history(t.events);
 			pane.innerHTML = html;
 			wire(id, t.status);
@@ -1576,7 +1596,10 @@ function gasf_crm_render_inbox() {
 
 			h += '<p class="muted" style="margin:10px 0 4px">Sent by <strong>' + esc(p.from) + '</strong>' +
 				(p.email ? ' &lt;' + esc(p.email) + '&gt;' : '') +
-				(p.subject ? ' &middot; ' + esc(p.subject) : '') + '</p>';
+				(p.subject ? ' &middot; ' + esc(p.subject) : '') +
+				// Not a verdict — most first-timers are exactly who they say
+				// they are — but worth knowing before it joins the collection.
+				(p.known ? '' : ' <span class="firsttime">first time we have heard from them</span>') + '</p>';
 
 			if (p.state === 'waiting') {
 				h += '<div class="note warn">Asked, and reminded once. They have until <strong>' + esc(p.release) +
