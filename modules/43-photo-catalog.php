@@ -288,13 +288,29 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 				'radius'  => $radius,
 				'depth'   => count( (array) get_ancestors( $t->term_id, 'gasf_photo_place', 'taxonomy' ) ),
 				'dist'    => $d,
+				// How convincingly this place contains the point: 0 at the dead
+				// centre, 1 at the very edge. Radius alone ignores fit, and the
+				// test caught what that costs — standing in the middle of the
+				// Biergarten was answered "Welton", because Welton's radius
+				// happened to be 5 m smaller and its edge reached that far in.
+				'fit'     => $radius > 0 ? ( $d / $radius ) : 1.0,
 			);
 		}
 
 		usort( $hits, function ( $a, $b ) {
+			// Best fit first, then the tighter geofence.
+			//
+			// This still means "most specific wins" where that phrase is
+			// meaningful: two places sharing a centre both fit perfectly, the
+			// tie falls to radius, and the smaller one takes it. What it adds
+			// is that being at the heart of one place beats being clipped by
+			// the edge of a slightly smaller one — which is the difference
+			// between a good guess and an arbitrary one.
+			$fa = round( $a['fit'], 4 );
+			$fb = round( $b['fit'], 4 );
+			if ( $fa !== $fb )                   { return $fa < $fb ? -1 : 1; }
 			if ( $a['radius'] !== $b['radius'] ) { return $a['radius'] < $b['radius'] ? -1 : 1; }
 			if ( $a['depth'] !== $b['depth'] )   { return $b['depth'] - $a['depth']; }
-			if ( $a['dist'] !== $b['dist'] )     { return $a['dist'] < $b['dist'] ? -1 : 1; }
 			return $a['term_id'] - $b['term_id'];
 		} );
 
