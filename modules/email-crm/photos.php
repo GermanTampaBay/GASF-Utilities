@@ -685,6 +685,13 @@ function gasf_crm_photo_confirm( $attachment_id, array $keep ) {
 		wp_update_post( array( 'ID' => $id, 'post_excerpt' => $caption ) );
 	}
 
+	// Title and alt, now that there is finally something true to say. Both are
+	// safe to rewrite — nothing links to them — unlike the filename, which is
+	// left exactly where it is and described at download time instead.
+	if ( function_exists( 'gasf_photo_apply_names' ) ) {
+		gasf_photo_apply_names( $id );
+	}
+
 	// Clearing the pending record is what takes it off the review list. Kept as
 	// history on the photo so "who said this was Hans" stays answerable.
 	$was = get_post_meta( $id, '_gasf_photo_pending', true );
@@ -840,6 +847,10 @@ function gasf_crm_photo_thread_block( $thread_id ) {
 			'id'        => $id,
 			'thumb'     => wp_get_attachment_image_url( $id, 'thumbnail' ),
 			'link'      => admin_url( 'post.php?post=' . $id . '&action=edit' ),
+			// The file never moves; only the saved copy is renamed, by the
+			// browser, from the tags as they stand right now.
+			'url'       => wp_get_attachment_url( $id ),
+			'dlname'    => function_exists( 'gasf_photo_filename' ) ? gasf_photo_filename( $id ) : '',
 			'taken'     => $info['taken'] ?? '',
 			'guess'     => ( ! empty( $info['place_guess'] ) && ! is_wp_error( $info['place_guess'] ) ) ? $info['place_guess']->name : '',
 			'alts'      => ! empty( $info['place_alts'] ) ? wp_list_pluck( $info['place_alts'], 'name' ) : array(),

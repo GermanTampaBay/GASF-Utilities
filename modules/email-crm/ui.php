@@ -1091,7 +1091,12 @@ function gasf_crm_render_inbox() {
 
 			if (p.confirmed) {
 				s += '<div class="pdone">✓ Tagged' + (p.people.length ? ' — ' + esc(p.people.join(', ')) : '') + '</div>' +
-					(p.caption ? '<p class="muted">' + esc(p.caption) + '</p>' : '');
+					(p.caption ? '<p class="muted">' + esc(p.caption) + '</p>' : '') +
+					// Offered only once it is tagged: before that the name would
+					// have nothing in it worth carrying.
+					(p.dlname && p.url
+						? '<a class="att" href="' + esc(p.url) + '" download="' + esc(p.dlname) + '">⬇ ' + esc(p.dlname) + '</a>'
+						: '');
 
 			} else if (p.state === 'waiting') {
 				s += '<div class="muted">Waiting on the sender until <strong>' + esc(p.release) + '</strong>. ' +

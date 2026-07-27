@@ -718,6 +718,154 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 	}
 
 	/* ---------------------------------------------------------------------
+	 * Names
+	 *
+	 * The stored filename is never touched. Two reasons, both concrete: at
+	 * approval we know almost nothing (the tags arrive days later), and
+	 * WordPress has no reference-rewriting — changing _wp_attached_file orphans
+	 * every generated size and 404s anything already pointing at the old URL.
+	 *
+	 * But a file that leaves the site leaves its tags behind, and a folder of
+	 * PXL_20260727_182345.jpg is data loss at the boundary. So the descriptive
+	 * name is applied at DOWNLOAD time via the anchor's download attribute:
+	 * nothing on disk moves, the canonical URL never changes, and correcting a
+	 * tag next year silently fixes every download after it.
+	 * ------------------------------------------------------------------- */
+
+	/**
+	 * German-aware transliteration.
+	 *
+	 * remove_accents() renders Müller as Muller, which is not how the name is
+	 * written without the umlaut — it is Mueller. At a German-American club that
+	 * is the difference between a correct filename and a subtly wrong one, so
+	 * the German pairs are handled first and remove_accents() takes the rest.
+	 */
+	function gasf_photo_translit( $s ) {
+		$s = strtr( (string) $s, array(
+			'ä' => 'ae', 'ö' => 'oe', 'ü' => 'ue', 'ß' => 'ss',
+			'Ä' => 'Ae', 'Ö' => 'Oe', 'Ü' => 'Ue',
+		) );
+		return remove_accents( $s );
+	}
+
+	/** The most specific place on a photo — Bierstube says more than the grounds. */
+	function gasf_photo_deepest_place( $attachment_id ) {
+		$terms = wp_get_object_terms( (int) $attachment_id, 'gasf_photo_place' );
+		if ( is_wp_error( $terms ) || ! $terms ) { return null; }
+
+		usort( $terms, function ( $a, $b ) {
+			$da = count( (array) get_ancestors( $a->term_id, 'gasf_photo_place', 'taxonomy' ) );
+			$db = count( (array) get_ancestors( $b->term_id, 'gasf_photo_place', 'taxonomy' ) );
+			return $db - $da;
+		} );
+		return $terms[0];
+	}
+
+	/**
+	 * A filename that says what the photo is. '' when we know nothing worth
+	 * saying, so the caller keeps the real one rather than inventing a name.
+	 *
+	 * Date first: a folder of these sorts chronologically, which is exactly what
+	 * somebody who has just downloaded forty photos wants from it.
+	 */
+	function gasf_photo_filename( $attachment_id ) {
+		$id   = (int) $attachment_id;
+		$info = gasf_photo_info( $id );
+
+		$bits = array();
+		if ( $info['taken'] ) { $bits[] = $info['taken']; }
+		if ( ! empty( $info['events'] ) ) { $bits[] = $info['events'][0]; }
+
+		$place = gasf_photo_deepest_place( $id );
+		if ( $place ) { $bits[] = $place->name; }
+
+		// Three names is enough to identify a photo; a group shot would
+		// otherwise produce something no filesystem wants.
+		foreach ( array_slice( (array) $info['people'], 0, 3 ) as $p ) { $bits[] = $p; }
+
+		if ( ! $bits ) { return ''; }
+
+		$slug = sanitize_file_name( gasf_photo_translit( implode( ' ', $bits ) ) );
+		$slug = trim( preg_replace( '~[-_]+~', '-', str_replace( ' ', '-', $slug ) ), '-' );
+		if ( '' === $slug ) { return ''; }
+
+		// Cap the stem, not the whole name: truncating past the dot would strip
+		// the extension and hand somebody a file their computer cannot open.
+		if ( strlen( $slug ) > 90 ) { $slug = rtrim( substr( $slug, 0, 90 ), '-' ); }
+
+		$file = get_attached_file( $id );
+		$ext  = $file ? strtolower( pathinfo( $file, PATHINFO_EXTENSION ) ) : '';
+
+		return $ext ? $slug . '.' . $ext : $slug;
+	}
+
+	/**
+	 * A readable title for the Media Library.
+	 *
+	 * Fully renameable with nothing depending on it, unlike the filename — and
+	 * it is what the Media Library actually searches and prints under the
+	 * thumbnail. This is where most of the benefit of "name the file properly"
+	 * lands, at no risk at all.
+	 */
+	function gasf_photo_title( $attachment_id ) {
+		$id    = (int) $attachment_id;
+		$info  = gasf_photo_info( $id );
+		$place = gasf_photo_deepest_place( $id );
+
+		$who   = array_slice( (array) $info['people'], 0, 3 );
+		$where = array_filter( array(
+			$place ? $place->name : '',
+			! empty( $info['events'] ) ? $info['events'][0] : '',
+			$info['taken'] ? mysql2date( get_option( 'date_format' ), $info['taken'] . ' 00:00:00' ) : '',
+		) );
+
+		if ( $who && $where ) { return implode( ', ', $who ) . ' — ' . implode( ', ', $where ); }
+		if ( $who )           { return implode( ', ', $who ); }
+		if ( $where )         { return implode( ', ', $where ); }
+		return '';
+	}
+
+	/**
+	 * Apply the title, and alt text where we can honestly produce it.
+	 *
+	 * Alt prefers the human caption. Only when there is none does it fall back
+	 * to a plain factual sentence from the tags — "Hans Mueller at the
+	 * Bierstube" describes the picture, whereas a list of tags would be
+	 * keyword-stuffing dressed up as accessibility.
+	 */
+	function gasf_photo_apply_names( $attachment_id ) {
+		$id    = (int) $attachment_id;
+		$title = gasf_photo_title( $id );
+		if ( $title ) {
+			wp_update_post( array( 'ID' => $id, 'post_title' => $title ) );
+		}
+
+		$info = gasf_photo_info( $id );
+		$alt  = trim( (string) $info['caption'] );
+
+		if ( '' === $alt ) {
+			$place = gasf_photo_deepest_place( $id );
+			$who   = array_slice( (array) $info['people'], 0, 3 );
+			if ( $who && $place ) {
+				$alt = sprintf( '%s at %s', gasf_photo_join_names( $who ), $place->name );
+			} elseif ( $who ) {
+				$alt = gasf_photo_join_names( $who );
+			} elseif ( $place ) {
+				$alt = $place->name;
+			}
+		}
+
+		if ( '' !== $alt ) { update_post_meta( $id, '_wp_attachment_image_alt', $alt ); }
+	}
+
+	/** "Hans and Greta", "Hans, Greta and Anna" — for a sentence, not a list. */
+	function gasf_photo_join_names( array $names ) {
+		if ( 1 === count( $names ) ) { return $names[0]; }
+		$last = array_pop( $names );
+		return implode( ', ', $names ) . ' and ' . $last;
+	}
+
+	/* ---------------------------------------------------------------------
 	 * Media Library fields
 	 *
 	 * attachment_fields_to_edit rather than a metabox, so these appear in BOTH
@@ -770,6 +918,29 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 			'html'  => '<span class="description">' . esc_html( $where )
 				. ( $info['camera'] ? '<br>' . esc_html( $info['camera'] ) : '' ) . '</span>',
 		);
+
+		// A download that carries its description in the filename.
+		//
+		// The download attribute renames the SAVED copy only — nothing on the
+		// server moves, so no URL anywhere breaks. Same-origin, which this is,
+		// is the only case where browsers honour it.
+		$name = gasf_photo_filename( $post->ID );
+		$url  = wp_get_attachment_url( $post->ID );
+		if ( $name && $url ) {
+			$fields['gasf_photo_dl'] = array(
+				'label' => __( 'Download', 'gasf' ),
+				'input' => 'html',
+				'html'  => sprintf(
+					'<a href="%s" download="%s" class="button button-small">%s</a>'
+					. '<br><span class="description">%s<br>%s</span>',
+					esc_url( $url ),
+					esc_attr( $name ),
+					esc_html__( 'Download with a useful name', 'gasf' ),
+					esc_html( $name ),
+					esc_html__( 'Built from the tags each time, so the file on the server never moves and nothing linking to it breaks. Fix a tag and the next download is right.', 'gasf' )
+				),
+			);
+		}
 
 		return $fields;
 	}, 10, 2 );
