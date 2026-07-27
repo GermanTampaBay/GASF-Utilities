@@ -25,7 +25,7 @@ define( 'GASF_CRM_SYNC_OVERLAP', 900 );
 define( 'GASF_CRM_SYNC_FIRSTRUN', 30 * DAY_IN_SECONDS );
 
 function gasf_crm_sync() {
-	$result = array( 'new' => 0, 'reopened' => 0, 'notified' => 0, 'errors' => array() );
+	$result = array( 'new' => 0, 'reopened' => 0, 'queued' => 0, 'notified' => 0, 'errors' => array() );
 
 	if ( ! gasf_crm_ready() ) {
 		$result['errors'][] = 'Graph credentials not configured.';
@@ -108,12 +108,16 @@ function gasf_crm_sync() {
 
 		foreach ( array_keys( $fresh ) as $thread_id ) {
 			$t = gasf_crm_get_thread( $thread_id );
-			// Re-check after settling: no point paging anyone about a thread that
-			// turned out to have been answered in the same sync.
-			if ( $t && 'new' === $t['status'] && gasf_crm_notify_thread( $thread_id ) ) {
-				$result['notified']++;
+			// Re-check after settling: no point queuing a thread that turned out
+			// to have been answered inside this same sync.
+			if ( $t && 'new' === $t['status'] && gasf_crm_queue_notification( $thread_id ) ) {
+				$result['queued']++;
 			}
 		}
+
+		// One summary for the whole batch, and only if the interval has elapsed.
+		// Returns 0 when the batch is being held back, which is not a failure.
+		$result['notified'] = gasf_crm_flush_notifications();
 
 		$cfg              = gasf_crm_cfg();
 		$cfg['last_sync'] = $started; // the time the fetch STARTED, not finished

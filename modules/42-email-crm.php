@@ -133,8 +133,8 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 		WP_CLI::add_command( 'gasf-crm sync', function () {
 			$r = gasf_crm_sync();
 			WP_CLI::success( sprintf(
-				'%d new message(s), %d thread(s) reopened, %d notified.',
-				$r['new'], $r['reopened'], $r['notified']
+				'%d new message(s), %d reopened, %d queued, %d announced.',
+				$r['new'], $r['reopened'], $r['queued'], $r['notified']
 			) );
 		} );
 	}

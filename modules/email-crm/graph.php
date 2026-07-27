@@ -312,6 +312,31 @@ function gasf_crm_graph_forward( $graph_message_id, $to, $comment ) {
 	);
 }
 
+/**
+ * Send a plain-text message as the shared mailbox.
+ *
+ * Used for notifications, which cannot go out through wp_mail on this host: the
+ * domain publishes "v=spf1 include:spf.protection.outlook.com -all" with DMARC
+ * p=quarantine, so anything sent from the web server claiming to be
+ * @germantampabay.com fails SPF hard and is quarantined by Microsoft. Going out
+ * through Graph means the mail actually originates from Microsoft 365 and
+ * passes SPF and DKIM as itself.
+ *
+ * saveToSentItems is false deliberately. These are machine-generated notices;
+ * letting them land in Sent Items would mean the next sync ingested each one
+ * and opened a CRM thread for every notification the CRM had just sent.
+ */
+function gasf_crm_graph_send( $to, $subject, $text ) {
+	return gasf_crm_graph( 'POST', gasf_crm_mailbox_path() . '/sendMail', array(
+		'message'         => array(
+			'subject'      => $subject,
+			'body'         => array( 'contentType' => 'Text', 'content' => $text ),
+			'toRecipients' => array( array( 'emailAddress' => array( 'address' => $to ) ) ),
+		),
+		'saveToSentItems' => false,
+	) );
+}
+
 function gasf_crm_graph_attachments( $graph_message_id ) {
 	$res = gasf_crm_graph( 'GET', gasf_crm_mailbox_path() . '/messages/' . rawurlencode( $graph_message_id )
 		. '/attachments?$select=id,name,contentType,size' );

@@ -68,9 +68,16 @@ function gasf_crm_admin_tab() {
 			$diag = gasf_crm_graph_diagnostics();
 		}
 
+		if ( 'notify' === $act ) {
+			$n      = gasf_crm_flush_notifications( true );
+			$notice = $n
+				? '<div class="notice notice-success"><p>' . esc_html( sprintf( 'Summary sent to %d recipient(s) covering %d thread(s).', count( gasf_crm_notify_recipients() ), $n ) ) . '</p></div>'
+				: '<div class="notice notice-warning"><p>Nothing queued to announce. New unanswered mail queues automatically; this button skips the once-an-hour wait.</p></div>';
+		}
+
 		if ( 'sync' === $act ) {
 			$r    = gasf_crm_sync();
-			$body = sprintf( '%d new message(s), %d thread(s) reopened, %d notified.', $r['new'], $r['reopened'], $r['notified'] );
+			$body = sprintf( '%d new message(s), %d reopened, %d queued, %d announced.', $r['new'], $r['reopened'], $r['queued'], $r['notified'] );
 			if ( $r['errors'] ) {
 				$notice = '<div class="notice notice-error"><p>' . esc_html( $body . ' Errors: ' . implode( '; ', $r['errors'] ) ) . '</p></div>';
 			} else {
@@ -190,6 +197,7 @@ function gasf_crm_admin_tab() {
 		foreach ( array(
 			'test'   => 'Check Graph status',
 			'sync'   => 'Sync now',
+			'notify' => 'Send queued summary now',
 			'corpus' => 'Rebuild AI corpus',
 		) as $act => $label ) : ?>
 		<form method="post" style="display:inline-block;margin-right:8px">
@@ -206,6 +214,21 @@ function gasf_crm_admin_tab() {
 			: 'never'; ?>.
 		Hourly WP-Cron is the fallback; a system cron running
 		<code>wp gasf-crm sync</code> is the reliable path on a low-traffic site.
+	</p>
+	<?php
+	$queued    = count( (array) get_option( 'gasf_crm_notify_queue', array() ) );
+	$last_note = (int) get_option( 'gasf_crm_notify_last', 0 );
+	?>
+	<p class="description">
+		Notifications: <strong><?php echo (int) $queued; ?></strong> thread(s) waiting to be announced;
+		last summary <?php echo $last_note ? esc_html( human_time_diff( $last_note ) . ' ago' ) : 'never sent'; ?>.
+		At most one summary per hour however much arrives, so a spam run produces one message rather than eighty.
+		Delivered via Graph as <code><?php echo esc_html( $cfg['mailbox'] ); ?></code> &mdash; this domain's SPF record
+		authorises Microsoft only, so anything sent by WordPress itself is quarantined before it arrives.
+		Recipients: <?php
+			$r = gasf_crm_notify_recipients();
+			echo $r ? esc_html( implode( ', ', $r ) ) : '<strong>nobody configured</strong>';
+		?>.
 	</p>
 
 	<h3>Address book</h3>
