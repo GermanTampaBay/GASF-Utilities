@@ -202,11 +202,13 @@ add_action( 'rest_api_init', function () {
 } );
 
 /**
- * Forward the newest message in a thread to somebody else.
+ * Forward the newest message in a thread to somebody else, and close it.
  *
- * Deliberately does NOT close the thread. Forwarding is usually "can you deal
- * with this" or "you should see this" — the original sender still has an
- * unanswered question, and silently marking it answered would drop it.
+ * Forwarding counts as answered. Handing something to the treasurer or the hall
+ * booking person IS dealing with it — they reply directly, and that reply never
+ * comes back through this mailbox, so waiting for one would leave the thread
+ * sitting in Open forever. If it turns out we do still owe a reply, the thread
+ * can be put back in Open from the Answered list.
  */
 function gasf_crm_rest_forward( WP_REST_Request $req ) {
 	global $wpdb;
@@ -263,7 +265,33 @@ function gasf_crm_rest_forward( WP_REST_Request $req ) {
 		gasf_crm_touch_contact( $addr, '', 'out', (string) $thread['subject'] );
 	}
 
-	gasf_crm_log_event( $thread_id, 'forwarded', 'Forwarded to ' . implode( ', ', $to ) );
+	// Record our own copy, as the reply path does. Three things depend on it:
+	// the thread timeline showing that this was passed on; the next sync finding
+	// this forward in Sent Items and adopting the placeholder instead of logging
+	// it as "answered from Outlook"; and gasf_crm_settle_thread, which decides
+	// status from the newest message and would otherwise see the inbound message
+	// on top and reopen the thread we just closed.
+	//
+	// sent_by_user_id stays 0 deliberately: that flag is what feeds the AI
+	// corpus, and "Forwarded to treasurer@…" is not a reply worth learning from.
+	// The audit log records who did it.
+	gasf_crm_insert_message( array(
+		'thread_id'        => $thread_id,
+		'graph_message_id' => 'local-fwd-' . $thread_id . '-' . time() . '-' . $user_id,
+		'direction'        => 'out',
+		'from_name'        => $name,
+		'from_addr'        => $cfg['mailbox'],
+		'to_addrs'         => wp_json_encode( $to ),
+		'sent_at'          => current_time( 'mysql', true ),
+		'body_preview'     => 'Forwarded to ' . implode( ', ', $to ) . ( '' !== $note ? ' — ' . $note : '' ),
+		'body_html'        => '<p><em>Forwarded to ' . esc_html( implode( ', ', $to ) ) . '</em></p>'
+			. ( '' !== $note ? wpautop( esc_html( $note ) ) : '' ),
+		'has_attachments'  => false,
+		'sent_by_user_id'  => 0,
+	) );
+
+	gasf_crm_log_event( $thread_id, 'forwarded', 'Forwarded to ' . implode( ', ', $to ) . ' — closed as answered' );
+	gasf_crm_set_status( $thread_id, 'addressed' );
 	gasf_mec_log( 'CRM: thread ' . $thread_id . ' forwarded to ' . implode( ', ', $to ) . ' by user ' . $user_id );
 
 	return array( 'ok' => true, 'to' => $to );

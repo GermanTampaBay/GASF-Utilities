@@ -182,14 +182,21 @@ function gasf_crm_render_signin() {
 	echo '</div>';
 }
 
+/**
+ * Waiting-room screen.
+ *
+ * No sign-out button here on purpose. There is nothing useful to sign out of at
+ * this point — the account has no access to withdraw — and offering it only
+ * invites someone to end a browser session they wanted to keep.
+ */
 function gasf_crm_render_pending( $status ) {
 	echo '<div class="center"><h1>Awaiting approval</h1>';
 	if ( 'denied' === $status ) {
-		echo '<p>This account does not have access to the club inbox.</p>';
+		echo '<p>This account does not have access to the club inbox. If you think that is a mistake, speak to whoever looks after the website.</p>';
 	} else {
-		echo '<p>Your account has been created and is waiting for an administrator to approve it. You will not be able to see the inbox until then.</p>';
+		echo '<p>Your account has been created and is waiting for an administrator to approve it. You will not be able to see the inbox until then — check back later, there is nothing else to do here.</p>';
 	}
-	echo '<a class="btn sec" href="' . esc_url( home_url( '/email/logout' ) ) . '">Sign out</a></div>';
+	echo '</div>';
 }
 
 /**
@@ -224,7 +231,7 @@ function gasf_crm_render_help() {
 	<h3>The other buttons</h3>
 	<ul>
 		<li><strong>Draft with AI</strong> writes a first attempt for you, based on the club website and the replies the rest of us have already sent. <em>Read it before you send it.</em> It can get things wrong, and it only knows what it has been shown. Edit it freely — it is a starting point to save you typing, not an answer.</li>
-		<li><strong>Forward</strong> passes the message on to somebody else — the treasurer, the hall booking person, whoever it really belongs to. You can add a note at the top. Start typing an address and it will suggest people we have written to before. Forwarding leaves the message in <strong>Open</strong>, because the person who wrote in still has not heard back from us.</li>
+		<li><strong>Forward</strong> passes the message on to somebody else — the treasurer, the hall booking person, whoever it really belongs to. You can add a note at the top, and typing an address suggests people we have written to before. Forwarding counts as <strong>answered</strong>: they will reply to the person directly, and that reply will not come back through this mailbox, so there is nothing left here to wait for. If it turns out we do still owe a reply, open it in the Answered list and press <em>Put back in Open</em>.</li>
 		<li><strong>Ignore</strong> is for spam, junk and mailing lists. Nothing is sent and the sender hears nothing back.</li>
 		<li><strong>Mark answered</strong> is for when you handled it some other way — you rang them, or caught them at the club. Nothing is sent, it just clears it off the list.</li>
 	</ul>
@@ -342,7 +349,7 @@ function gasf_crm_render_inbox() {
 				received:        'received a message',
 				replied:         'replied',
 				replied_outlook: 'replied from Outlook',
-				forwarded:       'forwarded it',
+				forwarded:       'forwarded it on',
 				addressed:       'marked it answered',
 				ignored:         'ignored it',
 				restored:        'put it back in Open',
@@ -384,6 +391,12 @@ function gasf_crm_render_inbox() {
 
 			if(t.status === 'ignored'){
 				html += '<div class="note warn">This was marked as spam or junk, so it stays out of the Open list even if the sender writes again.</div>' +
+					'<div class="actions"><button class="btn sec" id="restore">Put back in Open</button></div><div id="msg"></div>';
+			} else if(t.status === 'addressed'){
+				// Answered threads get a way back too. Forwarding closes a thread
+				// now, and sometimes the answer turns out to be "they still need
+				// something from us" — without this that is a dead end.
+				html += '<div class="note ok">This is answered. If they write again it returns to Open by itself.</div>' +
 					'<div class="actions"><button class="btn sec" id="restore">Put back in Open</button></div><div id="msg"></div>';
 			} else if(t.can_reply){
 				html += '<div class="ed"><div class="edbar">' +
@@ -591,14 +604,11 @@ function gasf_crm_render_inbox() {
 				api('/threads/' + id + '/forward', {method:'POST', body: JSON.stringify({
 					to: to, comment: document.getElementById('fwdnote').value
 				})}).then(function(r){
-					fwd.style.display = 'none';
-					// Deliberately does not reload the conversation: a half-written
-					// reply in the box above would be lost, and forwarding is often
-					// the step BEFORE replying rather than instead of it.
-					out.innerHTML = '<div class="note ok">Forwarded to ' + esc(r.to.join(', ')) +
-						'. This is still in Open — the person who wrote in has not had a reply yet.</div>';
-					busy(false, fwdsend);
 					loadContacts();
+					// Forwarding closes the thread now, so the view clears the same
+					// way the other closing actions do rather than leaving a dead
+					// compose box open over a conversation that has moved on.
+					closed('Forwarded to ' + esc(r.to.join(', ')) + ' — moved to Answered.');
 				}).catch(function(e){ fail(e, fwdsend); });
 			};
 		}
