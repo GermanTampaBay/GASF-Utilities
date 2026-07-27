@@ -326,8 +326,27 @@ function gasf_crm_admin_tab() {
 		Delivered via Graph as <code><?php echo esc_html( $cfg['mailbox'] ); ?></code> &mdash; this domain's SPF record
 		authorises Microsoft only, so anything sent by WordPress itself is quarantined before it arrives.
 		Recipients: <?php
+			// address => [stream keys] since v1.31.0. This line still imploded the
+			// VALUES, so it printed "Array, Array, Array" with a PHP warning per
+			// recipient — the panel that exists to tell you who gets told was the
+			// one place that stopped saying it.
 			$r = gasf_crm_notify_recipients();
-			echo $r ? esc_html( implode( ', ', $r ) ) : '<strong>nobody configured</strong>';
+			if ( ! $r ) {
+				echo '<strong>nobody configured</strong>';
+			} else {
+				// Name each person's streams once there is more than one mailbox:
+				// "who hears about photos?" is the actual question this line gets
+				// read to answer, and the addresses alone cannot answer it.
+				$multi = count( gasf_crm_active_streams() ) > 1;
+				$bits  = array();
+				foreach ( $r as $addr => $streams ) {
+					$bits[] = esc_html( $addr ) . ( $multi
+						? ' <span class="description">(' . esc_html( implode( ', ', array_map( 'gasf_crm_stream_label', (array) $streams ) ) ) . ')</span>'
+						: '' );
+				}
+				// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- parts escaped above.
+				echo implode( ', ', $bits );
+			}
 		?>.
 	</p>
 
