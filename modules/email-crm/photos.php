@@ -445,11 +445,64 @@ function gasf_crm_photo_notify_review( array $invite, $count ) {
  * Runs after each sync. photos_done on the message row is the guard, so a
  * message is never taken in twice however often this runs.
  */
+/**
+ * Single-flight guard for the intake.
+ *
+ * The per-attachment key check is check-then-act, which is not enough on its
+ * own: fetching five phone photos takes long enough that the hourly system cron
+ * and a WP-Cron run triggered by page traffic overlapped, both saw the same
+ * attachment as missing, and both kept it. Six photos from a five-photo email.
+ *
+ * add_option is atomic on the UNIQUE option_name index, so only one process can
+ * create the row. Same pattern the mail sync already uses.
+ *
+ * @return string token, or '' if somebody else holds it
+ */
+function gasf_crm_photo_lock() {
+	$token = wp_generate_password( 12, false );
+	$row   = array( 'token' => $token, 'at' => time() );
+
+	if ( add_option( 'gasf_crm_photo_lock', $row, '', false ) ) { return $token; }
+
+	// Held. Break it only if it is old enough to be from a run that died —
+	// longer than any real batch of photos could take.
+	$held = (array) get_option( 'gasf_crm_photo_lock' );
+	if ( ! empty( $held['at'] ) && ( time() - (int) $held['at'] ) < 20 * MINUTE_IN_SECONDS ) { return ''; }
+
+	gasf_mec_log( 'CRM photos: breaking a stale intake lock' );
+	delete_option( 'gasf_crm_photo_lock' );
+	return add_option( 'gasf_crm_photo_lock', $row, '', false ) ? $token : '';
+}
+
+function gasf_crm_photo_unlock( $token ) {
+	$held = (array) get_option( 'gasf_crm_photo_lock' );
+	// Only release our own: a lock we broke as stale may since be somebody's.
+	if ( ! empty( $held['token'] ) && $held['token'] === $token ) {
+		delete_option( 'gasf_crm_photo_lock' );
+	}
+}
+
 function gasf_crm_photo_autoprocess() {
 	global $wpdb;
 
 	$cfg = gasf_crm_cfg();
 	if ( empty( $cfg['photos_auto'] ) ) { return 0; }
+
+	$lock = gasf_crm_photo_lock();
+	if ( ! $lock ) { return 0; }
+
+	try {
+		return gasf_crm_photo_autoprocess_run();
+	} finally {
+		// finally, not a trailing call: a Graph exception must still release the
+		// lock, or the intake stops for twenty minutes over one bad fetch.
+		gasf_crm_photo_unlock( $lock );
+	}
+}
+
+function gasf_crm_photo_autoprocess_run() {
+	global $wpdb;
+	$cfg = gasf_crm_cfg();
 
 	$photo_streams = array();
 	foreach ( gasf_crm_active_streams() as $key => $s ) {
