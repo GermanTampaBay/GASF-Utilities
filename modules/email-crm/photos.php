@@ -54,6 +54,110 @@ define( 'GASF_CRM_PHOTO_CAPTION_MAX', 150 );
  */
 define( 'GASF_CRM_PHOTO_MAX_PER_MESSAGE', 30 );
 
+/**
+ * Where a photo lives before anybody has looked at it.
+ *
+ * An unreviewed submission must not sit at a public URL. Nothing links to it,
+ * but "nothing links to it" is not access control, and for the one category of
+ * content nobody wants to receive, the difference between "it was in our
+ * mailbox" and "it was being served from our website" is the whole difference.
+ *
+ * So intake writes into a directory the web server refuses to serve, and the
+ * images are reachable only through a handler: by the submitter with the token
+ * they were emailed, or by a signed-in volunteer who holds the photos stream.
+ * Approving a photo moves it out into the normal uploads folder, where it
+ * becomes an ordinary public attachment — which is what it is by then.
+ */
+define( 'GASF_CRM_PHOTO_REVIEW_DIR', 'gasf-photo-review' );
+
+/**
+ * The review directory, created with its refusal in place.
+ *
+ * The .htaccess is written BEFORE the directory is used, never after, so there
+ * is no window in which files are readable. If it cannot be written, intake
+ * refuses to store anything rather than quietly falling back to a public
+ * folder — a protection that silently is not one is worse than none.
+ *
+ * @return string|WP_Error absolute path
+ */
+function gasf_crm_photo_review_dir() {
+	$up   = wp_upload_dir();
+	$path = trailingslashit( $up['basedir'] ) . GASF_CRM_PHOTO_REVIEW_DIR;
+
+	if ( ! is_dir( $path ) && ! wp_mkdir_p( $path ) ) {
+		return new WP_Error( 'gasf_crm_dir', 'Could not create the private review folder.' );
+	}
+
+	$ht = $path . '/.htaccess';
+	if ( ! file_exists( $ht ) ) {
+		$rules = "# Photos awaiting review. Served only through the CRM's handler.\n"
+			. "<IfModule mod_authz_core.c>\n\tRequire all denied\n</IfModule>\n"
+			. "<IfModule !mod_authz_core.c>\n\tOrder allow,deny\n\tDeny from all\n</IfModule>\n";
+		if ( false === file_put_contents( $ht, $rules ) ) { // phpcs:ignore WordPress.WP.AlternativeFunctions
+			return new WP_Error( 'gasf_crm_dir', 'Could not protect the review folder; refusing to store photos in the open.' );
+		}
+	}
+	if ( ! file_exists( $path . '/index.php' ) ) {
+		file_put_contents( $path . '/index.php', "<?php // Silence is golden.\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+	}
+
+	return $path;
+}
+
+/** Is this attachment still in the private folder? */
+function gasf_crm_photo_is_private( $attachment_id ) {
+	$rel = (string) get_post_meta( (int) $attachment_id, '_wp_attached_file', true );
+	return 0 === strpos( $rel, GASF_CRM_PHOTO_REVIEW_DIR . '/' );
+}
+
+/**
+ * Move an approved photo out of the private folder into normal uploads.
+ *
+ * The whole set moves together — the full-size file, WordPress's untouched
+ * original, and every generated size — because they share a directory and the
+ * metadata records the sizes as bare filenames relative to it.
+ *
+ * The name was already made unique against the destination at intake, so this
+ * cannot collide with an existing file and no size has to be renamed.
+ */
+function gasf_crm_photo_publish( $attachment_id ) {
+	$id = (int) $attachment_id;
+	if ( ! gasf_crm_photo_is_private( $id ) ) { return true; }
+
+	$up = wp_upload_dir( get_post_field( 'post_date', $id ) );
+	if ( ! empty( $up['error'] ) ) { return new WP_Error( 'gasf_crm_pub', $up['error'] ); }
+	if ( ! wp_mkdir_p( $up['path'] ) ) { return new WP_Error( 'gasf_crm_pub', 'Could not prepare the uploads folder.' ); }
+
+	$rel  = (string) get_post_meta( $id, '_wp_attached_file', true );
+	$from = trailingslashit( dirname( trailingslashit( wp_upload_dir()['basedir'] ) . $rel ) );
+	$meta = (array) wp_get_attachment_metadata( $id );
+
+	$names = array( basename( $rel ) );
+	if ( ! empty( $meta['original_image'] ) ) { $names[] = $meta['original_image']; }
+	foreach ( (array) ( $meta['sizes'] ?? array() ) as $s ) {
+		if ( ! empty( $s['file'] ) ) { $names[] = $s['file']; }
+	}
+
+	foreach ( array_unique( $names ) as $n ) {
+		$src = $from . $n;
+		$dst = trailingslashit( $up['path'] ) . $n;
+		if ( ! file_exists( $src ) || file_exists( $dst ) ) { continue; }
+		if ( ! @rename( $src, $dst ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors
+			return new WP_Error( 'gasf_crm_pub', 'Could not move ' . $n . ' out of the review folder.' );
+		}
+	}
+
+	$new_rel = ltrim( trailingslashit( ltrim( (string) $up['subdir'], '/' ) ) . basename( $rel ), '/' );
+	update_post_meta( $id, '_wp_attached_file', $new_rel );
+	if ( $meta ) {
+		$meta['file'] = $new_rel;
+		wp_update_attachment_metadata( $id, $meta );
+	}
+
+	gasf_mec_log( 'CRM photos: media #' . $id . ' published to ' . $new_rel );
+	return true;
+}
+
 /* =====================================================================
  * Approval — Graph attachment to Media Library
  * ================================================================== */
@@ -97,7 +201,29 @@ function gasf_crm_photo_approve( array $thread, $graph_message_id, $graph_attach
 	require_once ABSPATH . 'wp-admin/includes/file.php';
 	require_once ABSPATH . 'wp-admin/includes/image.php';
 
+	$review = gasf_crm_photo_review_dir();
+	if ( is_wp_error( $review ) ) {
+		@unlink( $tmp ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+		return $review;
+	}
+
+	// Make the name unique against where it will EVENTUALLY live, not against
+	// the review folder. Approving then moves the set without a single rename,
+	// and no generated size ever has to be renumbered.
+	$public = wp_upload_dir();
+	if ( empty( $public['error'] ) ) { $name = wp_unique_filename( $public['path'], $name ); }
+
+	$to_review = function ( $dirs ) use ( $review ) {
+		$dirs['path']   = $review;
+		$dirs['subdir'] = '/' . GASF_CRM_PHOTO_REVIEW_DIR;
+		$dirs['url']    = $dirs['baseurl'] . $dirs['subdir'];
+		return $dirs;
+	};
+
+	add_filter( 'upload_dir', $to_review, 99 );
 	$id = media_handle_sideload( array( 'name' => $name, 'tmp_name' => $tmp ), 0 );
+	remove_filter( 'upload_dir', $to_review, 99 );
+
 	if ( is_wp_error( $id ) ) {
 		@unlink( $tmp ); // phpcs:ignore WordPress.PHP.NoSilencedErrors -- sideload removes it on success
 		return $id;
@@ -225,6 +351,9 @@ function gasf_crm_photo_invite_by_token( $token ) {
 	if ( strtotime( $row['expires_at'] . ' UTC' ) < time() ) { return 'expired'; }
 
 	$row['ids'] = array_map( 'intval', (array) json_decode( (string) $row['attachment_ids'], true ) );
+	// Handed back so the page can build image URLs with it. Not a leak: the
+	// caller supplied it, and the database still holds only the hash.
+	$row['token'] = $token;
 	return $row;
 }
 
@@ -271,14 +400,99 @@ function gasf_crm_photo_invite_send( array $invite, $token, $stream = 'photos' )
 
 add_action( 'init', function () {
 	add_rewrite_rule( '^photos/tag/([a-f0-9]{64})/?$', 'index.php?gasf_phototag=$matches[1]', 'top' );
+	// Images for the tagging page. The token in the path is the same one that
+	// opens the form, so somebody can see exactly the photos they were asked
+	// about and nothing else.
+	add_rewrite_rule(
+		'^photos/img/([a-f0-9]{64})/(\d+)/([a-z0-9_-]+)/?$',
+		'index.php?gasf_photoimg=$matches[1]&gasf_photoid=$matches[2]&gasf_photosize=$matches[3]',
+		'top'
+	);
 } );
 
 add_filter( 'query_vars', function ( $v ) {
 	$v[] = 'gasf_phototag';
+	$v[] = 'gasf_photoimg';
+	$v[] = 'gasf_photoid';
+	$v[] = 'gasf_photosize';
 	return $v;
 } );
 
+/**
+ * URL for a photo that is not public.
+ *
+ * $token gives the submitter's path; without one the volunteer's REST route is
+ * used, which needs their session. A photo already published falls through to
+ * its ordinary URL — once approved there is nothing to gate.
+ */
+function gasf_crm_photo_img_url( $attachment_id, $size = 'medium', $token = '' ) {
+	$id = (int) $attachment_id;
+	if ( ! gasf_crm_photo_is_private( $id ) ) {
+		$u = wp_get_attachment_image_url( $id, $size );
+		return $u ? $u : (string) wp_get_attachment_url( $id );
+	}
+
+	$size = preg_replace( '~[^a-z0-9_-]~', '', strtolower( (string) $size ) ) ?: 'full';
+
+	if ( $token ) {
+		return home_url( '/photos/img/' . rawurlencode( $token ) . '/' . $id . '/' . $size . '/' );
+	}
+	return add_query_arg( array(
+		'photo'    => $id,
+		'size'     => $size,
+		'_wpnonce' => wp_create_nonce( 'wp_rest' ),
+	), rest_url( 'gasf/v1/crm/photos/file' ) );
+}
+
+/**
+ * Send one private image, or die trying — never a redirect to the real file,
+ * which would hand out the very URL this exists to withhold.
+ */
+function gasf_crm_photo_send_file( $attachment_id, $size ) {
+	$id   = (int) $attachment_id;
+	$file = get_attached_file( $id );
+
+	if ( 'full' !== $size ) {
+		$img = image_get_intermediate_size( $id, $size );
+		if ( $img && ! empty( $img['path'] ) ) {
+			$file = trailingslashit( wp_upload_dir()['basedir'] ) . $img['path'];
+		}
+	}
+	if ( ! $file || ! file_exists( $file ) ) { status_header( 404 ); exit; }
+
+	$type = wp_check_filetype( $file );
+	// Whitelisted from our own check, never from the request: this streams a
+	// file straight to a browser and the Content-Type is what decides how it
+	// gets interpreted.
+	$mime = ( ! empty( $type['type'] ) && 0 === strpos( $type['type'], 'image/' ) ) ? $type['type'] : 'application/octet-stream';
+
+	nocache_headers();
+	header( 'Content-Type: ' . $mime );
+	header( 'Content-Length: ' . filesize( $file ) );
+	header( 'Content-Disposition: inline; filename="' . sanitize_file_name( basename( $file ) ) . '"' );
+	// Not public and not shared: no proxy or CDN should keep a copy of a photo
+	// nobody has reviewed yet.
+	header( 'Cache-Control: private, no-store, max-age=0' );
+	header( 'X-Content-Type-Options: nosniff' );
+	header( 'X-Robots-Tag: noindex, nofollow' );
+	readfile( $file ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+	exit;
+}
+
 add_action( 'template_redirect', function () {
+	// Images first: same token, and it must only ever open the photos that
+	// token was actually issued for.
+	$imgtok = (string) get_query_var( 'gasf_photoimg' );
+	if ( '' !== $imgtok ) {
+		$inv = gasf_crm_photo_invite_by_token( $imgtok );
+		if ( ! is_array( $inv ) ) { gasf_crm_photo_throttle(); status_header( 404 ); exit; }
+
+		$want = (int) get_query_var( 'gasf_photoid' );
+		if ( ! in_array( $want, (array) $inv['ids'], true ) ) { status_header( 404 ); exit; }
+
+		gasf_crm_photo_send_file( $want, (string) get_query_var( 'gasf_photosize' ) );
+	}
+
 	$token = (string) get_query_var( 'gasf_phototag' );
 	if ( '' === $token ) { return; }
 
@@ -929,6 +1143,15 @@ function gasf_crm_photo_confirm( $attachment_id, array $keep ) {
 		wp_update_post( array( 'ID' => $id, 'post_excerpt' => $caption ) );
 	}
 
+	// Approving is what makes a photo public. Until this moment it has only ever
+	// been served through the handler; from here it is an ordinary attachment
+	// with an ordinary URL, which is what it now is.
+	$moved = gasf_crm_photo_publish( $id );
+	if ( is_wp_error( $moved ) ) {
+		gasf_mec_log( 'CRM photos: could not publish media #' . $id . ' — ' . $moved->get_error_message() );
+		return $moved;
+	}
+
 	// Title and alt, now that there is finally something true to say. Both are
 	// safe to rewrite — nothing links to them — unlike the filename, which is
 	// left exactly where it is and described at download time instead.
@@ -1040,6 +1263,18 @@ add_action( 'rest_api_init', function () {
 		'permission_callback' => $photo_guard,
 		'callback'            => function ( WP_REST_Request $req ) {
 			return gasf_crm_photo_gallery( (string) $req->get_param( 'state' ) );
+		},
+	) );
+
+	// The volunteer's way to see a photo that is not public yet.
+	register_rest_route( 'gasf/v1', '/crm/photos/file', array(
+		'methods'             => 'GET',
+		'permission_callback' => $photo_guard,
+		'callback'            => function ( WP_REST_Request $req ) {
+			$id = (int) $req->get_param( 'photo' );
+			// Must be a submitted photo, not any attachment ID handed to us.
+			if ( ! gasf_crm_photo_card( $id ) ) { status_header( 404 ); exit; }
+			gasf_crm_photo_send_file( $id, (string) $req->get_param( 'size' ) );
 		},
 	) );
 
@@ -1175,11 +1410,16 @@ function gasf_crm_photo_card( $attachment_id ) {
 	$path    = get_attached_file( $id );
 	$missing = ! $path || ! file_exists( $path );
 
+	// Private until approved, so these go through the handler rather than
+	// straight at the uploads folder.
+	$private = gasf_crm_photo_is_private( $id );
+
 	return array(
 		'id'      => $id,
-		'thumb'   => wp_get_attachment_image_url( $id, 'medium' ),
-		'full'    => wp_get_attachment_image_url( $id, 'large' ),
-		'url'     => wp_get_attachment_url( $id ),
+		'private' => $private,
+		'thumb'   => gasf_crm_photo_img_url( $id, 'medium' ),
+		'full'    => gasf_crm_photo_img_url( $id, 'large' ),
+		'url'     => gasf_crm_photo_img_url( $id, 'full' ),
 		'dlname'  => function_exists( 'gasf_photo_filename' ) ? gasf_photo_filename( $id ) : '',
 		'state'   => $st['state'],
 		'release' => $st['release'] ? mysql2date( get_option( 'date_format' ), $st['release'] ) : '',

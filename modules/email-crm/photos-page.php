@@ -52,6 +52,9 @@ function gasf_crm_photo_page( $state, $invite = null, $notice = '' ) {
 		return;
 	}
 
+	// The token that opened this page is what its images are served with.
+	$tok = (string) ( $invite['token'] ?? '' );
+
 	// Only photos that still exist AND still have a file. Asking somebody to
 	// describe a broken image is asking them to do our debugging, and a public
 	// page is the last place a missing file should surface.
@@ -199,16 +202,16 @@ function gasf_crm_photo_page( $state, $invite = null, $notice = '' ) {
 		$own_place = $own_place ? get_term( $own_place, 'gasf_photo_place' ) : null;
 		$place_val = ( $own_place && ! is_wp_error( $own_place ) ) ? $own_place->name : '';
 
-		$img = wp_get_attachment_image( $id, 'medium', false, array( 'loading' => 'lazy', 'alt' => '' ) );
 		printf( '<div class="card photo" data-photo="%d"%s>', (int) $id, 0 === $i ? ' data-first="1"' : '' );
-		// Opens full size in a new tab. "Who is in it?" is often unanswerable
-		// from a thumbnail, and a new tab means looking closer never costs
-		// somebody the answers they have already typed.
+		// Both URLs go through the token handler, not the uploads folder: an
+		// unreviewed photo has no public address, and the token in the path is
+		// the same one that opened this page.
 		printf(
-			'<a class="thumb" href="%s" target="_blank" rel="noopener" title="%s">%s<span class="zoom">Tap to see it full size</span></a>',
-			esc_url( wp_get_attachment_url( $id ) ),
+			'<a class="thumb" href="%s" target="_blank" rel="noopener" title="%s">' .
+			'<img src="%s" alt="" loading="lazy"><span class="zoom">Tap to see it full size</span></a>',
+			esc_url( gasf_crm_photo_img_url( $id, 'full', $tok ) ),
 			esc_attr__( 'Open full size in a new tab', 'gasf' ),
-			$img // phpcs:ignore WordPress.Security.EscapeOutput -- core-generated markup
+			esc_url( gasf_crm_photo_img_url( $id, 'medium', $tok ) )
 		);
 		echo '<div class="pad fields">';
 		printf( '<h3>Photo %d of %d</h3>', (int) $i + 1, count( $ids ) );
