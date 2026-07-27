@@ -534,10 +534,16 @@ function gasf_crm_attachment_list( $graph_message_id ) {
 
 	$out = array();
 	foreach ( $list as $a ) {
+		// Cloud links and attached emails carry no bytes. Marking them here lets
+		// the chip say so up front, rather than sending someone to an error page
+		// to find out.
+		$kind = (string) ( $a['@odata.type'] ?? '' );
 		$out[] = array(
 			'id'   => (string) ( $a['id'] ?? '' ),
 			'name' => (string) ( $a['name'] ?? 'attachment' ),
 			'size' => (int) ( $a['size'] ?? 0 ),
+			'kind' => false !== strpos( $kind, 'referenceAttachment' ) ? 'link'
+				: ( false !== strpos( $kind, 'itemAttachment' ) ? 'email' : 'file' ),
 			// _wpnonce is what makes this link WORK at all. It renders as a plain
 			// <a href>, and a bare navigation carries no X-WP-Nonce header — and
 			// WordPress REST cookie auth without a nonce demotes the request to
@@ -566,12 +572,16 @@ function gasf_crm_rest_attachment( WP_REST_Request $req ) {
 	$msg = (string) $req->get_param( 'msg' );
 	$att = (string) $req->get_param( 'att' );
 	if ( '' === $msg || '' === $att ) {
-		return new WP_Error( 'gasf_crm_badreq', 'Missing parameters.', array( 'status' => 400 ) );
+		gasf_crm_attachment_problem( 'That download link is incomplete. Go back and open the message again.' );
 	}
 
 	$file = gasf_crm_graph_attachment( $msg, $att );
 	if ( is_wp_error( $file ) ) {
-		return new WP_Error( 'gasf_crm_att', $file->get_error_message(), array( 'status' => 404 ) );
+		// A plain WP_Error return would render as a JSON blob, because this link
+		// is a top-level navigation rather than a fetch — the volunteer would
+		// get {"code":"gasf_crm_att_ref","message":...} filling the tab. Say it
+		// in a sentence instead.
+		gasf_crm_attachment_problem( $file->get_error_message() );
 	}
 
 	nocache_headers();
@@ -579,6 +589,32 @@ function gasf_crm_rest_attachment( WP_REST_Request $req ) {
 	header( 'Content-Disposition: attachment; filename="' . sanitize_file_name( $file['name'] ) . '"' );
 	header( 'Content-Length: ' . strlen( $file['bytes'] ) );
 	header( 'X-Content-Type-Options: nosniff' );
+
+	// Drop any buffered output before writing binary. WordPress or a plugin may
+	// hold an ob_start() from earlier in the request, and a stray notice landing
+	// in front of the bytes corrupts the file the volunteer receives — with no
+	// error anywhere, just a download that will not open.
+	while ( ob_get_level() > 0 ) { ob_end_clean(); }
+
 	echo $file['bytes']; // phpcs:ignore WordPress.Security.EscapeOutput
+	exit;
+}
+
+/** Human-readable dead end for a download that cannot be served. Never returns. */
+function gasf_crm_attachment_problem( $message ) {
+	nocache_headers();
+	status_header( 404 );
+	header( 'Content-Type: text/html; charset=utf-8' );
+	printf(
+		'<!DOCTYPE html><html><head><meta charset="utf-8"><title>Attachment unavailable</title>'
+		. '<style>body{font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;'
+		. 'max-width:34em;margin:14vh auto;padding:0 20px;color:#1d2327}'
+		. 'h1{font-size:19px;margin:0 0 10px}p{color:#50575e}'
+		. 'a{display:inline-block;margin-top:18px;padding:9px 16px;background:#2271b1;color:#fff;'
+		. 'border-radius:4px;text-decoration:none}</style></head><body>'
+		. '<h1>That attachment cannot be downloaded</h1><p>%s</p><a href="%s">Back to the inbox</a></body></html>',
+		esc_html( $message ),
+		esc_url( home_url( '/email/' ) )
+	);
 	exit;
 }

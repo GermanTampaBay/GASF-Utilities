@@ -148,7 +148,9 @@ textarea{width:100%;min-height:150px;padding:10px;border:1px solid #8c8f94;borde
 .note.err{background:#fcf0f1;border-left:4px solid #d63638}
 .note.ok{background:#f0f6fc;border-left:4px solid #72aee6}
 .muted{color:#787c82;font-size:13px}
-.att{display:inline-block;margin:4px 8px 0 0;padding:4px 10px;background:#f0f0f1;border-radius:3px;font-size:12px;text-decoration:none}
+.att{display:inline-block;margin:4px 8px 0 0;padding:4px 10px;background:#f0f0f1;border-radius:3px;font-size:12px;text-decoration:none;color:#2271b1}
+.att:hover{background:#e5e5e6}
+.att--noload{color:#787c82;font-style:italic}
 .spin{opacity:.6}
 .hist{margin-top:28px;border-top:1px solid #dcdcde;padding-top:14px}
 .hist h3{font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:#787c82;margin:0 0 10px}
@@ -257,6 +259,10 @@ function gasf_crm_render_help() {
 		<li><strong>Ignore</strong> is for spam, junk and mailing lists. Nothing is sent and the sender hears nothing back.</li>
 		<li><strong>Mark answered</strong> is for when you handled it some other way — you rang them, or caught them at the club. Nothing is sent, it just clears it off the list.</li>
 	</ul>
+
+	<h3>Attachments</h3>
+	<p>Files someone sent us appear as small tags under their message — click one and it downloads. Pictures that are part of the message itself, like a logo in somebody's signature, are not listed: you can already see those in the text.</p>
+	<p>Two kinds cannot be downloaded here and say so on the tag: a <strong>cloud link</strong> (the sender shared a OneDrive or Dropbox file rather than attaching it) and an <strong>attached email</strong> (they forwarded a message as an attachment). Both need Outlook to open.</p>
 
 	<h3>Seeing who really sent something</h3>
 	<p>The sender's name is shown at the top of each message. Hover over the message and their actual email address appears next to it — you can select it, or press <strong>Copy</strong> to put it on the clipboard. Handy when a name looks familiar but the address does not.</p>
@@ -437,8 +443,15 @@ function gasf_crm_render_inbox() {
 			}
 
 			t.messages.forEach(function(m){
+				// A cloud link or an attached email has nothing to download, so it
+				// is labelled rather than dressed up as a file — clicking still
+				// explains why, but the chip says it first.
 				var atts = (m.attachments||[]).map(function(a){
-					return '<a class="att" href="' + esc(a.url) + '">📎 ' + esc(a.name) + '</a>';
+					var icon = a.kind === 'link' ? '🔗' : (a.kind === 'email' ? '✉️' : '📎');
+					var note = a.kind === 'link' ? ' (cloud link)' : (a.kind === 'email' ? ' (attached email)' : '');
+					var cls  = a.kind === 'file' ? 'att' : 'att att--noload';
+					return '<a class="' + cls + '" href="' + esc(a.url) + '">' + icon + ' ' +
+						esc(a.name) + esc(note) + '</a>';
 				}).join('');
 				// Only on inbound: outbound is always the club mailbox, so showing
 				// it on every reply would be noise rather than information.

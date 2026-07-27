@@ -437,10 +437,28 @@ function gasf_crm_graph_send( $to, $subject, $text ) {
 	) );
 }
 
+/**
+ * Attachments worth showing a volunteer.
+ *
+ * isInline is selected and filtered on, because "attachment" in Graph's sense
+ * includes every embedded image in the message body — a corporate sender's
+ * signature logo is an attachment, and a thread from one would sprout a row of
+ * paperclips for pictures already visible in the text. Inline parts are part of
+ * the body, not enclosures.
+ *
+ * The @odata.type is carried through so the caller can label the two kinds
+ * that have no bytes to download: an email forwarded AS an attachment
+ * (itemAttachment) and a OneDrive/SharePoint link (referenceAttachment).
+ */
 function gasf_crm_graph_attachments( $graph_message_id ) {
 	$res = gasf_crm_graph( 'GET', gasf_crm_mailbox_path() . '/messages/' . rawurlencode( $graph_message_id )
-		. '/attachments?$select=id,name,contentType,size' );
-	return is_wp_error( $res ) ? $res : (array) ( $res['value'] ?? array() );
+		. '/attachments?$select=id,name,contentType,size,isInline' );
+	if ( is_wp_error( $res ) ) { return $res; }
+
+	return array_values( array_filter(
+		(array) ( $res['value'] ?? array() ),
+		static function ( $a ) { return empty( $a['isInline'] ); }
+	) );
 }
 
 /** Raw attachment bytes. Returns array( name, type, bytes ) or WP_Error. */
@@ -448,14 +466,38 @@ function gasf_crm_graph_attachment( $graph_message_id, $attachment_id ) {
 	$res = gasf_crm_graph( 'GET', gasf_crm_mailbox_path() . '/messages/' . rawurlencode( $graph_message_id )
 		. '/attachments/' . rawurlencode( $attachment_id ) );
 	if ( is_wp_error( $res ) ) { return $res; }
+
 	if ( ! isset( $res['contentBytes'] ) ) {
-		// itemAttachment / referenceAttachment have no contentBytes — out of
-		// scope for v1 rather than silently handing back an empty file.
-		return new WP_Error( 'gasf_crm_att', 'Unsupported attachment type.' );
+		// Two kinds legitimately have no bytes, and each has a real answer for
+		// the person who just clicked — "unsupported" told them nothing they
+		// could act on.
+		$kind = (string) ( $res['@odata.type'] ?? '' );
+		if ( false !== strpos( $kind, 'referenceAttachment' ) ) {
+			return new WP_Error( 'gasf_crm_att_ref', sprintf(
+				'"%s" is a cloud link (OneDrive or SharePoint), not a file — there is nothing here to download. Open the message in Outlook to follow the link, and note it may require access the club does not have.',
+				(string) ( $res['name'] ?? 'That attachment' )
+			) );
+		}
+		if ( false !== strpos( $kind, 'itemAttachment' ) ) {
+			return new WP_Error( 'gasf_crm_att_item', sprintf(
+				'"%s" is another email attached to this one, rather than a file. Open the message in Outlook to read it.',
+				(string) ( $res['name'] ?? 'That attachment' )
+			) );
+		}
+		return new WP_Error( 'gasf_crm_att', 'That attachment has no downloadable content.' );
 	}
-	return array(
+
+	$out = array(
 		'name'  => (string) ( $res['name'] ?? 'attachment' ),
 		'type'  => (string) ( $res['contentType'] ?? 'application/octet-stream' ),
 		'bytes' => base64_decode( $res['contentBytes'] ),
 	);
+
+	// Release the base64 copy immediately. Graph returns the file inline, so
+	// until this line a 20 MB attachment occupies ~27 MB encoded PLUS 20 MB
+	// decoded — and shared hosting is where that runs out. Keeping one copy
+	// instead of two roughly halves the ceiling.
+	unset( $res );
+
+	return $out;
 }
