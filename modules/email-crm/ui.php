@@ -217,7 +217,7 @@ function gasf_crm_render_help() {
 	<h3>The three lists</h3>
 	<ul>
 		<li><strong>Open</strong> — needs somebody to deal with it. A red dot means nobody has opened it yet.</li>
-		<li><strong>Answered</strong> — already dealt with. If that person writes again, it pops back into Open by itself.</li>
+		<li><strong>Answered</strong> — dealt with. Things you replied to land here, and so do things you forwarded to somebody else. If that person writes to us again, it pops back into Open by itself.</li>
 		<li><strong>Ignored</strong> — spam and junk. These stay gone even if the sender emails again.</li>
 	</ul>
 
@@ -231,7 +231,9 @@ function gasf_crm_render_help() {
 	<h3>The other buttons</h3>
 	<ul>
 		<li><strong>Draft with AI</strong> writes a first attempt for you, based on the club website and the replies the rest of us have already sent. <em>Read it before you send it.</em> It can get things wrong, and it only knows what it has been shown. Edit it freely — it is a starting point to save you typing, not an answer.</li>
-		<li><strong>Forward</strong> passes the message on to somebody else — the treasurer, the hall booking person, whoever it really belongs to. You can add a note at the top, and typing an address suggests people we have written to before. Forwarding counts as <strong>answered</strong>: they will reply to the person directly, and that reply will not come back through this mailbox, so there is nothing left here to wait for. If it turns out we do still owe a reply, open it in the Answered list and press <em>Put back in Open</em>.</li>
+		<li><strong>Forward</strong> sends the message on to somebody else — the treasurer, the hall booking person, whoever it really belongs to. You can add a note at the top, and as you type an address it suggests people we have written to before.
+			<br>Once you forward something it moves to <strong>Answered</strong> and leaves your list. That is on purpose: it is now their job, and they will write back to the person themselves. You are not waiting on anything.
+			<br>Changed your mind, or they need something from us after all? Find it in Answered, open it, and press <em>Put back in Open</em>.</li>
 		<li><strong>Ignore</strong> is for spam, junk and mailing lists. Nothing is sent and the sender hears nothing back.</li>
 		<li><strong>Mark answered</strong> is for when you handled it some other way — you rang them, or caught them at the club. Nothing is sent, it just clears it off the list.</li>
 	</ul>
@@ -240,10 +242,15 @@ function gasf_crm_render_help() {
 	<p>The sender's name is shown at the top of each message. Hover over the message and their actual email address appears next to it — you can select it, or press <strong>Copy</strong> to put it on the clipboard. Handy when a name looks familiar but the address does not.</p>
 
 	<h3>Who did what</h3>
-	<p>At the bottom of every message you will find a <strong>History</strong> list showing who replied, who ignored it, and when. It also records messages answered from Outlook instead of this page, so the two never disagree.</p>
+	<p>At the bottom of every message there is a <strong>History</strong> list. It shows who replied, who forwarded it, who ignored it, and when each of those happened. Nobody can quietly undo something — it is all written down.</p>
 
-	<h3>If something looks wrong</h3>
-	<p>The page checks for new mail every minute on its own — there is nothing to press. New mail is collected from the mailbox roughly once an hour, so something sent a moment ago may take a little while to appear.</p>
+	<h3>Why a new message can take a while to show up</h3>
+	<p>Two different things happen here, at two different speeds. It is worth knowing which is which, so you do not think something is broken.</p>
+	<ul>
+		<li><strong>This page updates itself every minute.</strong> The list on the left refreshes on its own. You never need to press anything or reload.</li>
+		<li><strong>The club's mailbox is only checked once an hour.</strong> So when somebody sends us an email, it can sit there for up to an hour before it reaches this page.</li>
+	</ul>
+	<p>That gap is normal. If an email you are expecting has not appeared yet, it almost certainly just has not been collected yet — wait a bit and it will turn up on its own. There is no button to hurry it along, and nothing has gone wrong.</p>
 </div></div>
 	<?php
 }
