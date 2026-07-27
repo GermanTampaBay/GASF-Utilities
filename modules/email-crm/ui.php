@@ -284,6 +284,24 @@ textarea{width:100%;min-height:150px;padding:10px;border:1px solid var(--gasf-bo
 .lib h4{margin:0 0 8px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--gasf-muted)}
 .lib .row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:5px 0;font-size:13px;border-bottom:1px solid var(--hair)}
 .lib .row:last-child{border-bottom:0}
+/* Photo submissions */
+.keep{border:1px solid var(--s-accent);background:var(--gasf-surface);color:var(--s-ink);border-radius:4px;cursor:pointer;font:inherit;font-size:12px;padding:4px 10px;margin:4px 8px 0 0}
+.keep:hover{background:var(--s-tint)}
+.keep[disabled]{opacity:.6;cursor:default}
+.photos{margin-top:28px;border-top:1px solid var(--gasf-border);padding-top:14px}
+.photos h3{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--gasf-muted);margin:0 0 12px}
+.pcard{display:flex;gap:14px;border:1px solid var(--gasf-border);border-radius:6px;padding:12px;margin:0 0 10px;background:var(--s-wash)}
+.pthumb{flex:0 0 90px;height:90px;border-radius:4px;overflow:hidden;background:var(--gasf-chip);display:block}
+.pthumb img{width:100%;height:100%;object-fit:cover;display:block}
+.pbody{flex:1 1 auto;min-width:0}
+.pfrom{font-size:12px;font-weight:600;color:var(--s-ink);margin-bottom:8px}
+.pf{display:block;margin:0 0 8px}
+.pf>span{display:block;font-size:11px;color:var(--gasf-muted);margin-bottom:2px}
+.pf input{width:100%;padding:6px 8px;border:1px solid var(--gasf-border);border-radius:4px;font:inherit;font-size:13px}
+.prow{display:flex;gap:8px;flex-wrap:wrap}
+.prow .pf{flex:1 1 130px}
+.pgeo{font-size:12px;color:var(--gasf-muted);margin:2px 0 8px}
+.pdone{font-size:13px;font-weight:600;color:var(--ok)}
 .badge{display:inline-block;font-size:11px;padding:1px 7px;border-radius:9px;background:var(--gasf-chip);color:var(--gasf-muted);vertical-align:middle}
 .badge.ig{background:#fcf0f1;color:var(--danger)}
 .badge.an{background:#edf4ea;color:var(--ok)}
@@ -694,8 +712,16 @@ function gasf_crm_render_inbox() {
 					var icon = a.kind === 'link' ? '🔗' : (a.kind === 'email' ? '✉️' : '📎');
 					var note = a.kind === 'link' ? ' (cloud link)' : (a.kind === 'email' ? ' (attached email)' : '');
 					var cls  = a.kind === 'file' ? 'att' : 'att att--noload';
-					return '<a class="' + cls + '" href="' + esc(a.url) + '">' + icon + ' ' +
+					var chip = '<a class="' + cls + '" href="' + esc(a.url) + '">' + icon + ' ' +
 						esc(a.name) + esc(note) + '</a>';
+					// Only real image attachments can be kept. A cloud link has no
+					// bytes and an attached email is an .eml, so offering this on
+					// either would be a button whose only outcome is an error.
+					if (a.image && t.can_reply) {
+						chip += '<button class="keep" data-msg="' + esc(a.msg) + '" data-att="' + esc(a.id) +
+							'" title="Copy this into the club’s photo collection">Keep photo</button>';
+					}
+					return chip;
 				}).join('');
 				// Only on inbound: outbound is always the club mailbox, so showing
 				// it on every reply would be noise rather than information.
@@ -791,10 +817,12 @@ function gasf_crm_render_inbox() {
 					'<div id="msg"></div>';
 			}
 
+			html += photoBlock(t);
 			html += history(t.events);
 			pane.innerHTML = html;
 			wire(id, t.status);
 			wireCopy();
+			wirePhotos(id, t);
 
 			// Remember where this conversation was, so the minute refresh can
 			// tell whether it has moved on since.
@@ -959,6 +987,115 @@ function gasf_crm_render_inbox() {
 			});
 		}).catch(function(e){
 			el.innerHTML = '<h4>Shared library</h4><div class="note err">' + esc(e.message) + '</div>';
+		});
+	}
+
+	// Photos kept from this submission, and whatever the sender has since told
+	// us about them. Three states, deliberately distinguishable at a glance:
+	// kept but nobody asked; asked and waiting; described and waiting on us.
+	function photoBlock(t){
+		var ph = t.photos || [];
+		if (!ph.length) { return ''; }
+
+		var waiting = ph.filter(function(p){ return p.pending; });
+		var head = '<div class="photos"><h3>Photos kept from this email (' + ph.length + ')</h3>';
+
+		var cards = ph.map(function(p){
+			var s = '<div class="pcard" data-photo="' + p.id + '">' +
+				'<a class="pthumb" href="' + esc(p.link) + '" target="_blank" rel="noopener">' +
+				(p.thumb ? '<img src="' + esc(p.thumb) + '" alt="">' : '') + '</a>' +
+				'<div class="pbody">';
+
+			if (p.pending) {
+				var q = p.pending;
+				s += '<div class="pfrom">The sender says:</div>' +
+					'<label class="pf"><span>Who is in it</span>' +
+					'<input type="text" class="p-people" value="' + esc((q.people||[]).join(', ')) + '" placeholder="Nobody named"></label>' +
+					'<label class="pf"><span>What is happening</span>' +
+					'<input type="text" class="p-caption" maxlength="150" value="' + esc(q.caption||'') + '"></label>' +
+					'<div class="prow">' +
+					'<label class="pf"><span>Where</span><input type="text" class="p-place" value="' + esc(q.place||'') + '"></label>' +
+					'<label class="pf"><span>Occasion</span><input type="text" class="p-event" value="' + esc(q.event||'') + '"></label>' +
+					'<label class="pf"><span>Date</span><input type="date" class="p-taken" value="' + esc(q.taken||p.taken||'') + '"></label>' +
+					'</div>';
+
+				// The camera's own guess is shown next to what the sender typed,
+				// never merged into it. They disagree often enough — GPS is wider
+				// than a tight geofence — that quietly preferring one would be
+				// inventing a fact.
+				if (p.guess) {
+					s += '<p class="pgeo">Camera put this at <strong>' + esc(p.guess) + '</strong>' +
+						(p.alts && p.alts.length ? ' (also inside ' + esc(p.alts.join(', ')) + ')' : '') + '.</p>';
+				}
+				s += '<div class="actions"><button class="btn p-ok">Add these tags</button>' +
+					'<span class="p-msg muted"></span></div>';
+			} else if (p.confirmed) {
+				s += '<div class="pdone">✓ Tagged' + (p.people.length ? ' — ' + esc(p.people.join(', ')) : '') + '</div>' +
+					(p.caption ? '<p class="muted">' + esc(p.caption) + '</p>' : '');
+			} else {
+				s += '<div class="muted">Kept. Nothing known about it yet' +
+					(p.taken ? ' beyond the date, ' + esc(p.taken) : '') + '.</div>';
+			}
+
+			return s + '</div></div>';
+		}).join('');
+
+		var ask = '<div class="actions" style="margin-top:12px">' +
+			'<button class="btn sec" id="askdetails">Ask the sender what these are</button>' +
+			'<span id="askmsg" class="muted"></span></div>' +
+			'<p class="muted" style="margin:8px 0 0">Sends them a private link, good for 30 days, asking who is in the photos and when they were taken. Their answers come back here for you to approve — nothing they type becomes a tag on its own.</p>';
+
+		return head + cards + ask + '</div>';
+	}
+
+	function wirePhotos(id, t){
+		// "Keep photo" on an attachment chip.
+		Array.prototype.forEach.call(pane.querySelectorAll('.keep'), function(b){
+			b.onclick = function(){
+				b.disabled = true; b.textContent = 'Keeping…';
+				api('/photos/approve', { method:'POST', body: JSON.stringify({
+					id: id, msg: b.dataset.msg, att: b.dataset.att
+				})}).then(function(){
+					b.textContent = '✓ Kept';
+					open(id); // redraw so the photo appears in the block below
+				}).catch(function(e){
+					b.disabled = false; b.textContent = 'Keep photo';
+					alert(e.message);
+				});
+			};
+		});
+
+		var ask = document.getElementById('askdetails'), askmsg = document.getElementById('askmsg');
+		if (ask) {
+			ask.onclick = function(){
+				ask.disabled = true; askmsg.textContent = 'Sending…';
+				api('/photos/invite', { method:'POST', body: JSON.stringify({ id: id }) })
+					.then(function(r){
+						askmsg.textContent = 'Asked ' + r.to + ' about ' + r.photos + ' photo(s).';
+					})
+					.catch(function(e){ ask.disabled = false; askmsg.textContent = e.message; });
+			};
+		}
+
+		Array.prototype.forEach.call(pane.querySelectorAll('.pcard'), function(card){
+			var ok = card.querySelector('.p-ok');
+			if (!ok) { return; }
+			ok.onclick = function(){
+				var msg = card.querySelector('.p-msg');
+				ok.disabled = true; msg.textContent = 'Saving…';
+				var v = function(sel){ var el = card.querySelector(sel); return el ? el.value : ''; };
+				api('/photos/confirm', { method:'POST', body: JSON.stringify({
+					id: id,
+					photo: parseInt(card.dataset.photo, 10),
+					// Split on commas here rather than asking the volunteer to
+					// manage separate boxes: they are correcting a list, not
+					// composing one.
+					people: v('.p-people').split(',').map(function(s){ return s.trim(); }).filter(Boolean),
+					place: v('.p-place'), event: v('.p-event'),
+					taken: v('.p-taken'), caption: v('.p-caption')
+				})}).then(function(){ open(id); })
+				  .catch(function(e){ ok.disabled = false; msg.textContent = e.message; });
+			};
 		});
 	}
 

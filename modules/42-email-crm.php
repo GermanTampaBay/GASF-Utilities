@@ -33,7 +33,7 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 	// upgrade check below runs dbDelta and flushes rules on any change. This
 	// plugin runs as an mu-plugin on the main site, where activation hooks
 	// never fire, so a version-compare on every load is the only reliable hook.
-	define( 'GASF_CRM_SCHEMA', '1.5.0' );
+	define( 'GASF_CRM_SCHEMA', '1.6.0' );
 
 	/**
 	 * How far ahead to start warning that the Graph client secret is running
@@ -53,6 +53,9 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 	require_once GASF_CRM_DIR . '/ai.php';
 	require_once GASF_CRM_DIR . '/notify.php';
 	require_once GASF_CRM_DIR . '/rest.php';
+	// After rest.php: photos.php registers its own routes and leans on
+	// gasf_crm_rest_thread() and gasf_crm_rest_guard() from it.
+	require_once GASF_CRM_DIR . '/photos.php';
 	require_once GASF_CRM_DIR . '/ui.php';
 	require_once GASF_CRM_DIR . '/admin.php';
 

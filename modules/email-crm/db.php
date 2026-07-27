@@ -83,6 +83,33 @@ function gasf_crm_install_tables() {
 		KEY last_seen (last_seen)
 	) {$charset};" );
 
+	// Photo tagging invitations.
+	//
+	// A workflow record rather than a property of any one photo, which is why
+	// this is a table when the photo data deliberately is not: it covers the SET
+	// of photos approved from one submission, and carries the token, the expiry
+	// and whether it has been used.
+	//
+	// The token is stored HASHED. It is a bearer credential — anyone holding it
+	// can tag those photos — and it travels by email to a member of the public,
+	// so the database should not hold anything replayable if it ever leaked.
+	// Same reasoning WordPress applies to password-reset keys.
+	dbDelta( "CREATE TABLE " . gasf_crm_table( 'photo_invites' ) . " (
+		id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+		token_hash CHAR(64) NOT NULL,
+		thread_id BIGINT UNSIGNED NOT NULL,
+		email VARCHAR(191) NOT NULL,
+		name VARCHAR(191) NULL,
+		attachment_ids TEXT NOT NULL,
+		created_at DATETIME NOT NULL,
+		expires_at DATETIME NOT NULL,
+		opened_at DATETIME NULL,
+		submitted_at DATETIME NULL,
+		PRIMARY KEY  (id),
+		UNIQUE KEY token_hash (token_hash),
+		KEY thread_id (thread_id)
+	) {$charset};" );
+
 	// Outbound attachments. stored_name is what sits on disk (random), while
 	// original_name is what the recipient sees — so nothing a volunteer types
 	// can reach a filesystem path, and they still receive a sensibly named file.

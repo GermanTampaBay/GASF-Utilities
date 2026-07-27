@@ -119,6 +119,10 @@ add_action( 'rest_api_init', function () {
 				'status'    => (string) $thread['status'],
 				'stream'    => $stream,
 				'mailbox'   => gasf_crm_stream_mailbox( $stream ),
+				// Photos kept from this submission, with whatever the sender has
+				// since told us about them. Always present, empty on a thread
+				// nobody has taken a photo from.
+				'photos'    => function_exists( 'gasf_crm_photo_thread_block' ) ? gasf_crm_photo_thread_block( $id ) : array(),
 				'can_reply' => (bool) $mine,
 				'locked_by' => ( ! $mine && $holder ) ? $holder->display_name : null,
 				'messages'  => $messages,
@@ -596,12 +600,21 @@ function gasf_crm_attachment_list( $graph_message_id, $stream = 'general' ) {
 		// the chip say so up front, rather than sending someone to an error page
 		// to find out.
 		$kind = (string) ( $a['@odata.type'] ?? '' );
+		$type = strtolower( (string) ( $a['contentType'] ?? '' ) );
 		$out[] = array(
 			'id'   => (string) ( $a['id'] ?? '' ),
+			'msg'  => (string) $graph_message_id,
 			'name' => (string) ( $a['name'] ?? 'attachment' ),
 			'size' => (int) ( $a['size'] ?? 0 ),
 			'kind' => false !== strpos( $kind, 'referenceAttachment' ) ? 'link'
 				: ( false !== strpos( $kind, 'itemAttachment' ) ? 'email' : 'file' ),
+			// Only a real fileAttachment with an image type can be sideloaded.
+			// A cloud link has no bytes and an itemAttachment is an .eml, and
+			// offering "Add to library" on either would be a button that only
+			// ever produces an error.
+			'image' => ( false === strpos( $kind, 'referenceAttachment' )
+				&& false === strpos( $kind, 'itemAttachment' )
+				&& 0 === strpos( $type, 'image/' ) ),
 			// _wpnonce is what makes this link WORK at all. It renders as a plain
 			// <a href>, and a bare navigation carries no X-WP-Nonce header — and
 			// WordPress REST cookie auth without a nonce demotes the request to

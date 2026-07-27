@@ -459,8 +459,12 @@ function gasf_crm_graph_forward( $graph_message_id, $to, $comment, $mailbox = ''
  * letting them land in Sent Items would mean the next sync ingested each one
  * and opened a CRM thread for every notification the CRM had just sent.
  */
-function gasf_crm_graph_send( $to, $subject, $text ) {
-	return gasf_crm_graph( 'POST', gasf_crm_mailbox_path() . '/sendMail', array(
+function gasf_crm_graph_send( $to, $subject, $text, $mailbox = '' ) {
+	// $mailbox accepts a stream key or an address. Asking somebody to tag the
+	// photos they sent to photos@ should come FROM photos@ — a reply landing in
+	// a mailbox they never wrote to is how a legitimate message gets read as
+	// phishing.
+	return gasf_crm_graph( 'POST', gasf_crm_mailbox_path( $mailbox ) . '/sendMail', array(
 		'message'         => array(
 			'subject'      => $subject,
 			'body'         => array( 'contentType' => 'Text', 'content' => $text ),
