@@ -37,6 +37,47 @@ function gasf_crm_providers() {
 	);
 }
 
+/**
+ * Ask the provider to POST the result instead of putting it in the query string.
+ *
+ * This host runs ModSecurity, whose remote-file-inclusion rule rejects any
+ * request with a query parameter whose value BEGINS with http:// or https://.
+ * Google's callback returns
+ *   scope=https://www.googleapis.com/auth/userinfo.email ...
+ * with the URL first, so every single sign-in was being answered with a 406
+ * before PHP ever ran. Mid-value URLs pass; it is specifically the leading
+ * scheme that trips it.
+ *
+ * The same value in a POST body sails through, because the rule inspects query
+ * arguments. Both Google and Microsoft advertise form_post in their OIDC
+ * discovery documents, so this is a supported mode rather than a trick — and it
+ * is preferable to asking the host to weaken a firewall rule that is doing a
+ * reasonable job for every other request on the site.
+ */
+function gasf_crm_response_mode() {
+	return 'form_post';
+}
+
+/** Read a callback value from POST (form_post) or GET (fallback). */
+function gasf_crm_cb_param( $key, $allowed = '/[^A-Za-z0-9._~\/-]/' ) {
+	$raw = null;
+	// phpcs:disable WordPress.Security.NonceVerification -- OAuth callbacks are
+	// authenticated by the state parameter plus the browser-bound cookie below;
+	// a WordPress nonce cannot exist on a redirect back from a third party.
+	if ( isset( $_POST[ $key ] ) ) {
+		$raw = wp_unslash( $_POST[ $key ] );
+	} elseif ( isset( $_GET[ $key ] ) ) {
+		$raw = wp_unslash( $_GET[ $key ] );
+	}
+	// phpcs:enable
+	if ( ! is_string( $raw ) ) { return ''; }
+
+	// Deliberately NOT sanitize_text_field: it strips percent-encoded octets,
+	// which would silently corrupt an authorization code that contained one.
+	return preg_replace( $allowed, '', $raw );
+}
+
+
 function gasf_crm_redirect_uri( $provider ) {
 	return home_url( '/email/auth/' . $provider . '/callback' );
 }
@@ -76,7 +117,12 @@ function gasf_crm_auth_start( $provider ) {
 		// perfectly good HTTPS request and the flag would silently be dropped.
 		'secure'   => ( 0 === strpos( home_url(), 'https://' ) ),
 		'httponly' => true,
-		'samesite' => 'Lax',
+		// None, not Lax, because response_mode=form_post means the provider
+		// returns us via a cross-site POST — and Lax withholds cookies on
+		// anything except a top-level GET navigation. Under Lax this cookie
+		// would simply be absent on every callback and every sign-in would fail
+		// the browser-binding check. None requires Secure, which is set above.
+		'samesite' => 'None',
 	) );
 
 	set_transient( 'gasf_crm_oauth_' . $state, array(
@@ -93,6 +139,7 @@ function gasf_crm_auth_start( $provider ) {
 		'state'                 => $state,
 		'code_challenge'        => $challenge,
 		'code_challenge_method' => 'S256',
+		'response_mode'         => gasf_crm_response_mode(),
 		'prompt'                => 'select_account',
 	) ) );
 	exit;
@@ -107,12 +154,13 @@ function gasf_crm_auth_callback( $provider ) {
 	if ( ! isset( $providers[ $provider ] ) ) { gasf_crm_auth_fail( 'Unknown provider.' ); }
 	$p = $providers[ $provider ];
 
-	if ( isset( $_GET['error'] ) ) {
+	if ( '' !== gasf_crm_cb_param( 'error', '/[^A-Za-z0-9._-]/' ) ) {
 		gasf_crm_auth_fail( 'Sign-in was cancelled or refused.' );
 	}
 
-	$state = isset( $_GET['state'] ) ? sanitize_text_field( wp_unslash( $_GET['state'] ) ) : '';
-	$code  = isset( $_GET['code'] ) ? sanitize_text_field( wp_unslash( $_GET['code'] ) ) : '';
+	// State is hex we generated, so it is constrained to hex on the way back in.
+	$state = gasf_crm_cb_param( 'state', '/[^a-f0-9]/' );
+	$code  = gasf_crm_cb_param( 'code' );
 	if ( '' === $state || '' === $code ) { gasf_crm_auth_fail( 'Incomplete sign-in response.' ); }
 
 	$stash = get_transient( 'gasf_crm_oauth_' . $state );
