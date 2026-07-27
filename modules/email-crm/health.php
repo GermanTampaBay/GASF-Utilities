@@ -149,30 +149,52 @@ function gasf_crm_health_maybe_alert() {
 }
 
 /**
- * Deliver an operational alert.
+ * Everyone who should hear about an outage: every WordPress administrator,
+ * plus the admin_email option in case it belongs to no user account.
  *
- * Goes to the administrators, not to every volunteer: a volunteer can do
- * nothing about a Graph credential, and the /email banner already tells them
- * what they need to know.
- *
- * gasf_crm_notify_send tries Graph first and falls back to wp_mail. Both may
- * well fail here — that is the nature of alerting about a broken mail path —
- * which is exactly why the banner and the admin notice exist and do not depend
- * on this working.
+ * Administrators rather than volunteers, and rather than the CRM's own notify
+ * list: nobody without wp-admin access can do anything about a Graph
+ * credential, and the /email banner already tells volunteers what they need.
  */
-function gasf_crm_health_notify( $subject, $body ) {
+function gasf_crm_health_admins() {
 	$to = array();
 
-	$admin = get_option( 'admin_email' );
-	if ( is_email( $admin ) ) { $to[] = strtolower( $admin ); }
-
-	$cfg = gasf_crm_cfg();
-	foreach ( array_filter( array_map( 'trim', explode( ',', (string) $cfg['notify_extra'] ) ) ) as $addr ) {
-		if ( is_email( $addr ) ) { $to[] = strtolower( $addr ); }
+	foreach ( get_users( array( 'role' => 'administrator' ) ) as $u ) {
+		if ( is_email( $u->user_email ) ) { $to[] = strtolower( $u->user_email ); }
 	}
 
-	foreach ( array_unique( $to ) as $addr ) {
-		gasf_crm_notify_send( $addr, $subject, $body );
+	$opt = get_option( 'admin_email' );
+	if ( is_email( $opt ) ) { $to[] = strtolower( $opt ); }
+
+	return array_values( array_unique( $to ) );
+}
+
+/**
+ * Deliver an operational alert.
+ *
+ * wp_mail is the primary path, deliberately, because an alarm about Graph
+ * being broken must not travel over Graph. That is sound reasoning and it is
+ * why this does not simply call gasf_crm_notify_send.
+ *
+ * The catch is that wp_mail does not currently reach anyone from this host: the
+ * domain publishes "v=spf1 include:spf.protection.outlook.com -all" with DMARC
+ * p=quarantine, so WordPress mail sent from the web server as
+ * wordpress@germantampabay.com is quarantined by Microsoft. That affects every
+ * email this site sends, not just these — password resets included.
+ *
+ * So a Graph copy goes out too, and will keep going out until an SMTP plugin
+ * makes wp_mail genuinely deliverable. Between them the cases are covered: if
+ * Graph is what broke, wp_mail is the one that can still get through; if mail
+ * routing is what broke, Graph is. Two copies of a once-a-day alarm is a small
+ * price for it actually arriving. Drop the Graph line once SMTP works.
+ */
+function gasf_crm_health_notify( $subject, $body ) {
+	foreach ( gasf_crm_health_admins() as $addr ) {
+		wp_mail( $addr, $subject, $body );
+
+		if ( gasf_crm_ready() ) {
+			gasf_crm_graph_send( $addr, $subject, $body );
+		}
 	}
 }
 

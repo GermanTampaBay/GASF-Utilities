@@ -279,6 +279,10 @@ function gasf_crm_admin_tab() {
 				$health['last_error']
 			) )
 	);
+	printf(
+		'<p class="description">Outage alerts go to every WordPress administrator: <strong>%s</strong>. Sent through WordPress mail so an alarm about Graph does not travel over Graph &mdash; with a Graph copy alongside it, because WordPress mail from this server is currently quarantined by the domain\'s own SPF record. Install an SMTP plugin and the duplicate can go.</p>',
+		esc_html( implode( ', ', gasf_crm_health_admins() ) )
+	);
 
 	$queued    = count( (array) get_option( 'gasf_crm_notify_queue', array() ) );
 	$last_note = (int) get_option( 'gasf_crm_notify_last', 0 );
