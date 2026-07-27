@@ -355,7 +355,7 @@ function gasf_crm_render_inbox() {
 			var verb = {
 				received:        'received a message',
 				replied:         'replied',
-				replied_outlook: 'replied from Outlook',
+				replied_outlook: 'replied outside this page',
 				forwarded:       'forwarded it on',
 				addressed:       'marked it answered',
 				ignored:         'ignored it',
