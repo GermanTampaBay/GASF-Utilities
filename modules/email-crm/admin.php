@@ -72,10 +72,17 @@ function gasf_crm_admin_tab() {
 		}
 
 		if ( 'notify' === $act ) {
-			$n      = gasf_crm_flush_notifications( true );
-			$notice = $n
-				? '<div class="notice notice-success"><p>' . esc_html( sprintf( 'Summary sent to %d recipient(s) covering %d thread(s).', count( gasf_crm_notify_recipients() ), $n ) ) . '</p></div>'
-				: '<div class="notice notice-warning"><p>Nothing queued to announce. New unanswered mail queues automatically; this button skips the once-an-hour wait.</p></div>';
+			$n     = gasf_crm_flush_notifications( true );
+			$still = count( (array) get_option( 'gasf_crm_notify_queue', array() ) );
+			if ( $n ) {
+				$notice = '<div class="notice notice-success"><p>' . esc_html( sprintf( 'Summary sent to %d recipient(s) covering %d thread(s).', count( gasf_crm_notify_recipients() ), $n ) ) . '</p></div>';
+			} elseif ( $still ) {
+				// A failed delivery must not read as an empty queue — that is the
+				// exact confusion an admin pressing this button is debugging.
+				$notice = '<div class="notice notice-error"><p>' . esc_html( sprintf( 'Delivery did not complete — %d thread(s) still queued. Check Graph status above and the log.', $still ) ) . '</p></div>';
+			} else {
+				$notice = '<div class="notice notice-warning"><p>Nothing queued to announce. New unanswered mail queues automatically; this button skips the once-an-hour wait.</p></div>';
+			}
 		}
 
 		if ( 'sync' === $act ) {

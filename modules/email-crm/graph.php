@@ -284,6 +284,14 @@ function gasf_crm_graph_test() {
  * Paged, with a hard page cap — a misconfigured $since (epoch 0 on a first run
  * against a mailbox with history) must not turn one cron tick into a thousand
  * Graph calls. The cap is a circuit breaker, not a pagination strategy.
+ *
+ * Returns array( 'items' => [...], 'complete' => bool ), or WP_Error.
+ * 'complete' false means the cap fired with pages still unread — and the
+ * caller MUST NOT advance its sync cursor past the last item actually
+ * fetched. Items come back oldest-first, so everything up to that item is
+ * safely ingested and everything after it has not been seen; a cursor
+ * advanced to "now" over an incomplete read un-exists the tail permanently,
+ * with nothing anywhere to say so.
  */
 function gasf_crm_graph_messages( $folder, $since, $max_pages = 10 ) {
 	$select = 'id,conversationId,subject,from,sender,toRecipients,receivedDateTime,sentDateTime,bodyPreview,body,hasAttachments';
@@ -307,9 +315,9 @@ function gasf_crm_graph_messages( $folder, $since, $max_pages = 10 ) {
 		$pages++;
 	}
 	if ( $url ) {
-		gasf_mec_log( 'CRM: page cap hit in ' . $folder . ' — ' . count( $out ) . ' fetched, more remain.' );
+		gasf_mec_log( 'CRM: page cap hit in ' . $folder . ' — ' . count( $out ) . ' fetched, more remain; cursor will hold at the last fetched message.' );
 	}
-	return $out;
+	return array( 'items' => $out, 'complete' => ( null === $url ) );
 }
 
 /**

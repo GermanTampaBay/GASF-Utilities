@@ -135,18 +135,29 @@ add_filter( 'pre_wp_mail', function ( $short, $atts ) {
 	if ( $h['bcc'] )      { $message['bccRecipients'] = gasf_crm_mail_recipients( $h['bcc'] ); }
 	if ( $h['reply_to'] ) { $message['replyTo']       = gasf_crm_mail_recipients( $h['reply_to'] ); }
 
-	// Attachments are read from disk here. Anything over Graph's single-request
-	// ceiling is skipped rather than failing the whole message: a notification
-	// that arrives without its attachment beats one that never arrives.
+	// Attachments: all of them, or none of this route. Any file Graph cannot
+	// carry in one request — oversized, unreadable, an odd shape from some
+	// plugin — declines the WHOLE message back to WordPress's native mailer,
+	// which has no 3 MB ceiling and whose failures are reported to the caller.
+	// The earlier behaviour skipped the file and sent anyway while returning
+	// true: the recipient got "please find attached" with nothing attached,
+	// the sender was told it succeeded, and the only trace was a log line
+	// nobody was reading. Partial delivery reported as success is the one
+	// thing a mail path must never do.
 	foreach ( (array) ( $atts['attachments'] ?? array() ) as $path ) {
 		$path = is_array( $path ) ? reset( $path ) : $path;
-		if ( ! is_string( $path ) || ! is_readable( $path ) ) { continue; }
-		if ( filesize( $path ) > GASF_CRM_ATTACH_MAX ) {
-			gasf_mec_log( 'CRM mail: attachment too large for Graph, skipped — ' . basename( $path ) );
-			continue;
+		if ( ! is_string( $path ) || '' === $path || ! is_readable( $path )
+			|| filesize( $path ) > GASF_CRM_ATTACH_MAX ) {
+			gasf_mec_log( 'CRM mail: attachment not carryable via Graph ('
+				. ( is_string( $path ) && '' !== $path ? basename( $path ) : 'non-path entry' )
+				. ') — whole message handed to the native mailer.' );
+			return $short;
 		}
 		$bytes = @file_get_contents( $path );
-		if ( false === $bytes ) { continue; }
+		if ( false === $bytes ) {
+			gasf_mec_log( 'CRM mail: attachment unreadable (' . basename( $path ) . ') — whole message handed to the native mailer.' );
+			return $short;
+		}
 		$message['attachments'][] = array(
 			'@odata.type'  => '#microsoft.graph.fileAttachment',
 			'name'         => basename( $path ),

@@ -45,6 +45,15 @@ function gasf_crm_render_app() {
 	nocache_headers();
 	header( 'X-Robots-Tag: noindex, nofollow', true );
 
+	// HSTS: after one visit the browser refuses plain HTTP for this host, so a
+	// captured session cookie cannot be replayed over an HTTP downgrade.
+	// Deliberately WITHOUT includeSubDomains — krampus.germantampabay.com is a
+	// separate install this module knows nothing about, and force-HTTPS-ing it
+	// sight unseen from here would be wrong.
+	if ( 0 === strpos( home_url(), 'https://' ) ) {
+		header( 'Strict-Transport-Security: max-age=15552000' );
+	}
+
 	$status = gasf_crm_user_status();
 
 	echo '<!DOCTYPE html><html ' . get_language_attributes() . '><head><meta charset="' . esc_attr( get_bloginfo( 'charset' ) ) . '">';
@@ -333,7 +342,22 @@ function gasf_crm_render_inbox() {
 			});
 		});
 	}
-	function esc(s){ var d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
+	// Escapes for BOTH text and quoted-attribute positions.
+	//
+	// The obvious implementation — textContent in, innerHTML out — escapes <, >
+	// and & but leaves quotes alone. That is safe in a text node and unsafe in
+	// an attribute, and this file interpolates into attributes constantly
+	// (data-addr, data-name, href). A sender address or an attachment filename
+	// containing a double quote would close the attribute and open a new one:
+	// both are chosen by whoever emailed the club.
+	function esc(s){
+		return String(s == null ? '' : s)
+			.replace(/&/g, '&amp;')
+			.replace(/</g, '&lt;')
+			.replace(/>/g, '&gt;')
+			.replace(/"/g, '&quot;')
+			.replace(/'/g, '&#39;');
+	}
 	function when(s){
 		if(!s) return '';
 		// Stored UTC — the trailing Z is what makes the browser render it in the

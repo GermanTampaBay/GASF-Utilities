@@ -157,6 +157,22 @@ function gasf_crm_attach_get( $id ) {
 	), ARRAY_A );
 }
 
+/**
+ * May this user send or remove this file?
+ *
+ * Library documents are shared club property, usable by anyone approved —
+ * that is what the library is for. One-off uploads belong to whoever uploaded
+ * them: attachment ids are small sequential integers, so without this check
+ * any approved account could enumerate ids and send or delete somebody else's
+ * pending upload. Being approved gates entry to the tool, not ownership of
+ * everything in it.
+ */
+function gasf_crm_attach_can_use( array $row, $user_id ) {
+	return ! empty( $row['in_library'] )
+		|| (int) $row['uploaded_by'] === (int) $user_id
+		|| user_can( (int) $user_id, 'manage_options' );
+}
+
 /** Shape a row for the browser. stored_name is never exposed. */
 function gasf_crm_attach_public( $row ) {
 	if ( ! is_array( $row ) ) { return null; }

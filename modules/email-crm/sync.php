@@ -65,7 +65,7 @@ function gasf_crm_sync() {
 		$fresh   = array();
 		$touched = array();
 
-		foreach ( $inbox as $m ) {
+		foreach ( $inbox['items'] as $m ) {
 			$r = gasf_crm_ingest( $m, 'in' );
 			if ( ! $r['thread_id'] ) { continue; }
 			$touched[ $r['thread_id'] ] = true;
@@ -81,14 +81,16 @@ function gasf_crm_sync() {
 			}
 		}
 
-		$sent = gasf_crm_graph_messages( 'SentItems', $since );
-		if ( is_wp_error( $sent ) ) {
-			// Non-fatal: inbound already landed, and this only affects whether a
-			// thread shows as addressed. Log and carry on.
+		$sent        = gasf_crm_graph_messages( 'SentItems', $since );
+		$sent_failed = is_wp_error( $sent );
+		if ( $sent_failed ) {
+			// Non-fatal for THIS run: inbound already landed, and this only
+			// affects whether a thread shows as addressed. The cursor handling
+			// below refuses to advance, so the window is re-read next hour.
 			$result['errors'][] = $sent->get_error_message();
 			gasf_mec_log( 'CRM sync: sent-items fetch failed — ' . $sent->get_error_message() );
 		} else {
-			foreach ( $sent as $m ) {
+			foreach ( $sent['items'] as $m ) {
 				$r = gasf_crm_ingest( $m, 'out' );
 				if ( ! $r['thread_id'] ) { continue; }
 				$touched[ $r['thread_id'] ] = true;
@@ -125,9 +127,50 @@ function gasf_crm_sync() {
 		// Returns 0 when the batch is being held back, which is not a failure.
 		$result['notified'] = gasf_crm_flush_notifications();
 
-		$cfg              = gasf_crm_cfg();
-		$cfg['last_sync'] = $started; // the time the fetch STARTED, not finished
-		gasf_crm_save_cfg( $cfg );
+		/*
+		 * Cursor advance — the one place mail can be silently lost, so it errs
+		 * on re-reading rather than skipping. Three cases:
+		 *
+		 *  - Both folders read completely: advance to fetch start, as before.
+		 *  - A folder hit the page cap: advance only to the LAST MESSAGE
+		 *    ACTUALLY FETCHED in that folder. Items arrive oldest-first, so
+		 *    everything at or before that stamp is ingested and everything
+		 *    after it has not been seen yet; advancing to "now" over an
+		 *    incomplete read would un-exist the tail permanently, with nothing
+		 *    anywhere to say so. Repeated runs converge at ~500 messages each.
+		 *  - Sent Items failed outright: do not advance at all. Inbound is
+		 *    already ingested and the UNIQUE key makes the re-read free; a
+		 *    cursor that moved past an unread Sent window would leave answered
+		 *    threads marked new forever.
+		 */
+		if ( ! $sent_failed ) {
+			$cursor = $started;
+			$hold   = false;
+
+			foreach ( array(
+				array( $inbox, 'receivedDateTime' ),
+				array( $sent, 'sentDateTime' ),
+			) as $pair ) {
+				list( $folder, $field ) = $pair;
+				if ( $folder['complete'] ) { continue; }
+				$items = $folder['items'];
+				$last  = $items ? end( $items ) : null;
+				$ts    = $last ? strtotime( (string) ( $last[ $field ] ?? '' ) ) : false;
+				if ( $ts ) {
+					$cursor = min( $cursor, $ts );
+				} else {
+					$hold = true; // truncated with nothing usable — keep the old cursor
+				}
+			}
+
+			if ( ! $hold ) {
+				$cfg              = gasf_crm_cfg();
+				$cfg['last_sync'] = $cursor;
+				gasf_crm_save_cfg( $cfg );
+			} else {
+				gasf_mec_log( 'CRM sync: cursor held — truncated read returned no usable timestamp.' );
+			}
+		}
 
 		if ( $result['new'] || $result['reopened'] ) {
 			gasf_mec_log( sprintf(
@@ -176,6 +219,12 @@ function gasf_crm_ingest( array $m, $direction ) {
 		$sent_at,
 		'in' === $direction
 	);
+
+	// A thread id of 0 means the upsert genuinely failed (see upsert_thread).
+	// Skip the message — the overlap window usually re-reads it next run —
+	// rather than inserting it orphaned under thread 0, where no list query
+	// would ever surface it again.
+	if ( empty( $thread['id'] ) ) { return $none; }
 
 	// An outbound message is usually the CRM's own reply coming back around via
 	// Sent Items. Adopt the placeholder the send path wrote instead of inserting
@@ -285,16 +334,40 @@ function gasf_crm_clean_body( $body ) {
 }
 
 /* --------------------------------------------------------------------------
- * Sync lock. A transient, not a DB row: it expires on its own, so a fatal
- * error mid-sync can't wedge the CRM permanently the way a sticky flag would.
+ * Sync lock.
+ *
+ * add_option, not a transient: a transient is get-then-set, and the hourly
+ * WP-Cron event and the system cron genuinely do fire in the same second on
+ * this site — both would pass the get before either set, and two syncs would
+ * run at once. add_option is a single INSERT against the option_name UNIQUE
+ * key, so of two concurrent callers exactly one gets true.
+ *
+ * Staleness is handled by value: the lock stores its acquisition time, and a
+ * holder older than the TTL is broken with a compare-and-delete (name AND
+ * value), so two processes breaking the same stale lock cannot each delete
+ * the other's fresh acquisition. A crash mid-sync therefore wedges things for
+ * at most one TTL rather than forever.
  * -------------------------------------------------------------------------- */
 
 function gasf_crm_sync_lock( $ttl = 600 ) {
-	if ( get_transient( 'gasf_crm_syncing' ) ) { return false; }
-	set_transient( 'gasf_crm_syncing', time(), $ttl );
-	return true;
+	global $wpdb;
+
+	$held = get_option( 'gasf_crm_sync_lock' );
+	if ( $held && ( time() - (int) $held ) < $ttl ) { return false; }
+
+	if ( $held ) {
+		// Stale — compare-and-delete, keyed on the exact value we read.
+		$wpdb->query( $wpdb->prepare(
+			"DELETE FROM {$wpdb->options} WHERE option_name = %s AND option_value = %s",
+			'gasf_crm_sync_lock', (string) $held
+		) );
+		wp_cache_delete( 'gasf_crm_sync_lock', 'options' );
+		wp_cache_delete( 'alloptions', 'options' );
+	}
+
+	return (bool) add_option( 'gasf_crm_sync_lock', (string) time(), '', false );
 }
 
 function gasf_crm_sync_unlock() {
-	delete_transient( 'gasf_crm_syncing' );
+	delete_option( 'gasf_crm_sync_lock' );
 }

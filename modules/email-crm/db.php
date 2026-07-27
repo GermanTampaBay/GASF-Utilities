@@ -134,7 +134,7 @@ function gasf_crm_upsert_thread( $conversation_id, $subject, $from_name, $from_a
 	$row = $wpdb->get_row( $wpdb->prepare( "SELECT id, status FROM {$t} WHERE conversation_id = %s", $conversation_id ), ARRAY_A );
 
 	if ( ! $row ) {
-		$wpdb->insert( $t, array(
+		$inserted = $wpdb->insert( $t, array(
 			'conversation_id'       => $conversation_id,
 			'subject'               => $subject,
 			'last_from_name'        => $from_name,
@@ -144,7 +144,22 @@ function gasf_crm_upsert_thread( $conversation_id, $subject, $from_name, $from_a
 			'last_message_at'       => $sent_at,
 			'last_status_change_at' => $now,
 		) );
-		return array( 'id' => (int) $wpdb->insert_id, 'reopened' => false, 'created' => true );
+
+		if ( false !== $inserted ) {
+			return array( 'id' => (int) $wpdb->insert_id, 'reopened' => false, 'created' => true );
+		}
+
+		// INSERT failed. The usual cause is two syncs racing the same brand-new
+		// conversation — the loser hits the UNIQUE key, and the row exists now,
+		// so re-read and fall through to the update path. On a genuine database
+		// failure the re-read misses too: return id 0 and let the caller skip
+		// the message rather than file it under a thread that does not exist.
+		// (Unchecked, insert_id 0 flowed straight into messages.thread_id.)
+		$row = $wpdb->get_row( $wpdb->prepare( "SELECT id, status FROM {$t} WHERE conversation_id = %s", $conversation_id ), ARRAY_A );
+		if ( ! $row ) {
+			gasf_mec_log( 'CRM: thread insert failed for conversation ' . substr( $conversation_id, 0, 24 ) . '… — ' . $wpdb->last_error );
+			return array( 'id' => 0, 'reopened' => false, 'created' => false );
+		}
 	}
 
 	$data = array( 'last_message_at' => $sent_at );

@@ -271,6 +271,13 @@ add_action( 'rest_api_init', function () {
 			if ( ! $row ) {
 				return new WP_Error( 'gasf_crm_404', 'That file no longer exists.', array( 'status' => 404 ) );
 			}
+			// One-off uploads belong to their uploader. Ids are guessable
+			// sequential integers, so without this any approved account could
+			// delete another volunteer's pending upload out from under them.
+			if ( ! gasf_crm_attach_can_use( $row, get_current_user_id() ) ) {
+				return new WP_Error( 'gasf_crm_forbidden',
+					'That file belongs to somebody else.', array( 'status' => 403 ) );
+			}
 			// A library document is shared property. Anyone may drop their own
 			// upload, but removing one somebody else put there is an admin act.
 			if ( ! empty( $row['in_library'] )
@@ -458,9 +465,17 @@ function gasf_crm_rest_reply( WP_REST_Request $req ) {
 	// Attachments are referenced by id, never uploaded as part of the send: the
 	// file already sits on the server from the moment it was picked, so a slow
 	// or dropped connection at send time cannot lose it.
+	//
+	// Every id is permission-checked, not merely resolved — ids are guessable
+	// sequential integers. An id that fails the check behaves exactly like one
+	// that no longer exists, so the response does not reveal whether a guessed
+	// id was real.
+	$requested   = array_values( array_filter( array_map( 'intval', (array) $req->get_param( 'attachments' ) ) ) );
 	$attachments = array();
 	$names       = array();
-	foreach ( array_map( 'intval', (array) $req->get_param( 'attachments' ) ) as $aid ) {
+	foreach ( $requested as $aid ) {
+		$row = gasf_crm_attach_get( $aid );
+		if ( ! $row || ! gasf_crm_attach_can_use( $row, $user_id ) ) { continue; }
 		$a = gasf_crm_attach_for_graph( $aid );
 		if ( $a ) {
 			$attachments[] = $a;
@@ -468,11 +483,11 @@ function gasf_crm_rest_reply( WP_REST_Request $req ) {
 		}
 	}
 
-	// A file that vanished between picking and sending is worth stopping for.
-	// Silently sending a reply that says "the form is attached" without the form
-	// is worse than making somebody press the button again.
-	$asked = count( array_filter( array_map( 'intval', (array) $req->get_param( 'attachments' ) ) ) );
-	if ( $asked !== count( $attachments ) ) {
+	// A file that vanished (or was never yours) between picking and sending is
+	// worth stopping for. Silently sending a reply that says "the form is
+	// attached" without the form is worse than making somebody press the
+	// button again.
+	if ( count( $requested ) !== count( $attachments ) ) {
 		return new WP_Error( 'gasf_crm_attachlost',
 			'One of the attachments could no longer be found. Attach it again and resend.',
 			array( 'status' => 409 ) );
@@ -528,9 +543,17 @@ function gasf_crm_attachment_list( $graph_message_id ) {
 			'id'   => (string) ( $a['id'] ?? '' ),
 			'name' => (string) ( $a['name'] ?? 'attachment' ),
 			'size' => (int) ( $a['size'] ?? 0 ),
+			// _wpnonce is what makes this link WORK at all. It renders as a plain
+			// <a href>, and a bare navigation carries no X-WP-Nonce header — and
+			// WordPress REST cookie auth without a nonce demotes the request to
+			// anonymous, so every paperclip click was answered with a 401. The
+			// query-param form is REST cookie-auth's sanctioned equivalent. The
+			// nonce is minted fresh each time the thread is opened and is
+			// useless without the session cookie it is bound to.
 			'url'  => add_query_arg( array(
-				'msg' => rawurlencode( $graph_message_id ),
-				'att' => rawurlencode( (string) ( $a['id'] ?? '' ) ),
+				'msg'      => rawurlencode( $graph_message_id ),
+				'att'      => rawurlencode( (string) ( $a['id'] ?? '' ) ),
+				'_wpnonce' => wp_create_nonce( 'wp_rest' ),
 			), rest_url( 'gasf/v1/crm/attachment' ) ),
 		);
 	}

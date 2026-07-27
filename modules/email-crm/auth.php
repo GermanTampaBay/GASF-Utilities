@@ -199,7 +199,12 @@ function gasf_crm_auth_callback( $provider ) {
 	$user_id = gasf_crm_find_or_create_user( $provider, $claims );
 	if ( is_wp_error( $user_id ) ) { gasf_crm_auth_fail( $user_id->get_error_message() ); }
 
-	wp_set_auth_cookie( $user_id, false );
+	// Secure flag passed explicitly, derived from the site URL. WordPress
+	// otherwise decides from is_ssl(), which on this proxy-terminated host is
+	// only true because of a hand-edited X-Forwarded-Proto line in wp-config —
+	// a file outside this repo. The cookie that IS the session guarding the
+	// club's mailbox should not depend on that line surviving.
+	wp_set_auth_cookie( $user_id, false, ( 0 === strpos( home_url(), 'https://' ) ) );
 	wp_set_current_user( $user_id );
 	wp_safe_redirect( home_url( '/email' ) );
 	exit;

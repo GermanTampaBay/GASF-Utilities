@@ -77,23 +77,57 @@ function gasf_crm_flush_notifications( $force = false ) {
 		if ( $t && 'new' === $t['status'] ) { $threads[] = $t; }
 	}
 
-	// Clear regardless: threads filtered out above are settled, and leaving them
-	// queued would make them reappear in every future summary.
-	update_option( 'gasf_crm_notify_queue', array(), false );
-	update_option( 'gasf_crm_notify_last', time(), false );
+	// Removes exactly the snapshot we processed, rather than blanking the
+	// option — an admin force-flush is not lock-guarded, so a thread queued by
+	// a concurrently running sync must not be swept away unannounced.
+	$dequeue = function () use ( $queue ) {
+		$now_q = array_map( 'intval', (array) get_option( 'gasf_crm_notify_queue', array() ) );
+		update_option( 'gasf_crm_notify_queue', array_values( array_diff( $now_q, $queue ) ), false );
+	};
 
-	if ( ! $threads ) { return 0; }
+	// Nothing left to announce: the settled items still leave the queue, or
+	// they would reappear in every future summary.
+	if ( ! $threads ) {
+		$dequeue();
+		return 0;
+	}
 
 	$recipients = gasf_crm_notify_recipients();
-	if ( ! $recipients ) { return 0; }
+	if ( ! $recipients ) {
+		// Nobody to tell. Clear rather than hold — a batch held until a
+		// recipient is finally configured would open with week-old "new mail".
+		$dequeue();
+		return 0;
+	}
 
 	list( $subject, $body ) = gasf_crm_notify_digest( $threads );
 
+	$delivered = 0;
 	foreach ( $recipients as $to ) {
-		gasf_crm_notify_send( $to, $subject, $body );
+		if ( gasf_crm_notify_send( $to, $subject, $body ) ) { $delivered++; }
 	}
 
-	gasf_mec_log( sprintf( 'CRM: notified %d recipient(s) about %d thread(s).', count( $recipients ), count( $threads ) ) );
+	// The queue is cleared only on confirmed delivery to at least one
+	// recipient. It used to be cleared BEFORE sending, which meant one failed
+	// delivery pass discarded the batch permanently — mail arrived, nobody was
+	// ever told, and nothing recorded that they weren't. Total failure now
+	// keeps the batch queued and leaves the interval stamp alone, so the next
+	// hourly sync retries; the hourly cadence is the backoff. Partial success
+	// counts as delivered — retrying for the failed recipients would duplicate
+	// for the ones who got it, and duplicates are how notifications end up
+	// ignored.
+	if ( 0 === $delivered ) {
+		gasf_mec_log( sprintf(
+			'CRM: notification delivery failed for all %d recipient(s); batch of %d thread(s) held for retry.',
+			count( $recipients ), count( $threads )
+		) );
+		return 0;
+	}
+
+	$dequeue();
+	update_option( 'gasf_crm_notify_last', time(), false );
+
+	gasf_mec_log( sprintf( 'CRM: notified %d of %d recipient(s) about %d thread(s).', $delivered, count( $recipients ), count( $threads ) ) );
 
 	return count( $threads );
 }
