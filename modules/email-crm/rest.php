@@ -230,6 +230,60 @@ add_action( 'rest_api_init', function () {
 		'permission_callback' => $guard,
 		'callback'            => 'gasf_crm_rest_attachment',
 	) );
+
+	// Outbound attachments: upload one, or list the shared library.
+	register_rest_route( 'gasf/v1', '/crm/attachments', array(
+		array(
+			'methods'             => 'POST',
+			'permission_callback' => $guard,
+			'callback'            => function ( WP_REST_Request $req ) {
+				$files = $req->get_file_params();
+				if ( empty( $files['file'] ) ) {
+					return new WP_Error( 'gasf_crm_nofile', 'No file was received.', array( 'status' => 400 ) );
+				}
+				$row = gasf_crm_attach_store(
+					$files['file'],
+					(bool) $req->get_param( 'keep' ),
+					(string) $req->get_param( 'label' )
+				);
+				if ( is_wp_error( $row ) ) {
+					// 400 rather than 500: every rejection here is something the
+					// person can act on — wrong type, too big, empty file.
+					return new WP_Error( 'gasf_crm_upload', $row->get_error_message(), array( 'status' => 400 ) );
+				}
+				return gasf_crm_attach_public( $row );
+			},
+		),
+		array(
+			'methods'             => 'GET',
+			'permission_callback' => $guard,
+			'callback'            => function () {
+				return array_values( array_filter( array_map( 'gasf_crm_attach_public', gasf_crm_attach_library() ) ) );
+			},
+		),
+	) );
+
+	register_rest_route( 'gasf/v1', '/crm/attachments/(?P<id>\d+)', array(
+		'methods'             => 'DELETE',
+		'permission_callback' => $guard,
+		'callback'            => function ( WP_REST_Request $req ) {
+			$row = gasf_crm_attach_get( (int) $req['id'] );
+			if ( ! $row ) {
+				return new WP_Error( 'gasf_crm_404', 'That file no longer exists.', array( 'status' => 404 ) );
+			}
+			// A library document is shared property. Anyone may drop their own
+			// upload, but removing one somebody else put there is an admin act.
+			if ( ! empty( $row['in_library'] )
+				&& ! current_user_can( 'manage_options' )
+				&& (int) $row['uploaded_by'] !== get_current_user_id() ) {
+				return new WP_Error( 'gasf_crm_forbidden',
+					'Only an administrator can remove a shared document that somebody else added.',
+					array( 'status' => 403 ) );
+			}
+			gasf_crm_attach_delete( (int) $req['id'] );
+			return array( 'ok' => true );
+		},
+	) );
 } );
 
 /**
@@ -401,7 +455,37 @@ function gasf_crm_rest_reply( WP_REST_Request $req ) {
 	$html = $clean
 		. '<p>--<br>' . esc_html( $name ) . '<br>' . esc_html( $cfg['signature_org'] ) . '</p>';
 
-	$sent = gasf_crm_graph_reply( $target['graph_message_id'], $html );
+	// Attachments are referenced by id, never uploaded as part of the send: the
+	// file already sits on the server from the moment it was picked, so a slow
+	// or dropped connection at send time cannot lose it.
+	$attachments = array();
+	$names       = array();
+	foreach ( array_map( 'intval', (array) $req->get_param( 'attachments' ) ) as $aid ) {
+		$a = gasf_crm_attach_for_graph( $aid );
+		if ( $a ) {
+			$attachments[] = $a;
+			$names[]       = $a['name'];
+		}
+	}
+
+	// A file that vanished between picking and sending is worth stopping for.
+	// Silently sending a reply that says "the form is attached" without the form
+	// is worse than making somebody press the button again.
+	$asked = count( array_filter( array_map( 'intval', (array) $req->get_param( 'attachments' ) ) ) );
+	if ( $asked !== count( $attachments ) ) {
+		return new WP_Error( 'gasf_crm_attachlost',
+			'One of the attachments could no longer be found. Attach it again and resend.',
+			array( 'status' => 409 ) );
+	}
+
+	if ( $names ) {
+		$html .= '<p><em>Attached: ' . esc_html( implode( ', ', $names ) ) . '</em></p>';
+	}
+
+	$sent = $attachments
+		? gasf_crm_graph_reply_with_attachments( $target['graph_message_id'], $html, $attachments )
+		: gasf_crm_graph_reply( $target['graph_message_id'], $html );
+
 	if ( is_wp_error( $sent ) ) {
 		gasf_mec_log( 'CRM reply failed (thread ' . $thread_id . '): ' . $sent->get_error_message() );
 		return new WP_Error( 'gasf_crm_send', $sent->get_error_message(), array( 'status' => 502 ) );

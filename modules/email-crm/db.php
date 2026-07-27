@@ -74,6 +74,24 @@ function gasf_crm_install_tables() {
 		KEY last_seen (last_seen)
 	) {$charset};" );
 
+	// Outbound attachments. stored_name is what sits on disk (random), while
+	// original_name is what the recipient sees — so nothing a volunteer types
+	// can reach a filesystem path, and they still receive a sensibly named file.
+	dbDelta( "CREATE TABLE " . gasf_crm_table( 'attachments' ) . " (
+		id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+		stored_name VARCHAR(191) NOT NULL,
+		original_name VARCHAR(191) NOT NULL,
+		mime VARCHAR(100) NULL,
+		size BIGINT UNSIGNED NOT NULL DEFAULT 0,
+		in_library TINYINT(1) NOT NULL DEFAULT 0,
+		label VARCHAR(191) NULL,
+		uploaded_by BIGINT UNSIGNED NOT NULL DEFAULT 0,
+		uploaded_at DATETIME NOT NULL,
+		PRIMARY KEY  (id),
+		UNIQUE KEY stored_name (stored_name),
+		KEY library (in_library, uploaded_at)
+	) {$charset};" );
+
 	dbDelta( "CREATE TABLE {$messages} (
 		id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
 		thread_id BIGINT UNSIGNED NOT NULL,

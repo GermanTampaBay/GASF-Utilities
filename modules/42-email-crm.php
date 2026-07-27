@@ -33,10 +33,19 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 	// upgrade check below runs dbDelta and flushes rules on any change. This
 	// plugin runs as an mu-plugin on the main site, where activation hooks
 	// never fire, so a version-compare on every load is the only reliable hook.
-	define( 'GASF_CRM_SCHEMA', '1.2.0' );
+	define( 'GASF_CRM_SCHEMA', '1.3.0' );
+
+	/**
+	 * How far ahead to start warning that the Graph client secret is running
+	 * out. Two months is enough to notice, find the time, and still have a
+	 * cushion — and short enough that the warning is not background noise for a
+	 * year and a half.
+	 */
+	define( 'GASF_CRM_SECRET_WARN_DAYS', 61 );
 
 	require_once GASF_CRM_DIR . '/db.php';
 	require_once GASF_CRM_DIR . '/graph.php';
+	require_once GASF_CRM_DIR . '/attachments.php';
 	require_once GASF_CRM_DIR . '/sync.php';
 	require_once GASF_CRM_DIR . '/auth.php';
 	require_once GASF_CRM_DIR . '/ai.php';
@@ -64,8 +73,18 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 			'ms_id'          => '',
 			'ms_secret'      => '',
 			'signature_org'  => 'German-American Society Friendship of Pinellas County',
+			// One-click forward destination. Configurable rather than hardcoded
+			// so a change of address is a settings edit, not a deploy. Blank
+			// hides the button entirely.
+			'board_address'  => 'board@germantampabay.com',
 			'notify_channel' => 'email',
 			'notify_extra'   => '',
+			// Y-m-d the Graph client secret stops working. Entra will not tell us
+			// this after the fact, so it is recorded by hand at creation time.
+			// Empty means nobody wrote it down, which the admin tab nags about —
+			// an unknown expiry is only marginally better than a passed one,
+			// because both end in mail silently ceasing to arrive.
+			'secret_expiry'  => '',
 			'last_sync'      => 0,
 		) );
 	}

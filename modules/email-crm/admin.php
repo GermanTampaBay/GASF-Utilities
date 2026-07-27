@@ -35,6 +35,8 @@ function gasf_crm_admin_tab() {
 			$cfg['google_id']      = sanitize_text_field( wp_unslash( $_POST['google_id'] ?? '' ) );
 			$cfg['ms_id']          = sanitize_text_field( wp_unslash( $_POST['ms_id'] ?? '' ) );
 			$cfg['signature_org']  = sanitize_text_field( wp_unslash( $_POST['signature_org'] ?? '' ) );
+			$cfg['secret_expiry']  = sanitize_text_field( wp_unslash( $_POST['secret_expiry'] ?? '' ) );
+			$cfg['board_address']  = sanitize_email( wp_unslash( $_POST['board_address'] ?? '' ) );
 			$cfg['notify_channel'] = sanitize_key( wp_unslash( $_POST['notify_channel'] ?? 'email' ) );
 			$cfg['notify_extra']   = sanitize_text_field( wp_unslash( $_POST['notify_extra'] ?? '' ) );
 
@@ -90,6 +92,20 @@ function gasf_crm_admin_tab() {
 			$notice = '<div class="notice notice-success"><p>' . esc_html( 'Corpus rebuilt — ' . number_format( $n ) . ' characters of site content.' ) . '</p></div>';
 		}
 
+		if ( 'attach_add' === $act ) {
+			$row = isset( $_FILES['file'] )
+				? gasf_crm_attach_store( $_FILES['file'], true, (string) wp_unslash( $_POST['label'] ?? '' ) )
+				: new WP_Error( 'gasf_crm_nofile', 'No file was received.' );
+			$notice = is_wp_error( $row )
+				? '<div class="notice notice-error"><p>' . esc_html( $row->get_error_message() ) . '</p></div>'
+				: '<div class="notice notice-success"><p>' . esc_html( $row['original_name'] . ' added to the library.' ) . '</p></div>';
+		}
+
+		if ( 'attach_delete' === $act ) {
+			gasf_crm_attach_delete( (int) ( $_POST['attach_id'] ?? 0 ) );
+			$notice = '<div class="notice notice-success"><p>Removed.</p></div>';
+		}
+
 		if ( 'user' === $act ) {
 			$uid = (int) ( $_POST['user_id'] ?? 0 );
 			$st  = sanitize_key( wp_unslash( $_POST['user_status'] ?? '' ) );
@@ -101,6 +117,30 @@ function gasf_crm_admin_tab() {
 
 	$cfg = gasf_crm_cfg();
 	echo $notice; // phpcs:ignore WordPress.Security.EscapeOutput
+
+	$secret = gasf_crm_secret_status();
+	if ( in_array( $secret['state'], array( 'warn', 'expired', 'unknown' ), true ) ) {
+		$class = ( 'unknown' === $secret['state'] ) ? 'notice-warning' : 'notice-error';
+		echo '<div class="notice ' . esc_attr( $class ) . '" style="padding:12px 14px"><h3 style="margin-top:0">';
+
+		if ( 'expired' === $secret['state'] ) {
+			echo 'The Graph client secret expired ' . esc_html( human_time_diff( strtotime( $secret['date'] ) ) ) . ' ago';
+		} elseif ( 'warn' === $secret['state'] ) {
+			echo 'The Graph client secret expires in ' . (int) $secret['days'] . ' days (' . esc_html( $secret['date'] ) . ')';
+		} else {
+			echo 'Nobody has recorded when the Graph client secret expires';
+		}
+		echo '</h3>';
+
+		echo '<p>' . ( 'unknown' === $secret['state']
+			? 'Set the expiry date below. Client secrets last 24 months and Entra gives no warning: when this one lapses, mail simply stops arriving and the inbox looks like a quiet week.'
+			: 'When it lapses, mail stops arriving and the inbox looks like a quiet week. Renew it:' ) . '</p>';
+
+		if ( 'unknown' !== $secret['state'] ) {
+			echo gasf_crm_secret_renewal_steps(); // phpcs:ignore WordPress.Security.EscapeOutput
+		}
+		echo '</div>';
+	}
 
 	/**
 	 * Secret status indicator.
@@ -147,6 +187,9 @@ function gasf_crm_admin_tab() {
 					<label style="margin-left:12px"><input type="checkbox" name="client_secret_clear" value="1"> clear</label>
 					<p class="description">Certificates &amp; secrets &rarr; the <strong>Value</strong> column, <em>not</em> Secret ID. Roughly 40 characters and always contains a <code>~</code>; a 36-character GUID is the wrong column. The Value is only readable at the moment you create the secret &mdash; if you have navigated away, make a new one.</p>
 					<p class="description">Application permissions <code>Mail.ReadWrite</code> + <code>Mail.Send</code>, admin-consented, and restricted to this one mailbox by an Exchange Application Access Policy.</p></td></tr>
+			<tr><th scope="row">Secret expires on</th>
+				<td><input type="date" name="secret_expiry" value="<?php echo esc_attr( $cfg['secret_expiry'] ); ?>">
+					<p class="description">The date the client secret above stops working &mdash; 24 months after you created it. Entra never warns you and will not show you this date afterwards, so it is recorded here by hand. A warning appears on every admin page from <?php echo (int) GASF_CRM_SECRET_WARN_DAYS; ?> days out. If this is blank, nothing will warn you and mail will simply stop arriving one day with no explanation.</p></td></tr>
 		</table>
 
 		<h3>Sign-in</h3>
@@ -175,6 +218,9 @@ function gasf_crm_admin_tab() {
 			<tr><th scope="row">Signature organisation</th>
 				<td><input type="text" class="large-text" name="signature_org" value="<?php echo esc_attr( $cfg['signature_org'] ); ?>">
 					<p class="description">Appended under the replying volunteer's name. Replies always send as the shared mailbox.</p></td></tr>
+			<tr><th scope="row">Board address</th>
+				<td><input type="email" class="regular-text" name="board_address" value="<?php echo esc_attr( $cfg['board_address'] ); ?>">
+					<p class="description">Destination for the one-click <em>Forward to Board</em> button on <code>/email</code>. It takes two deliberate clicks to fire. Leave blank to remove the button.</p></td></tr>
 			<tr><th scope="row">Notify via</th>
 				<td><select name="notify_channel">
 					<?php foreach ( array( 'email' => 'Email', 'all' => 'Every registered channel' ) as $k => $l ) : ?>
@@ -230,6 +276,38 @@ function gasf_crm_admin_tab() {
 			echo $r ? esc_html( implode( ', ', $r ) ) : '<strong>nobody configured</strong>';
 		?>.
 	</p>
+
+	<h3>Attachment library</h3>
+	<p class="description">Documents volunteers can attach to a reply without hunting for the file &mdash; the membership form being the obvious one. Anything uploaded from <code>/email</code> with &ldquo;keep this for future use&rdquo; ticked also lands here. Limit <?php echo esc_html( size_format( GASF_CRM_ATTACH_MAX ) ); ?> per file.</p>
+
+	<form method="post" enctype="multipart/form-data" style="margin:10px 0">
+		<?php wp_nonce_field( 'gasf_crm' ); ?>
+		<input type="hidden" name="gasf_crm_action" value="attach_add">
+		<input type="file" name="file" required>
+		<input type="text" name="label" class="regular-text" placeholder="Optional label, e.g. 2026 Membership Form">
+		<button class="button">Add to library</button>
+	</form>
+
+	<?php
+	$library = gasf_crm_attach_library();
+	if ( ! $library ) {
+		echo '<p class="description">Empty.</p>';
+	} else {
+		echo '<table class="widefat striped"><thead><tr><th>File</th><th>Label</th><th>Size</th><th>Added</th><th></th></tr></thead><tbody>';
+		foreach ( $library as $a ) {
+			echo '<tr><td><code>' . esc_html( $a['original_name'] ) . '</code></td>';
+			echo '<td>' . esc_html( (string) $a['label'] ) . '</td>';
+			echo '<td>' . esc_html( size_format( (int) $a['size'] ) ) . '</td>';
+			echo '<td>' . esc_html( human_time_diff( strtotime( $a['uploaded_at'] . ' UTC' ) ) . ' ago' ) . '</td><td>';
+			echo '<form method="post" onsubmit="return confirm(\'Remove this document from the library?\')" style="display:inline">';
+			wp_nonce_field( 'gasf_crm' );
+			echo '<input type="hidden" name="gasf_crm_action" value="attach_delete">';
+			echo '<input type="hidden" name="attach_id" value="' . (int) $a['id'] . '">';
+			echo '<button class="button button-small">Remove</button></form></td></tr>';
+		}
+		echo '</tbody></table>';
+	}
+	?>
 
 	<h3>Address book</h3>
 	<?php
@@ -347,3 +425,32 @@ function gasf_crm_render_diagnostics( array $d ) {
 
 	echo '</tbody></table>';
 }
+
+/**
+ * Site-wide warning that the client secret is running out.
+ *
+ * On every admin page, not just this tab. Someone who never opens the Email CRM
+ * screen is precisely the person who will not find out until the mail has been
+ * silently missing for a fortnight — and by then the club has ignored a stack
+ * of enquiries without knowing it.
+ */
+add_action( 'admin_notices', function () {
+	if ( ! current_user_can( 'manage_options' ) ) { return; }
+
+	$s = gasf_crm_secret_status();
+	if ( ! in_array( $s['state'], array( 'warn', 'expired' ), true ) ) { return; }
+
+	// Suppressed on the CRM tab itself, where the full box with renewal steps is
+	// already on screen and a second copy would only be noise.
+	// phpcs:ignore WordPress.Security.NonceVerification -- read-only page check
+	if ( isset( $_GET['tab'] ) && 'emailcrm' === $_GET['tab'] ) { return; }
+
+	$what = ( 'expired' === $s['state'] )
+		? 'the Microsoft client secret has expired'
+		: sprintf( 'the Microsoft client secret expires in %d days (%s)', (int) $s['days'], $s['date'] );
+
+	echo '<div class="notice notice-error"><p><strong>Email CRM:</strong> '
+		. esc_html( $what ) . '. <a href="' . esc_url( admin_url( 'admin.php?page=gasf-utilities&tab=emailcrm' ) ) . '">Renew it</a> '
+		. '&mdash; once it lapses, mail to ' . esc_html( gasf_crm_cfg()['mailbox'] )
+		. ' silently stops reaching the club inbox.</p></div>';
+} );
