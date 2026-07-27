@@ -157,6 +157,12 @@ textarea{width:100%;min-height:150px;padding:10px;border:1px solid #8c8f94;borde
 .fwd label{display:block;font-size:13px;font-weight:600;margin-bottom:12px}
 .fwd input[type=text]{width:100%;max-width:440px;padding:8px;border:1px solid #8c8f94;border-radius:4px;font:inherit;font-weight:400;margin-top:3px}
 .fwd textarea{min-height:70px;font-weight:400;margin-top:3px}
+.chip{display:inline-block;background:#f0f6fc;border:1px solid #c5d9ed;border-radius:14px;padding:3px 6px 3px 11px;font-size:12px;margin:4px 6px 0 0}
+.chip button{border:0;background:none;cursor:pointer;font:inherit;font-size:14px;color:#b32d2e;padding:0 5px;line-height:1}
+.lib{margin-top:14px;border-top:1px solid #dcdcde;padding-top:12px}
+.lib h4{margin:0 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:#787c82}
+.lib .row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:5px 0;font-size:13px;border-bottom:1px solid #f0f0f1}
+.lib .row:last-child{border-bottom:0}
 .badge{display:inline-block;font-size:11px;padding:1px 7px;border-radius:9px;background:#f0f0f1;color:#50575e;vertical-align:middle}
 .badge.ig{background:#fcf0f1;color:#b32d2e}
 .badge.an{background:#edf7ed;color:#2c7a3f}
@@ -234,6 +240,10 @@ function gasf_crm_render_help() {
 		<li><strong>Forward</strong> sends the message on to somebody else — the treasurer, the hall booking person, whoever it really belongs to. You can add a note at the top, and as you type an address it suggests people we have written to before.
 			<br>Once you forward something it moves to <strong>Answered</strong> and leaves your list. That is on purpose: it is now their job, and they will write back to the person themselves. You are not waiting on anything.
 			<br>Changed your mind, or they need something from us after all? Find it in Answered, open it, and press <em>Put back in Open</em>.</li>
+		<li><strong>Attach</strong> adds a file to your reply, from either place:
+			<br>&mdash; <strong>Your own computer.</strong> Pick the file and press <em>Attach this file</em>. If it is something we send often, tick the box first and it is saved to the shared library so nobody has to go looking for it again.
+			<br>&mdash; <strong>The shared library.</strong> Documents we send regularly &mdash; the membership form, for instance &mdash; are already there. Press <em>Attach</em> next to the one you want.
+			<br>Attached files show as small tags above the buttons; press the &times; on one to take it off again. Up to 3 MB per file.</li>
 		<li><strong>Ignore</strong> is for spam, junk and mailing lists. Nothing is sent and the sender hears nothing back.</li>
 		<li><strong>Mark answered</strong> is for when you handled it some other way — you rang them, or caught them at the club. Nothing is sent, it just clears it off the list.</li>
 	</ul>
@@ -373,6 +383,7 @@ function gasf_crm_render_inbox() {
 
 	function open(id){
 		current = id;
+		attached = []; // attachments belong to the reply being written, not to the app
 		pane.innerHTML = '<p class="muted">Loading…</p>';
 		api('/threads/' + id).then(function(t){
 			var badge = t.status === 'ignored' ? ' <span class="badge ig">Ignored</span>'
@@ -422,12 +433,24 @@ function gasf_crm_render_inbox() {
 						'<button type="button" data-cmd="removeFormat" title="Clear formatting">Clear</button>' +
 					'</div>' +
 					'<div class="edbody" id="reply" contenteditable="true" data-ph="Write your reply…"></div></div>' +
+					'<div id="atrow"></div>' +
 					'<div class="actions">' +
 					'<button class="btn" id="send">Send reply</button>' +
 					'<button class="btn sec" id="draft">Draft with AI</button>' +
+					'<button class="btn sec" id="attopen">Attach…</button>' +
 					'<button class="btn sec" id="fwdopen">Forward…</button>' +
 					'<button class="btn sec" id="done">Mark answered</button>' +
 					'<button class="btn warn" id="ignore">Ignore (spam)</button>' +
+					'</div>' +
+					'<div class="fwd" id="att" style="display:none">' +
+						'<label>Attach a file from your computer<input type="file" id="atfile"></label>' +
+						'<label style="font-weight:400"><input type="checkbox" id="atkeep"> ' +
+							'Also keep this in the shared library, so anyone can attach it next time</label>' +
+						'<div class="actions">' +
+						'<button class="btn" id="atupload">Attach this file</button>' +
+						'<button class="btn sec" id="atclose">Close</button></div>' +
+						'<div class="lib" id="atlib"><h4>Shared library</h4>' +
+							'<p class="muted">Loading…</p></div>' +
 					'</div>' +
 					'<div class="fwd" id="fwd" style="display:none">' +
 						'<label>Send this on to<input type="text" id="fwdto" list="contacts" ' +
@@ -534,6 +557,84 @@ function gasf_crm_render_inbox() {
 		}).join('');
 	}
 
+	/* ---- outbound attachments ------------------------------------------- */
+
+	// Files are uploaded the moment they are picked, not held in the browser
+	// until send. The reply then references ids, so a dropped connection at send
+	// time costs you the click rather than the file.
+	var attached = [];
+
+	function renderChips(){
+		var el = document.getElementById('atrow');
+		if(!el) return;
+		if(!attached.length){ el.innerHTML = ''; return; }
+		el.innerHTML = attached.map(function(a, i){
+			return '<span class="chip">' + esc(a.name) + ' <span class="muted">' + esc(a.human) + '</span>' +
+				'<button type="button" data-i="' + i + '" title="Remove">&times;</button></span>';
+		}).join('');
+		Array.prototype.forEach.call(el.querySelectorAll('.chip button'), function(b){
+			b.onclick = function(){
+				attached.splice(parseInt(b.getAttribute('data-i'), 10), 1);
+				renderChips();
+			};
+		});
+	}
+
+	function addAttachment(a){
+		for(var i = 0; i < attached.length; i++){ if(attached[i].id === a.id){ return; } }
+		attached.push(a);
+		renderChips();
+	}
+
+	// Deliberately not routed through api(): that helper forces a JSON content
+	// type, and multipart needs the browser to set its own boundary.
+	function uploadFile(file, keep){
+		var fd = new FormData();
+		fd.append('file', file);
+		if(keep){ fd.append('keep', '1'); }
+		return fetch(API + '/attachments', {
+			method: 'POST',
+			headers: {'X-WP-Nonce': NONCE},
+			credentials: 'same-origin',
+			body: fd
+		}).then(function(r){
+			return r.json().then(function(b){
+				if(!r.ok){ throw new Error((b && b.message) || ('Upload failed (' + r.status + ')')); }
+				return b;
+			});
+		});
+	}
+
+	function loadLibrary(){
+		var el = document.getElementById('atlib');
+		if(!el) return;
+		api('/attachments').then(function(rows){
+			var html = '<h4>Shared library</h4>';
+			if(!rows.length){
+				html += '<p class="muted">Nothing saved yet. Tick the box above when you attach something and it will appear here for everyone.</p>';
+			} else {
+				html += rows.map(function(a){
+					return '<div class="row"><span>' + esc(a.label || a.name) +
+						' <span class="muted">' + esc(a.human) + '</span></span>' +
+						'<button type="button" class="btn sec libpick" data-id="' + a.id +
+						'" data-name="' + esc(a.name) + '" data-human="' + esc(a.human) + '">Attach</button></div>';
+				}).join('');
+			}
+			el.innerHTML = html;
+			Array.prototype.forEach.call(el.querySelectorAll('.libpick'), function(b){
+				b.onclick = function(){
+					addAttachment({
+						id:    parseInt(b.getAttribute('data-id'), 10),
+						name:  b.getAttribute('data-name'),
+						human: b.getAttribute('data-human')
+					});
+				};
+			});
+		}).catch(function(e){
+			el.innerHTML = '<h4>Shared library</h4><div class="note err">' + esc(e.message) + '</div>';
+		});
+	}
+
 	function wire(id, tstatus){
 		var out = document.getElementById('msg');
 		var ta = document.getElementById('reply');
@@ -543,7 +644,9 @@ function gasf_crm_render_inbox() {
 		var restore = document.getElementById('restore');
 		var fwdopen = document.getElementById('fwdopen'), fwd = document.getElementById('fwd');
 		var fwdsend = document.getElementById('fwdsend'), fwdcancel = document.getElementById('fwdcancel');
-		var all = [send, draft, done, ignore, restore, fwdopen, fwdsend].filter(Boolean);
+		var attopen = document.getElementById('attopen'), att = document.getElementById('att');
+		var atupload = document.getElementById('atupload'), atclose = document.getElementById('atclose');
+		var all = [send, draft, done, ignore, restore, fwdopen, fwdsend, attopen, atupload].filter(Boolean);
 
 		function busy(b, el){ all.forEach(function(x){ x.disabled = b; }); if(el){ el.classList.toggle('spin', b); } }
 		function fail(e, el){ out.innerHTML = '<div class="note err">' + esc(e.message) + '</div>'; busy(false, el); }
@@ -566,7 +669,10 @@ function gasf_crm_render_inbox() {
 			send.onclick = function(){
 				if(!edText(ta)){ out.innerHTML = '<div class="note err">Write something first.</div>'; return; }
 				busy(true, send);
-				api('/threads/' + id + '/reply', {method:'POST', body: JSON.stringify({body: ta.innerHTML})})
+				api('/threads/' + id + '/reply', {method:'POST', body: JSON.stringify({
+					body: ta.innerHTML,
+					attachments: attached.map(function(a){ return a.id; })
+				})})
 					.then(function(){ open(id); })
 					.catch(function(e){ fail(e, send); });
 			};
@@ -597,6 +703,32 @@ function gasf_crm_render_inbox() {
 				api('/threads/' + id + '/restore', {method:'POST'})
 					.then(function(){ closed('Put back in the Open list.'); })
 					.catch(function(e){ fail(e, restore); });
+			};
+		}
+
+		if(attopen){
+			attopen.onclick = function(){
+				att.style.display = att.style.display === 'none' ? 'block' : 'none';
+				if(att.style.display === 'block'){ loadLibrary(); }
+			};
+			atclose.onclick = function(){ att.style.display = 'none'; };
+			atupload.onclick = function(){
+				var f = document.getElementById('atfile');
+				if(!f.files || !f.files.length){
+					out.innerHTML = '<div class="note err">Choose a file first.</div>';
+					return;
+				}
+				var keep = document.getElementById('atkeep').checked;
+				busy(true, atupload);
+				uploadFile(f.files[0], keep).then(function(a){
+					addAttachment(a);
+					f.value = '';
+					document.getElementById('atkeep').checked = false;
+					out.innerHTML = '<div class="note ok">' + esc(a.name) +
+						(keep ? ' attached, and saved to the shared library.' : ' attached.') + '</div>';
+					if(keep){ loadLibrary(); }
+					busy(false, atupload);
+				}).catch(function(e){ fail(e, atupload); });
 			};
 		}
 

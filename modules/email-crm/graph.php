@@ -119,6 +119,52 @@ function gasf_crm_mailbox_path() {
 	return '/users/' . rawurlencode( $c['mailbox'] );
 }
 
+/**
+ * Where the Graph client secret stands.
+ *
+ * Returns state = unknown | ok | warn | expired, plus days remaining.
+ *
+ * This exists because an expired client secret is the most likely way this
+ * whole thing dies, and it dies silently: mail simply stops arriving, which
+ * looks exactly like a quiet fortnight. Entra sends no warning and offers no
+ * way to read the date back afterwards, so it is recorded by hand and checked
+ * from here.
+ */
+function gasf_crm_secret_status() {
+	$cfg  = gasf_crm_cfg();
+	$date = trim( (string) $cfg['secret_expiry'] );
+
+	if ( ! gasf_crm_ready() ) {
+		return array( 'state' => 'unconfigured', 'days' => null, 'date' => '' );
+	}
+	if ( '' === $date || ! preg_match( '/^\d{4}-\d{2}-\d{2}$/', $date ) ) {
+		return array( 'state' => 'unknown', 'days' => null, 'date' => '' );
+	}
+
+	$expires = strtotime( $date . ' 23:59:59 UTC' );
+	$days    = (int) floor( ( $expires - time() ) / DAY_IN_SECONDS );
+
+	if ( $days < 0 ) { $state = 'expired'; }
+	elseif ( $days <= GASF_CRM_SECRET_WARN_DAYS ) { $state = 'warn'; }
+	else { $state = 'ok'; }
+
+	return array( 'state' => $state, 'days' => $days, 'date' => $date );
+}
+
+/** Step-by-step renewal, shown wherever the secret is about to lapse. */
+function gasf_crm_secret_renewal_steps() {
+	$links = gasf_crm_entra_links();
+	return '<ol style="margin:6px 0 0 18px">'
+		. '<li>Open <a href="' . esc_url( $links['secrets'] ) . '" target="_blank" rel="noopener">Certificates &amp; secrets</a> on the <strong>GASF Email CRM — Graph</strong> app registration.</li>'
+		. '<li><strong>New client secret</strong> &rarr; description &ldquo;GASF Email CRM&rdquo; &rarr; expiry <strong>24 months</strong> &rarr; Add.</li>'
+		. '<li><strong>Copy the Value column immediately</strong>, using the copy icon rather than selecting the text. Not the Secret ID — that is a GUID and will not work. The Value is only readable on that one page view; navigate away and it is gone for good and you must create another.</li>'
+		. '<li>Paste it into <em>Client secret Value</em> below and Save.</li>'
+		. '<li>Press <em>Check Graph status</em>. All three rows should come back green.</li>'
+		. '<li>Set the expiry date field below to 24 months from today, so the next warning arrives in time.</li>'
+		. '<li>Delete the old secret in Entra, so a dead credential is not left lying around.</li>'
+		. '</ol>';
+}
+
 /** Application roles this module needs on its Graph token. */
 function gasf_crm_required_roles() {
 	return array( 'Mail.ReadWrite', 'Mail.Send' );
@@ -293,6 +339,41 @@ function gasf_crm_graph_reply( $graph_message_id, $html ) {
  * with the original and its attachments intact — rather than a fresh message
  * that merely quotes something and arrives detached from the conversation.
  */
+/**
+ * Reply with one or more attachments.
+ *
+ * The plain /reply action cannot carry attachments, so this takes the longer
+ * route: create a draft reply, hang the files off it, then send. createReply
+ * accepts the comment up front, which means Exchange still builds the quoted
+ * original and the threading headers exactly as the simple path does.
+ *
+ * A failed attachment deletes the draft before returning. Without that, every
+ * failure would leave a half-assembled reply sitting in the shared mailbox's
+ * Drafts folder for someone to find later and wonder about.
+ */
+function gasf_crm_graph_reply_with_attachments( $graph_message_id, $html, array $attachments ) {
+	$mb = gasf_crm_mailbox_path();
+
+	$draft = gasf_crm_graph( 'POST', $mb . '/messages/' . rawurlencode( $graph_message_id ) . '/createReply',
+		array( 'comment' => $html ) );
+	if ( is_wp_error( $draft ) ) { return $draft; }
+
+	$draft_id = isset( $draft['id'] ) ? (string) $draft['id'] : '';
+	if ( '' === $draft_id ) {
+		return new WP_Error( 'gasf_crm_draft', 'Graph did not return a draft to attach to.' );
+	}
+
+	foreach ( $attachments as $a ) {
+		$r = gasf_crm_graph( 'POST', $mb . '/messages/' . rawurlencode( $draft_id ) . '/attachments', $a );
+		if ( is_wp_error( $r ) ) {
+			gasf_crm_graph( 'DELETE', $mb . '/messages/' . rawurlencode( $draft_id ) );
+			return $r;
+		}
+	}
+
+	return gasf_crm_graph( 'POST', $mb . '/messages/' . rawurlencode( $draft_id ) . '/send' );
+}
+
 function gasf_crm_graph_forward( $graph_message_id, $to, $comment ) {
 	$recipients = array();
 	foreach ( (array) $to as $addr ) {
