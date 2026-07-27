@@ -147,6 +147,11 @@ header.bar h1 .box{font-weight:400;opacity:.75}
 header.bar a{color:#d9d4c8;text-decoration:none;font-size:13px}
 header.bar .hbtn{background:rgba(255,255,255,.14);color:#fff;border:1px solid rgba(255,255,255,.26);padding:5px 12px;border-radius:4px;cursor:pointer;font:inherit;font-size:13px;margin-right:8px}
 header.bar .hbtn:hover{background:rgba(255,255,255,.26)}
+/* Signed-in volunteer's photo. The initials are the BACKGROUND of the circle
+   and the photo sits on top, so an image that fails degrades to them rather
+   than to a broken-image icon. */
+.me{position:relative;display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;margin-right:7px;border-radius:50%;background:rgba(255,255,255,.18);color:#fff;font-size:10px;font-weight:700;line-height:1;vertical-align:middle;overflow:hidden;flex:none}
+.me img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
 .center{max-width:420px;margin:12vh auto;background:var(--gasf-surface);padding:32px;border-radius:var(--gasf-radius);box-shadow:0 1px 3px rgba(0,0,0,.13);text-align:center;border-top:4px solid var(--gasf-accent)}
 .center h1{font-size:20px;margin:0 0 8px}
 .center p{color:var(--gasf-muted);margin:0 0 24px}
@@ -412,6 +417,43 @@ function gasf_crm_render_help() {
 	<?php
 }
 
+/**
+ * Header avatar: the provider's photo laid over a circle of initials.
+ *
+ * The initials are not a placeholder waiting to be swapped out — they ARE the
+ * background, and the <img> is painted on top. So a Google avatar URL that has
+ * expired or 404'd (they do rotate) removes itself and the initials show
+ * through, instead of leaving a volunteer staring at a broken-image icon. A
+ * Microsoft account, which never carries a photo at all, lands on exactly the
+ * same fallback with no special case.
+ *
+ * aria-hidden: the name follows in plain text, so this is decoration and a
+ * screen reader announcing initials would only say it twice.
+ */
+function gasf_crm_avatar_html( WP_User $user ) {
+	$words = preg_split( '~\s+~', trim( (string) $user->display_name ), -1, PREG_SPLIT_NO_EMPTY );
+	$cut   = function_exists( 'mb_substr' ) ? 'mb_substr' : 'substr';
+	$upper = function_exists( 'mb_strtoupper' ) ? 'mb_strtoupper' : 'strtoupper';
+
+	$ini = '';
+	foreach ( array_slice( $words ? $words : array(), 0, 2 ) as $word ) {
+		$ini .= $cut( $word, 0, 1 );
+	}
+	$ini = '' === $ini ? '?' : $upper( $ini );
+
+	$out = '<span class="me" aria-hidden="true">' . esc_html( $ini );
+
+	$url = (string) get_user_meta( $user->ID, 'gasf_crm_avatar', true );
+	if ( '' !== $url ) {
+		// referrerpolicy: /email is deliberately unlinked and noindex, and the
+		// Referer header would otherwise hand its URL to the image host on
+		// every single page load.
+		$out .= '<img src="' . esc_url( $url ) . '" alt="" referrerpolicy="no-referrer" onerror="this.remove()">';
+	}
+
+	return $out . '</span>';
+}
+
 function gasf_crm_render_inbox() {
 	$user       = wp_get_current_user();
 	$my_streams = gasf_crm_user_streams();
@@ -427,7 +469,11 @@ function gasf_crm_render_inbox() {
 	<div>
 		<button class="hbtn" id="checkmail">Check for new mail</button>
 		<button class="hbtn" onclick="var h=document.getElementById('help');h.style.display=h.style.display==='none'?'block':'none';window.scrollTo(0,0)">Help</button>
-		<?php echo esc_html( $user->display_name ); ?> &middot;
+		<?php
+		// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped inside the helper.
+		echo gasf_crm_avatar_html( $user );
+		echo esc_html( $user->display_name );
+		?> &middot;
 		<a href="<?php echo esc_url( home_url( '/email/logout' ) ); ?>">Sign out</a>
 	</div>
 </div></header>

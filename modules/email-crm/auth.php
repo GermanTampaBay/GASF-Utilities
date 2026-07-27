@@ -274,6 +274,10 @@ function gasf_crm_find_or_create_user( $provider, array $claims ) {
 		// the provider, and the approval screen should show what's current.
 		if ( $email ) { update_user_meta( $user_id, 'gasf_crm_email', $email ); }
 		if ( $name ) { update_user_meta( $user_id, 'gasf_crm_name', $name ); }
+		// Written even when empty, unlike the two above: somebody who REMOVES
+		// their photo at the provider should lose it here too, and a guarded
+		// write would keep serving the old one forever.
+		update_user_meta( $user_id, 'gasf_crm_avatar', gasf_crm_avatar_url( $provider, $claims ) );
 		return $user_id;
 	}
 
@@ -295,6 +299,7 @@ function gasf_crm_find_or_create_user( $provider, array $claims ) {
 	update_user_meta( $user_id, 'gasf_crm_sub', $sub );
 	update_user_meta( $user_id, 'gasf_crm_email', $email );
 	update_user_meta( $user_id, 'gasf_crm_name', $name );
+	update_user_meta( $user_id, 'gasf_crm_avatar', gasf_crm_avatar_url( $provider, $claims ) );
 	update_user_meta( $user_id, 'gasf_crm_status', 'pending' );
 
 	gasf_mec_log( 'CRM auth: new pending account ' . $login . ' (' . $email . ') via ' . $provider );
@@ -357,6 +362,45 @@ function gasf_crm_user_streams( $user_id = 0 ) {
 	}
 
 	return array_values( array_intersect( $active, array_map( 'strval', $granted ) ) );
+}
+
+/**
+ * The provider's profile-photo claim, or ''.
+ *
+ * Google puts `picture` in the id_token when the profile scope is granted, so
+ * this costs no extra request. Microsoft does NOT — a Microsoft profile photo
+ * lives behind a delegated Graph call this app holds no token for — so those
+ * accounts return '' and fall back to initials. That fallback is load-bearing,
+ * not decoration: half our sign-in methods can never produce a photo.
+ *
+ * Allowlisted rather than merely escaped, because the result is rendered into
+ * an <img src> on a signed-in volunteer's page. The claim arrives inside a
+ * signature-verified id_token so it is not attacker-controlled today, but a URL
+ * that reaches the DOM should not depend on that staying true. https only, and
+ * only from the host the provider actually serves avatars from; anything else
+ * is dropped, which fails closed to initials rather than to a broken image.
+ */
+function gasf_crm_avatar_url( $provider, array $claims ) {
+	$url = trim( (string) ( isset( $claims['picture'] ) ? $claims['picture'] : '' ) );
+	if ( '' === $url ) { return ''; }
+
+	// Only providers listed here may contribute an image host at all.
+	$hosts = array( 'google' => 'googleusercontent.com' );
+	if ( ! isset( $hosts[ $provider ] ) ) { return ''; }
+
+	$parts = wp_parse_url( $url );
+	if ( empty( $parts['host'] ) || empty( $parts['scheme'] ) || 'https' !== strtolower( $parts['scheme'] ) ) {
+		return '';
+	}
+
+	// Exact host or a subdomain of it — Google rotates between lh3/lh4/lh5, so
+	// pinning one hostname would silently stop working.
+	$host   = strtolower( $parts['host'] );
+	$want   = $hosts[ $provider ];
+	$suffix = '.' . $want;
+	if ( $host !== $want && substr( $host, -strlen( $suffix ) ) !== $suffix ) { return ''; }
+
+	return esc_url_raw( $url );
 }
 
 function gasf_crm_user_can_stream( $stream, $user_id = 0 ) {
