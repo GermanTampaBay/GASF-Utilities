@@ -27,6 +27,13 @@ add_action( 'template_redirect', function () {
 			return;
 
 		case 'logout':
+			if ( function_exists( 'gasf_crm_auth_log' ) && is_user_logged_in() ) {
+				$u = wp_get_current_user();
+				gasf_crm_auth_log( 'signout', 'ok', array(
+					'user_id' => (int) $u->ID,
+					'email'   => (string) $u->user_email,
+				) );
+			}
 			wp_logout();
 			wp_safe_redirect( home_url( '/email' ) );
 			exit;

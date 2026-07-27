@@ -223,6 +223,18 @@ function gasf_crm_auth_callback( $provider ) {
 	// club's mailbox should not depend on that line surviving.
 	wp_set_auth_cookie( $user_id, false, ( 0 === strpos( home_url(), 'https://' ) ) );
 	wp_set_current_user( $user_id );
+
+	// Recorded whatever their approval state is. "Somebody who cannot get in
+	// kept trying at 3am" is exactly the sort of thing this table exists to
+	// show, and it is invisible if only approved sign-ins are written down.
+	gasf_crm_auth_log( 'signin', 'ok', array(
+		'user_id'  => (int) $user_id,
+		'email'    => sanitize_email( (string) ( $claims['email'] ?? '' ) ),
+		'provider' => $provider,
+		'reason'   => gasf_crm_user_status( $user_id ),
+	) );
+	gasf_crm_auth_log_prune();
+
 	wp_safe_redirect( home_url( '/email' ) );
 	exit;
 }
@@ -320,9 +332,86 @@ function gasf_crm_find_or_create_user( $provider, array $claims ) {
 	update_user_meta( $user_id, 'gasf_crm_status', 'pending' );
 
 	gasf_mec_log( 'CRM auth: new pending account ' . $login . ' (' . $email . ') via ' . $provider );
+	gasf_crm_auth_log( 'account', 'ok', array(
+		'user_id'  => (int) $user_id,
+		'email'    => $email,
+		'provider' => $provider,
+		'reason'   => 'new account created, pending approval',
+	) );
 	gasf_crm_notify_admin_pending( $user_id, $name, $email, $provider );
 
 	return (int) $user_id;
+}
+
+/* --------------------------------------------------------------------------
+ * Sign-in history
+ * -------------------------------------------------------------------------- */
+
+/**
+ * The client's address, as well as this host can honestly report it.
+ *
+ * TLS terminates at a proxy here, so REMOTE_ADDR is the proxy and the real
+ * client is in X-Forwarded-For. That header is client-supplied and worth
+ * exactly as much as the proxy in front of it — which is why BOTH are recorded
+ * when they differ, rather than quietly presenting the forwarded value as fact.
+ * An investigator can then see what was claimed and what the connection said.
+ */
+function gasf_crm_client_ip() {
+	$remote = isset( $_SERVER['REMOTE_ADDR'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) ) : '';
+
+	$fwd = '';
+	if ( ! empty( $_SERVER['HTTP_X_FORWARDED_FOR'] ) ) {
+		$parts = explode( ',', sanitize_text_field( wp_unslash( $_SERVER['HTTP_X_FORWARDED_FOR'] ) ) );
+		$first = trim( (string) reset( $parts ) );
+		if ( filter_var( $first, FILTER_VALIDATE_IP ) ) { $fwd = $first; }
+	}
+
+	if ( '' === $fwd || $fwd === $remote ) { return $remote; }
+	return $fwd . ' (via ' . $remote . ')';
+}
+
+/**
+ * Record one authentication event.
+ *
+ * Written for the person reading it after something has gone wrong, so it
+ * favours being able to answer "who, when, from where, and did it work" over
+ * being terse. Never records a token, a code, a state value or a password —
+ * nothing here would help an attacker who obtained the table.
+ */
+function gasf_crm_auth_log( $action, $outcome, array $args = array() ) {
+	global $wpdb;
+
+	$wpdb->insert( gasf_crm_table( 'auth_log' ), array(
+		'created_at' => current_time( 'mysql', true ),
+		'action'     => substr( (string) $action, 0, 32 ),
+		'outcome'    => substr( (string) $outcome, 0, 16 ),
+		'user_id'    => (int) ( $args['user_id'] ?? 0 ),
+		'email'      => substr( (string) ( $args['email'] ?? '' ), 0, 191 ),
+		'provider'   => substr( (string) ( $args['provider'] ?? '' ), 0, 32 ),
+		'reason'     => substr( (string) ( $args['reason'] ?? '' ), 0, 191 ),
+		'ip'         => substr( gasf_crm_client_ip(), 0, 45 ),
+		'ua'         => isset( $_SERVER['HTTP_USER_AGENT'] )
+			? substr( sanitize_text_field( wp_unslash( $_SERVER['HTTP_USER_AGENT'] ) ), 0, 255 ) : '',
+	) );
+}
+
+/**
+ * Drop history past its stated life.
+ *
+ * Once a day at most, and only when something else was already running — a
+ * retention promise nobody keeps is just a longer retention period.
+ */
+function gasf_crm_auth_log_prune() {
+	if ( get_transient( 'gasf_crm_auth_pruned' ) ) { return 0; }
+	set_transient( 'gasf_crm_auth_pruned', 1, DAY_IN_SECONDS );
+
+	global $wpdb;
+	$n = (int) $wpdb->query( $wpdb->prepare(
+		'DELETE FROM ' . gasf_crm_table( 'auth_log' ) . ' WHERE created_at < %s',
+		gmdate( 'Y-m-d H:i:s', time() - ( GASF_CRM_AUTH_LOG_DAYS * DAY_IN_SECONDS ) )
+	) );
+	if ( $n ) { gasf_mec_log( 'CRM auth log: pruned ' . $n . ' entries past ' . GASF_CRM_AUTH_LOG_DAYS . ' days' ); }
+	return $n;
 }
 
 /**
@@ -339,6 +428,11 @@ function gasf_crm_find_or_create_user( $provider, array $claims ) {
  * fault. No token, code or state value is written down.
  */
 function gasf_crm_auth_fail( $msg, $detail = '' ) {
+	gasf_crm_auth_log( 'signin', 'fail', array(
+		'provider' => (string) get_query_var( 'gasf_crm_provider' ),
+		'reason'   => $detail ? $detail : $msg,
+	) );
+
 	gasf_mec_log( sprintf(
 		'CRM auth FAILED: %s%s | cookie=%s | method=%s | ua=%s',
 		$msg,
@@ -452,6 +546,17 @@ function gasf_crm_set_user_streams( $user_id, array $streams ) {
 	update_user_meta( (int) $user_id, 'gasf_crm_streams', $valid );
 	update_user_meta( (int) $user_id, 'gasf_crm_streams_set', 1 );
 	gasf_mec_log( 'CRM: user ' . (int) $user_id . ' stream grants set to [' . implode( ',', $valid ) . '] by ' . get_current_user_id() );
+
+	// Who was given access to what, and by whom, belongs in the same history as
+	// who signed in. After an incident, "which accounts changed, and who changed
+	// them" is asked in the same breath as "who got in".
+	$u = get_userdata( (int) $user_id );
+	gasf_crm_auth_log( 'access', 'ok', array(
+		'user_id'  => (int) $user_id,
+		'email'    => $u ? $u->user_email : '',
+		'reason'   => ( $valid ? implode( ',', $valid ) : 'nothing' ) . ' — set by user ' . get_current_user_id(),
+	) );
+
 	return $valid;
 }
 
@@ -471,6 +576,14 @@ function gasf_crm_set_user_status( $user_id, $status ) {
 	update_user_meta( (int) $user_id, 'gasf_crm_status_by', get_current_user_id() );
 	update_user_meta( (int) $user_id, 'gasf_crm_status_at', current_time( 'mysql' ) );
 	gasf_mec_log( 'CRM: user ' . (int) $user_id . ' set to ' . $status . ' by ' . get_current_user_id() );
+
+	$u = get_userdata( (int) $user_id );
+	gasf_crm_auth_log( 'approval', 'ok', array(
+		'user_id' => (int) $user_id,
+		'email'   => $u ? $u->user_email : '',
+		'reason'  => $status . ' — set by user ' . get_current_user_id(),
+	) );
+
 	return true;
 }
 

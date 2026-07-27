@@ -83,6 +83,33 @@ function gasf_crm_install_tables() {
 		KEY last_seen (last_seen)
 	) {$charset};" );
 
+	// Who signed in, when, from where — and who tried and failed.
+	//
+	// A separate table from the plugin's text log because this is the one thing
+	// somebody will need to READ under pressure, possibly months later, and
+	// grepping a rotating file for "the week of the 12th" is not a plan. Indexed
+	// by time, by person and by action so all three of the questions actually
+	// asked after an incident are one query each.
+	//
+	// It holds personal data — addresses and IPs — deliberately and for a stated
+	// period. gasf_crm_auth_log_prune() drops anything past GASF_CRM_AUTH_LOG_DAYS.
+	dbDelta( "CREATE TABLE " . gasf_crm_table( 'auth_log' ) . " (
+		id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+		created_at DATETIME NOT NULL,
+		action VARCHAR(32) NOT NULL,
+		outcome VARCHAR(16) NOT NULL,
+		user_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+		email VARCHAR(191) NULL,
+		provider VARCHAR(32) NULL,
+		reason VARCHAR(191) NULL,
+		ip VARCHAR(45) NULL,
+		ua VARCHAR(255) NULL,
+		PRIMARY KEY  (id),
+		KEY created_at (created_at),
+		KEY who (user_id, created_at),
+		KEY action_time (action, created_at)
+	) {$charset};" );
+
 	// Photo tagging invitations.
 	//
 	// A workflow record rather than a property of any one photo, which is why

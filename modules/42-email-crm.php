@@ -33,7 +33,17 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 	// upgrade check below runs dbDelta and flushes rules on any change. This
 	// plugin runs as an mu-plugin on the main site, where activation hooks
 	// never fire, so a version-compare on every load is the only reliable hook.
-	define( 'GASF_CRM_SCHEMA', '1.8.0' );
+	define( 'GASF_CRM_SCHEMA', '1.9.0' );
+
+	/**
+	 * How long the sign-in history is kept.
+	 *
+	 * Long enough to investigate something noticed late — a breach is rarely
+	 * found the same week — and short enough that the club is not sitting on
+	 * years of members' addresses and IP addresses for no reason. Six months is
+	 * the compromise; change it here and the pruner follows.
+	 */
+	define( 'GASF_CRM_AUTH_LOG_DAYS', 180 );
 
 	/**
 	 * How far ahead to start warning that the Graph client secret is running

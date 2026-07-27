@@ -407,6 +407,73 @@ function gasf_crm_admin_tab() {
 	}
 	?>
 
+	<h3>Sign-in history</h3>
+	<?php
+	if ( ! function_exists( 'gasf_crm_auth_log' ) ) {
+		echo '<p class="description">Not available.</p>';
+	} else {
+		global $wpdb;
+		$log_t = gasf_crm_table( 'auth_log' );
+
+		$since = gmdate( 'Y-m-d H:i:s', time() - DAY_IN_SECONDS );
+		$ok24  = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$log_t} WHERE action='signin' AND outcome='ok' AND created_at >= %s", $since ) );
+		$no24  = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$log_t} WHERE action='signin' AND outcome='fail' AND created_at >= %s", $since ) );
+		$total = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$log_t}" );
+
+		printf(
+			'<p class="description">Last 24 hours: <strong>%d</strong> successful sign-in(s), <strong>%d</strong> failed. %d entr(y/ies) held in total, kept for %d days and then deleted.</p>',
+			$ok24, $no24, $total, (int) GASF_CRM_AUTH_LOG_DAYS
+		);
+
+		// A run of failures against one account is the pattern worth catching by
+		// eye; a single failure is somebody fumbling a password manager.
+		if ( $no24 >= 10 ) {
+			printf(
+				'<div class="notice notice-warning inline"><p><strong>%d failed sign-in attempts in the last day.</strong> Worth a look at the reasons below before assuming it is somebody struggling with their phone.</p></div>',
+				$no24
+			);
+		}
+
+		$rows = $wpdb->get_results( "SELECT * FROM {$log_t} ORDER BY id DESC LIMIT 60", ARRAY_A );
+		if ( ! $rows ) {
+			echo '<p class="description">Nothing recorded yet. Entries appear here as people sign in, fail to, are approved, or have their access changed.</p>';
+		} else {
+			echo '<table class="widefat striped"><thead><tr><th>When</th><th>What</th><th>Who</th><th>Details</th><th>From</th></tr></thead><tbody>';
+			foreach ( $rows as $r ) {
+				$ok  = ( 'ok' === $r['outcome'] );
+				$col = $ok ? '#2c7a3f' : '#b32d2e';
+
+				printf(
+					'<tr><td title="%s">%s</td>',
+					esc_attr( $r['created_at'] . ' UTC' ),
+					esc_html( mysql2date( 'M j, H:i', get_date_from_gmt( $r['created_at'] ) ) )
+				);
+				printf(
+					'<td><strong style="color:%s">%s</strong>%s</td>',
+					esc_attr( $col ),
+					esc_html( $r['action'] ),
+					$ok ? '' : ' <span class="description">failed</span>'
+				);
+				printf(
+					'<td>%s%s</td>',
+					esc_html( $r['email'] ? $r['email'] : '—' ),
+					$r['provider'] ? ' <span class="description">(' . esc_html( $r['provider'] ) . ')</span>' : ''
+				);
+				printf( '<td class="description">%s</td>', esc_html( $r['reason'] ) );
+				printf(
+					'<td class="description"><code>%s</code><br><span title="%s">%s</span></td>',
+					esc_html( $r['ip'] ),
+					esc_attr( $r['ua'] ),
+					esc_html( mb_strimwidth( (string) $r['ua'], 0, 46, '…' ) )
+				);
+				echo '</tr>';
+			}
+			echo '</tbody></table>';
+			echo '<p class="description">Newest 60. <strong>Addresses shown as <code>1.2.3.4 (via 5.6.7.8)</code></strong> mean the first was claimed by a proxy header and the second is where the connection actually came from &mdash; the claimed one is only as trustworthy as the proxy in front of it. No password, token or sign-in code is ever recorded here.</p>';
+		}
+	}
+	?>
+
 	<h3>Photo submissions</h3>
 	<?php
 	if ( ! function_exists( 'gasf_crm_photo_pending_threads' ) ) {
