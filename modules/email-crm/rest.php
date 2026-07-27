@@ -288,7 +288,12 @@ function gasf_crm_rest_reply( WP_REST_Request $req ) {
 	// other volunteer who opens the thread. Links are restricted to protocols
 	// that cannot execute anything — the editor checks that too, but a
 	// client-side check is a convenience, not a control.
-	$clean = wp_kses( (string) $req->get_param( 'body' ), array(
+	// Strip script/style WITH their contents first. wp_kses drops the tags but
+	// keeps the text inside them, which would otherwise arrive in the sent email
+	// as a stray line of code. Matches what the inbound path already does.
+	$raw = preg_replace( '#<(script|style)\b[^>]*>.*?</\1>#is', '', (string) $req->get_param( 'body' ) );
+
+	$clean = wp_kses( $raw, array(
 		'p'          => array(),
 		'br'         => array(),
 		'strong'     => array(), 'b' => array(),
