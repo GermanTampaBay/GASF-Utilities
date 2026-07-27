@@ -238,6 +238,38 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 	add_action( 'gasf_crm_sync_event', 'gasf_crm_photo_autoprocess', 15 );
 	add_action( 'gasf_crm_sync_event', 'gasf_crm_photo_chase', 20 );
 
+	/**
+	 * The intake also runs on its OWN schedule, not only as a passenger on the
+	 * sync.
+	 *
+	 * Riding the sync means a message ingested by a run whose intake step has
+	 * already gone past — two overlapping cron invocations are enough — waits a
+	 * full hour for the next one. Somebody emails photos in and hears nothing
+	 * for an hour, which is exactly what sending automatically was meant to
+	 * stop. This is a catch-up: it costs one indexed query when there is
+	 * nothing to do, and the lock stops it colliding with the sync's copy.
+	 */
+	add_filter( 'cron_schedules', function ( $s ) {
+		if ( ! isset( $s['gasf_crm_10min'] ) ) {
+			$s['gasf_crm_10min'] = array( 'interval' => 10 * MINUTE_IN_SECONDS, 'display' => 'Every 10 minutes (GASF CRM)' );
+		}
+		return $s;
+	} );
+
+	add_action( 'init', function () {
+		if ( ! wp_next_scheduled( 'gasf_crm_photo_event' ) ) {
+			wp_schedule_event( time() + 60, 'gasf_crm_10min', 'gasf_crm_photo_event' );
+		}
+	} );
+	add_action( 'gasf_crm_photo_event', 'gasf_crm_photo_autoprocess' );
+
+	if ( defined( 'WP_CLI' ) && WP_CLI ) {
+		WP_CLI::add_command( 'gasf-crm photos', function () {
+			$n = gasf_crm_photo_autoprocess();
+			WP_CLI::success( sprintf( '%d photo(s) taken in.', (int) $n ) );
+		} );
+	}
+
 	if ( defined( 'WP_CLI' ) && WP_CLI ) {
 		WP_CLI::add_command( 'gasf-crm sync', function () {
 			$r  = gasf_crm_sync();
