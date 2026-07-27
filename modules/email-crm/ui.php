@@ -1079,7 +1079,25 @@ function gasf_crm_render_inbox() {
 	// meanwhile is asking two people the same question.
 	function photoBlock(t){
 		var ph = t.photos || [];
-		if (!ph.length) { return ''; }
+
+		// Nothing kept yet. If images came in, say what to do with them —
+		// otherwise the only clue is a small button beside an attachment chip,
+		// which never explains that keeping is what unlocks asking the sender
+		// anything. Somebody sent five photos and waited for an email that was
+		// never going to come, because this block rendered nothing at all.
+		if (!ph.length) {
+			var imgs = 0, who = '';
+			(t.messages || []).forEach(function(m){
+				if (m.direction === 'in' && !who) { who = m.from; }
+				(m.attachments || []).forEach(function(a){ if (a.image) { imgs++; } });
+			});
+			if (!imgs) { return ''; }
+
+			return '<div class="photos"><h3>Photos in this email (' + imgs + ')</h3>' +
+				'<p class="muted">None kept yet. Press <strong>Keep photo</strong> beside the ones worth having, ' +
+				'above &mdash; each goes into the club&rsquo;s Media Library. Once at least one is kept, ' +
+				'a button appears here to ask ' + esc(who || 'the sender') + ' what they are.</p></div>';
+		}
 
 		var head = '<div class="photos"><h3>Photos kept from this email (' + ph.length + ')</h3>';
 
