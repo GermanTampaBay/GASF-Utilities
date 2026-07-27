@@ -1565,8 +1565,14 @@ function gasf_crm_render_inbox() {
 		ppane.innerHTML = '<p class="muted">Loading…</p>';
 		api('/photos/detail?photo=' + id).then(function(p){
 			var q = p.pending || {};
-			var h = '<a href="' + esc(p.url) + '" target="_blank" rel="noopener" class="pbig">' +
-				'<img src="' + esc(p.full || p.thumb) + '" alt=""></a>';
+			var h = p.missing
+				// Named, not rendered as a broken image: "the file is gone" and
+				// "the page is broken" look identical otherwise, and only one of
+				// them is worth anybody's time.
+				? '<div class="note err">The image file is missing from the server, though its record is still here. ' +
+				  'Nothing can be done with it — reject it, and it can be taken in again from the original email.</div>'
+				: '<a href="' + esc(p.url) + '" target="_blank" rel="noopener" class="pbig">' +
+				  '<img src="' + esc(p.full || p.thumb) + '" alt=""></a>';
 
 			h += '<p class="muted" style="margin:10px 0 4px">Sent by <strong>' + esc(p.from) + '</strong>' +
 				(p.email ? ' &lt;' + esc(p.email) + '&gt;' : '') +

@@ -1136,6 +1136,12 @@ function gasf_crm_photo_card( $attachment_id ) {
 	$info    = function_exists( 'gasf_photo_info' ) ? gasf_photo_info( $id ) : array();
 	$pending = get_post_meta( $id, '_gasf_photo_pending', true );
 
+	// An attachment row whose file is gone. WordPress renders that as a broken
+	// image and says nothing, which is the worst of both — it looks like the
+	// page is broken rather than the photo being absent. Say which it is.
+	$path    = get_attached_file( $id );
+	$missing = ! $path || ! file_exists( $path );
+
 	return array(
 		'id'      => $id,
 		'thumb'   => wp_get_attachment_image_url( $id, 'medium' ),
@@ -1157,6 +1163,7 @@ function gasf_crm_photo_card( $attachment_id ) {
 		'caption' => $info['caption'] ?? '',
 		'pending' => is_array( $pending ) ? $pending : null,
 		'title'   => get_the_title( $id ),
+		'missing' => $missing,
 	);
 }
 

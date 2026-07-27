@@ -52,8 +52,13 @@ function gasf_crm_photo_page( $state, $invite = null, $notice = '' ) {
 		return;
 	}
 
+	// Only photos that still exist AND still have a file. Asking somebody to
+	// describe a broken image is asking them to do our debugging, and a public
+	// page is the last place a missing file should surface.
 	$ids = array_values( array_filter( (array) $invite['ids'], function ( $id ) {
-		return 'attachment' === get_post_type( $id );
+		if ( 'attachment' !== get_post_type( $id ) ) { return false; }
+		$p = get_attached_file( $id );
+		return $p && file_exists( $p );
 	} ) );
 
 	if ( ! $ids ) {
