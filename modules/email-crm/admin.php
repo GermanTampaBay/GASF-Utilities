@@ -123,6 +123,20 @@ function gasf_crm_admin_tab() {
 			}
 		}
 
+		if ( 'contact_name' === $act ) {
+			$cid   = (int) ( $_POST['contact_id'] ?? 0 );
+			$cname = sanitize_text_field( wp_unslash( $_POST['contact_name'] ?? '' ) );
+			if ( $cid && gasf_crm_set_contact_name( $cid, $cname ) ) {
+				$notice = '<div class="notice notice-success"><p>' . esc_html(
+					'' === $cname
+						? 'Name cleared — that address will name itself again from the next email that carries one.'
+						: 'Saved. "' . $cname . '" will not be overwritten by incoming mail.'
+				) . '</p></div>';
+			} else {
+				$notice = '<div class="notice notice-error"><p>Could not save that name.</p></div>';
+			}
+		}
+
 		if ( 'user_streams' === $act ) {
 			$uid = (int) ( $_POST['user_id'] ?? 0 );
 			// Unchecking every box submits nothing, which is a real answer here:
@@ -391,13 +405,32 @@ function gasf_crm_admin_tab() {
 		echo '<table class="widefat striped"><thead><tr><th>Email</th><th>Name</th><th>Sent to</th><th>Received from</th><th>Last seen</th></tr></thead><tbody>';
 		foreach ( $contacts as $c ) {
 			echo '<tr><td><code>' . esc_html( $c['email'] ) . '</code></td>';
-			echo '<td>' . esc_html( (string) $c['name'] ) . '</td>';
+
+			// Editable, because a sender whose mail client sends no display name
+			// has no name here and never will — nothing in their future mail can
+			// supply one. Saving locks it against the sync (see
+			// gasf_crm_set_contact_name); the padlock says so on the row rather
+			// than in a footnote nobody reads.
+			echo '<td><form method="post" style="display:flex;gap:6px;align-items:center">';
+			wp_nonce_field( 'gasf_crm' );
+			echo '<input type="hidden" name="gasf_crm_action" value="contact_name">';
+			echo '<input type="hidden" name="contact_id" value="' . (int) $c['id'] . '">';
+			echo '<input type="text" name="contact_name" class="regular-text" style="max-width:190px"'
+				. ' value="' . esc_attr( (string) $c['name'] ) . '"'
+				. ' placeholder="' . esc_attr__( 'no name sent', 'gasf' ) . '">';
+			echo '<button class="button button-small">Save</button>';
+			if ( ! empty( $c['name_locked'] ) ) {
+				echo ' <span title="Entered by hand — the sync will not overwrite it" style="cursor:help">&#128274;</span>';
+			}
+			echo '</form></td>';
+
 			echo '<td>' . (int) $c['sent_count'] . '</td>';
 			echo '<td>' . (int) $c['recv_count'] . '</td>';
 			echo '<td>' . esc_html( $c['last_seen'] ? human_time_diff( strtotime( $c['last_seen'] . ' UTC' ) ) . ' ago' : '—' ) . '</td></tr>';
 		}
 		echo '</tbody></table>';
 		echo '<p class="description">Newest 50. Every address the club has written to or heard from; the forward box on <code>/email</code> autocompletes from this list.</p>';
+		echo '<p class="description">Names normally arrive from the sender\'s own email, so there is nothing to maintain here — but some mail clients send no name at all, and those you can fill in. A name you type is marked &#128274; and the sync will not overwrite it. Clearing the box removes the padlock too, so the address goes back to naming itself. The address cannot be edited: it is what every message is filed against, and changing it would detach that history while looking like a correction.</p>';
 	}
 	?>
 

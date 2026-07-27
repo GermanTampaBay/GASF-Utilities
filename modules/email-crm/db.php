@@ -62,10 +62,17 @@ function gasf_crm_install_tables() {
 	// Address book. Built as a side effect of real traffic rather than
 	// maintained by hand — an address book nobody has to curate is the only
 	// kind that stays current.
+	//
+	// name_locked marks a name typed in by a human. Without it, a hand-entered
+	// name survives only until that person's next email: the upsert in
+	// gasf_crm_touch_contact takes any non-blank display name from the From
+	// header. (Kept out of the SQL as a PHP comment — dbDelta parses this
+	// statement line by line and reads a `--` line as a column definition.)
 	dbDelta( "CREATE TABLE " . gasf_crm_table( 'contacts' ) . " (
 		id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
 		email VARCHAR(191) NOT NULL,
 		name VARCHAR(191) NULL,
+		name_locked TINYINT(1) NOT NULL DEFAULT 0,
 		sent_count INT UNSIGNED NOT NULL DEFAULT 0,
 		recv_count INT UNSIGNED NOT NULL DEFAULT 0,
 		first_seen DATETIME NULL,
@@ -318,10 +325,46 @@ function gasf_crm_touch_contact( $email, $name = '', $direction = 'in', $subject
 		   {$col} = {$col} + 1,
 		   last_seen = VALUES(last_seen),
 		   last_subject = VALUES(last_subject),
-		   name = COALESCE(NULLIF(VALUES(name), ''), name)",
+		   name = IF(name_locked = 1, name, COALESCE(NULLIF(VALUES(name), ''), name))",
 		$email, $name, $now, $now, $subject
 	) );
 	return true;
+}
+
+/**
+ * Set a contact's name by hand.
+ *
+ * The address book is otherwise built entirely from traffic and needs no
+ * curation — but a sender whose mail client sends no display name arrives with
+ * no name at all, and nothing about their future mail will ever supply one.
+ * That is the gap this fills.
+ *
+ * It sets name_locked as well as the name. Without the lock the edit would be
+ * undone the moment that person next wrote in, because gasf_crm_touch_contact
+ * replaces the stored name with any non-blank one from the From header. A name
+ * that quietly reverts days later is worse than never offering the edit.
+ *
+ * Passing '' clears the name AND the lock, handing the row back to the
+ * automatic behaviour rather than pinning it permanently blank.
+ *
+ * The address itself is deliberately not editable: it is the unique key that
+ * every message is filed against, so changing it would orphan the history
+ * while looking like a correction.
+ */
+function gasf_crm_set_contact_name( $id, $name ) {
+	global $wpdb;
+
+	$id   = (int) $id;
+	$name = sanitize_text_field( (string) $name );
+	if ( ! $id ) { return false; }
+
+	return false !== $wpdb->update(
+		gasf_crm_table( 'contacts' ),
+		array( 'name' => $name, 'name_locked' => '' === $name ? 0 : 1 ),
+		array( 'id' => $id ),
+		array( '%s', '%d' ),
+		array( '%d' )
+	);
 }
 
 /**
