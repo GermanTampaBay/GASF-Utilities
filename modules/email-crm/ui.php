@@ -1094,7 +1094,9 @@ function gasf_crm_render_inbox() {
 			'<div class="pev"><div class="pevlist muted">…</div>' +
 			'<input type="text" class="p-evsearch" placeholder="…or search the calendar by name">' +
 			'</div>' +
-			'<input type="hidden" class="p-evid" value="">';
+			// Carries through the event the submitter picked, so a volunteer who
+			// changes nothing does not silently drop the link to it.
+			'<input type="hidden" class="p-evid" value="' + esc(q.event_id || '') + '">';
 
 		// The camera's own guess is shown next to what the sender typed, never
 		// merged into it. They disagree often enough — GPS is wider than a tight

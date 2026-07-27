@@ -329,18 +329,11 @@ function gasf_crm_photo_save_pending( array $invite ) {
 		return;
 	}
 
-	$batch = array(
-		'taken' => gasf_crm_photo_clean_date( $_POST['taken'] ?? '' ),
-		'place' => sanitize_text_field( wp_unslash( $_POST['place'] ?? '' ) ),
-		'event' => sanitize_text_field( wp_unslash( $_POST['event'] ?? '' ) ),
-	);
-	// A typed answer beats a picked one: somebody who bothered to write it in
-	// the "something else" box has told us the list was wrong.
-	$other = sanitize_text_field( wp_unslash( $_POST['place_other'] ?? '' ) );
-	if ( '' !== $other ) { $batch['place'] = $other; }
-	$ev_other = sanitize_text_field( wp_unslash( $_POST['event_other'] ?? '' ) );
-	if ( '' !== $ev_other ) { $batch['event'] = $ev_other; }
-
+	// Everything is per photo now. Six photos emailed together are often one
+	// afternoon, but "often" is not "always" — and recording six different days
+	// as whatever the first one was is worse than recording nothing, because it
+	// looks like an answer. The form inherits photo one's values as defaults;
+	// what arrives here is already whatever each photo ended up with.
 	$per = isset( $_POST['photo'] ) && is_array( $_POST['photo'] ) ? wp_unslash( $_POST['photo'] ) : array();
 
 	foreach ( $invite['ids'] as $aid ) {
@@ -359,14 +352,36 @@ function gasf_crm_photo_save_pending( array $invite ) {
 			? mb_substr( $caption, 0, GASF_CRM_PHOTO_CAPTION_MAX )
 			: substr( $caption, 0, GASF_CRM_PHOTO_CAPTION_MAX );
 
+		// A typed answer beats a picked one: somebody who bothered to write in
+		// the "not on the list" box has told us the list was wrong.
+		$place = sanitize_text_field( (string) ( $row['place'] ?? '' ) );
+		$other = sanitize_text_field( (string) ( $row['place_other'] ?? '' ) );
+		if ( '' !== $other ) { $place = $other; }
+
+		$event = sanitize_text_field( (string) ( $row['event'] ?? '' ) );
+		// Only trust an event ID that names a real published event, and only
+		// when the title still matches it. A stale or doctored pair must not
+		// attach a photo to an event it was never at.
+		$event_id = (int) ( $row['event_id'] ?? 0 );
+		if ( $event_id && function_exists( 'gasf_photo_has_calendar' ) && gasf_photo_has_calendar() ) {
+			$p = get_post( $event_id );
+			if ( ! $p || GASF_EVENTS_CPT !== $p->post_type || 'publish' !== $p->post_status
+				|| 0 !== strcasecmp( trim( $p->post_title ), trim( $event ) ) ) {
+				$event_id = 0;
+			}
+		} else {
+			$event_id = 0;
+		}
+
 		update_post_meta( $aid, '_gasf_photo_pending', array(
-			'people'  => array_values( array_unique( $people ) ),
-			'caption' => $caption,
-			'taken'   => gasf_crm_photo_clean_date( $row['taken'] ?? '' ) ?: $batch['taken'],
-			'place'   => $batch['place'],
-			'event'   => $batch['event'],
-			'by'      => (string) $invite['email'],
-			'at'      => current_time( 'mysql', true ),
+			'people'   => array_values( array_unique( $people ) ),
+			'caption'  => $caption,
+			'taken'    => gasf_crm_photo_clean_date( $row['taken'] ?? '' ),
+			'place'    => $place,
+			'event'    => $event,
+			'event_id' => $event_id,
+			'by'       => (string) $invite['email'],
+			'at'       => current_time( 'mysql', true ),
 		) );
 	}
 

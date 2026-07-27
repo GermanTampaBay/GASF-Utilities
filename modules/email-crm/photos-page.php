@@ -100,132 +100,149 @@ function gasf_crm_photo_page( $state, $invite = null, $notice = '' ) {
 	wp_nonce_field( 'gasf_phototag', '_gasf_pt' );
 	echo '<input type="hidden" name="gasf_phototag_save" value="1">';
 
-	/* ---- things that are usually the same for the whole batch ---- */
-	echo '<div class="card pad">';
-	echo '<h3>All of them</h3>';
-
-	echo '<label class="f"><span>When were they taken?</span>';
-	echo '<input type="date" name="taken" value="' . esc_attr( $suggest_date ) . '" max="' . esc_attr( gmdate( 'Y-m-d' ) ) . '">';
-	echo '<em>' . ( $suggest_date
-		? 'We read this from the photo itself — change it if it looks wrong.'
-		: 'The photos did not carry a date. A rough one is much better than none.' ) . '</em></label>';
-
 	/*
-	 * Where.
+	 * Everything the pickers need, shipped with the page.
 	 *
-	 * Radio buttons rather than a <select>, and hierarchical. GPS can put a
-	 * photo on the club's grounds but it can never say which room — indoors it
-	 * is 50 m out on a good day, and the Bierstube and the Main Hall are a few
-	 * paces apart. So the geofence answers "the club" and the ONE thing that
-	 * actually knows which room, the person who was there, is asked directly.
-	 *
-	 * The suggested branch is lifted to the top so the likely answers are the
-	 * first thing a thumb reaches, rather than something to scroll for.
+	 * The club's calendar is already public on the website, so putting it in
+	 * this page exposes nothing — and doing it here rather than through a live
+	 * endpoint keeps an unauthenticated page from taking queries.
 	 */
+	$ev_list = array();
+	if ( function_exists( 'gasf_photo_has_calendar' ) && gasf_photo_has_calendar() ) {
+		global $wpdb;
+		$rows = $wpdb->get_results( $wpdb->prepare(
+			"SELECT p.ID, p.post_title, CAST(m.meta_value AS UNSIGNED) ts
+			   FROM {$wpdb->posts} p
+			   JOIN {$wpdb->postmeta} m ON m.post_id = p.ID AND m.meta_key = '_gasf_start_ts'
+			  WHERE p.post_type = %s AND p.post_status = 'publish'
+			    AND CAST(m.meta_value AS UNSIGNED) >= %d
+			  ORDER BY ts DESC LIMIT 600",
+			GASF_EVENTS_CPT, time() - ( 4 * YEAR_IN_SECONDS )
+		), ARRAY_A );
+
+		$seen = array();
+		foreach ( (array) $rows as $r ) {
+			$ts  = (int) $r['ts'];
+			$key = strtolower( $r['post_title'] ) . '|' . $ts;
+			if ( isset( $seen[ $key ] ) ) { continue; }
+			$seen[ $key ] = true;
+			$ev_list[] = array(
+				'id'    => (int) $r['ID'],
+				'title' => (string) $r['post_title'],
+				'date'  => wp_date( 'Y-m-d', $ts ),
+				'when'  => wp_date( 'j M Y', $ts ),
+			);
+		}
+	}
+
+	// Places, with the geofenced branch lifted to the top. Built once and reused
+	// by every photo card — the vocabulary does not change between them.
 	$tree = gasf_photo_place_tree( $suggest_place );
 
-	echo '<div class="f"><span>Where?</span>';
-
-	if ( $suggest_place ) {
-		$sp = get_term( $suggest_place, 'gasf_photo_place' );
-		if ( $sp && ! is_wp_error( $sp ) ) {
-			printf(
-				'<p class="hint">The camera put %s at <strong>%s</strong>. If you know which part, say so &mdash; and change it altogether if it looks wrong.</p>',
-				1 === count( $ids ) ? 'this' : 'these',
-				esc_html( $sp->name )
-			);
-		}
+	$pl_list = array();
+	foreach ( $tree as $row ) {
+		$pl_list[] = array( 'name' => $row['term']->name, 'depth' => (int) $row['depth'] );
 	}
 
-	if ( $tree ) {
-		echo '<div class="places">';
-		foreach ( $tree as $row ) {
-			$term = $row['term'];
-			printf(
-				'<label class="pl d%d"><input type="radio" name="place" value="%s"%s> <span>%s</span>%s</label>',
-				min( 2, (int) $row['depth'] ),
-				esc_attr( $term->name ),
-				checked( (int) $term->term_id, $suggest_place, false ),
-				esc_html( $term->name ),
-				// Say which entries are a whole area rather than a specific
-				// spot, so "German-American Society" does not look like a
-				// worse answer than "Main Hall" when it is simply broader.
-				$row['depth'] ? '' : ' <em>anywhere here</em>'
-			);
-		}
-		printf(
-			'<label class="pl d0"><input type="radio" name="place" value=""%s> <span>Somewhere else &mdash; or not sure</span></label>',
-			checked( 0, $suggest_place, false )
-		);
-		echo '</div>';
-	}
-
-	echo '<input type="text" name="place_other" maxlength="120" placeholder="Somewhere not on the list">';
-	echo '<em>Only if it is not above. Anything typed here wins.</em></div>';
+	printf(
+		'<script>var GASF_EVENTS=%s,GASF_PLACES=%s;</script>',
+		wp_json_encode( $ev_list ),
+		wp_json_encode( $pl_list )
+	);
 
 	/*
-	 * Occasion.
+	 * One set of fields per photo, not one for the batch.
 	 *
-	 * If the photos carry a date and the club had something on that day, offer
-	 * it. "Was it one of these?" is a far better question than "type the name of
-	 * the event", which collects "oktoberfest", "Oktoberfest 2026" and "OKTOBER
-	 * FEST" as three different answers to the same thing.
+	 * Six photos emailed together are often one afternoon, but "often" is not
+	 * "always" — somebody clearing out their phone sends six different days from
+	 * three different places, and a batch-only form quietly records all six as
+	 * whatever the first one was. Wrong metadata is worse than none, because it
+	 * looks like an answer.
 	 *
-	 * Server-rendered from the suggested date rather than looked up live: this
-	 * page is unauthenticated, and a search endpoint here would make the club's
-	 * whole calendar queryable by anyone holding a photo link.
+	 * So each photo carries its own date, place and occasion. The FIRST photo's
+	 * answers flow down into the others as editable defaults, which keeps the
+	 * common case to one set of decisions — and a field stops following the
+	 * moment somebody touches it, so correcting photo one later never overwrites
+	 * an answer already given for photo four.
+	 *
+	 * A photo's own EXIF date and geofenced place still win over the inherited
+	 * default: real evidence about this picture beats a guess copied from a
+	 * different one.
 	 */
-	$on_day = ( $suggest_date && function_exists( 'gasf_photo_events_on_date' ) )
-		? gasf_photo_events_on_date( $suggest_date )
-		: array();
+	echo '<div class="card pad">';
+	echo '<h3>The first one sets the rest</h3>';
+	echo '<p class="muted" style="margin:0">Fill photo 1 in and the others start with the same answers &mdash; change any of them that differ. If a photo carried its own date or location we use that instead.</p>';
 
-	echo '<div class="f"><span>What was the occasion?</span>';
-
-	if ( $on_day ) {
-		printf(
-			'<p class="hint">%s</p>',
-			esc_html( sprintf(
-				1 === count( $on_day )
-					? 'The club had this on that day — was that it?'
-					: 'The club had these on that day — was it one of them?',
-				''
-			) )
-		);
-		echo '<div class="places">';
-		foreach ( $on_day as $ev ) {
-			printf(
-				'<label class="pl d0"><input type="radio" name="event" value="%s"> <span>%s</span> <em>%s</em></label>',
-				esc_attr( $ev['title'] ),
-				esc_html( $ev['title'] ),
-				esc_html( $ev['when'] )
-			);
-		}
-		echo '<label class="pl d0"><input type="radio" name="event" value="" checked> <span>Something else &mdash; or not sure</span></label>';
-		echo '</div>';
-		echo '<input type="text" name="event_other" maxlength="120" placeholder="Something not listed">';
-		echo '<em>Only if it is not above. Anything typed here wins.</em>';
-	} else {
-		// No date, or nothing on that day. A list of the names we actually use
-		// still beats a blank box: browsers offer them as you type.
-		$titles = function_exists( 'gasf_photo_event_titles' ) ? gasf_photo_event_titles() : array();
-		echo '<input type="text" name="event" maxlength="120" list="gasf-events" placeholder="Oktoberfest, Dinner Night, a work day…" autocomplete="off">';
-		if ( $titles ) {
-			echo '<datalist id="gasf-events">';
-			foreach ( $titles as $tt ) { printf( '<option value="%s">', esc_attr( $tt ) ); }
-			echo '</datalist>';
-			echo '<em>Start typing and the club\'s own event names appear.</em>';
-		}
-	}
-	echo '</div>';
 	echo '</div>';
 
-	/* ---- one block per photo ---- */
+	/* ---- one block per photo, each complete in itself ---- */
 	foreach ( $ids as $i => $id ) {
+		$own_date  = (string) get_post_meta( $id, '_gasf_photo_taken', true );
+		$own_place = (int) get_post_meta( $id, '_gasf_photo_place_guess', true );
+		$own_place = $own_place ? get_term( $own_place, 'gasf_photo_place' ) : null;
+		$place_val = ( $own_place && ! is_wp_error( $own_place ) ) ? $own_place->name : '';
+
 		$img = wp_get_attachment_image( $id, 'medium', false, array( 'loading' => 'lazy', 'alt' => '' ) );
-		echo '<div class="card photo">';
+		printf( '<div class="card photo" data-photo="%d"%s>', (int) $id, 0 === $i ? ' data-first="1"' : '' );
 		echo '<div class="thumb">' . $img . '</div>'; // phpcs:ignore WordPress.Security.EscapeOutput -- core-generated markup
 		echo '<div class="pad fields">';
 		printf( '<h3>Photo %d of %d</h3>', (int) $i + 1, count( $ids ) );
+
+		// Date. data-own marks a value that came from the photo itself, which
+		// the inheritance must not overwrite.
+		printf(
+			'<label class="f"><span>When was it taken?</span>' .
+			'<input type="date" class="f-date" name="photo[%d][taken]" value="%s" max="%s"%s>' .
+			'<em>%s</em></label>',
+			(int) $id,
+			esc_attr( $own_date ),
+			esc_attr( gmdate( 'Y-m-d' ) ),
+			$own_date ? ' data-own="1"' : '',
+			$own_date ? 'Read from the photo itself — change it if it looks wrong.' : 'A rough date is much better than none.'
+		);
+
+		// Where. Hierarchical rows, because GPS can put a photo on the grounds
+		// but never in a particular room.
+		echo '<div class="f"><span>Where?</span>';
+		if ( $place_val ) {
+			printf( '<p class="hint">The camera put this at <strong>%s</strong>. Say which part if you know.</p>', esc_html( $place_val ) );
+		}
+		if ( $tree ) {
+			echo '<div class="places">';
+			foreach ( $tree as $row ) {
+				$term = $row['term'];
+				printf(
+					'<label class="pl d%d"><input type="radio" class="f-place" name="photo[%d][place]" value="%s"%s%s> <span>%s</span>%s</label>',
+					min( 2, (int) $row['depth'] ),
+					(int) $id,
+					esc_attr( $term->name ),
+					checked( $term->name, $place_val, false ),
+					$place_val && $term->name === $place_val ? ' data-own="1"' : '',
+					esc_html( $term->name ),
+					$row['depth'] ? '' : ' <em>anywhere here</em>'
+				);
+			}
+			printf(
+				'<label class="pl d0"><input type="radio" class="f-place" name="photo[%d][place]" value=""%s> <span>Somewhere else &mdash; or not sure</span></label>',
+				(int) $id,
+				checked( '', $place_val, false )
+			);
+			echo '</div>';
+		}
+		printf( '<input type="text" class="f-placeother" name="photo[%d][place_other]" maxlength="120" placeholder="Somewhere not on the list">', (int) $id );
+		echo '<em>Only if it is not above. Anything typed here wins.</em></div>';
+
+		// Occasion — a search over the club's calendar, not a blank box.
+		echo '<div class="f"><span>What was the occasion?</span>';
+		printf(
+			'<input type="text" class="f-evsearch" placeholder="Start typing an event name…" autocomplete="off" data-for="%d">',
+			(int) $id
+		);
+		echo '<div class="evlist" data-for="' . (int) $id . '"></div>';
+		printf( '<input type="hidden" class="f-event" name="photo[%d][event]" value="">', (int) $id );
+		printf( '<input type="hidden" class="f-eventid" name="photo[%d][event_id]" value="">', (int) $id );
+		echo '<em class="evnote">Events on the date above come up first. Nothing matching? Tick <strong>Not a club event</strong> and type it.</em>';
+		echo '</div>';
 
 		echo '<div class="f"><span>Who is in it?</span>';
 		echo '<div class="people" data-id="' . (int) $id . '">';
@@ -294,6 +311,14 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--gasf-accent);out
 .pl em{font-style:normal;font-size:13px;color:var(--muted)}
 .pl.d1{margin-left:22px}
 .pl.d2{margin-left:44px}
+.evlist{display:flex;flex-direction:column;gap:5px;margin:6px 0}
+.evopt{text-align:left;border:1px solid var(--border);background:#fff;border-radius:6px;
+	padding:10px 12px;font:inherit;font-size:15px;cursor:pointer;color:var(--text)}
+.evopt em{font-style:normal;color:var(--muted);font-size:13px}
+.evopt:hover{background:var(--chip)}
+.evopt.on{border-color:var(--gasf-accent);background:var(--chip);box-shadow:inset 0 0 0 1px var(--gasf-accent);font-weight:600}
+.evopt.evfree{border-style:dashed;color:var(--muted)}
+.evnote{margin-top:2px}
 /* :has() is unsupported on older Android browsers, where the radio dot alone
    still shows the selection — degraded, never broken. */
 .addp{background:none;border:1px dashed var(--border);color:var(--ink);border-radius:6px;padding:8px 14px;font:inherit;font-size:14px;cursor:pointer}
@@ -321,6 +346,13 @@ function gasf_crm_photo_script() {
 	?>
 <script>
 (function(){
+	// Event titles are club-authored, but they reach the DOM as markup here, so
+	// they are escaped for both text and quoted-attribute positions.
+	function esc(s){
+		return String(s == null ? '' : s)
+			.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+			.replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+	}
 	// "+ Add another person" clones the last box in that photo's group. Kept to
 	// one behaviour with no framework: this page is opened once, on a phone, by
 	// somebody doing us a favour.
@@ -335,6 +367,146 @@ function gasf_crm_photo_script() {
 		n.value = '';
 		box.appendChild(n);
 		n.focus();
+	});
+
+	// Enter must never submit this.
+	//
+	// Somebody typed an event name, pressed Enter to confirm it the way every
+	// search box on earth works, and the whole form went. Everything they had
+	// filled in for six photos was submitted half-finished. A text input inside
+	// a form does that by default; a textarea keeps its newlines, and the send
+	// button still works by click or space.
+	var form = document.querySelector('.tagform');
+	if (form) {
+		form.addEventListener('keydown', function(e){
+			if (e.key === 'Enter' && e.target && e.target.tagName === 'INPUT') { e.preventDefault(); }
+		});
+	}
+
+	/* -------- the club's calendar, searched not typed --------
+	   98% of these photos are of something the club put on, so a blank box is
+	   the wrong default: it collects "oktoberfest", "Oktoberfest 2026" and
+	   "OKTOBER FEST" as three answers to one question. Free text is kept, but
+	   as the deliberate last resort it actually is. */
+	var EV = (typeof GASF_EVENTS !== 'undefined') ? GASF_EVENTS : [];
+
+	function evRender(box, list, chosen){
+		var id = box.dataset.for;
+		box.innerHTML = list.map(function(e){
+			return '<button type="button" class="evopt' + (chosen === e.title ? ' on' : '') +
+				'" data-title="' + esc(e.title) + '" data-id="' + e.id + '">' +
+				esc(e.title) + ' <em>' + esc(e.when) + '</em></button>';
+		}).join('') +
+			'<button type="button" class="evopt evfree" data-title="" data-id="0">Not a club event &mdash; let me type it</button>';
+
+		Array.prototype.forEach.call(box.querySelectorAll('.evopt'), function(b){
+			b.onclick = function(){
+				var card = box.closest('.photo');
+				Array.prototype.forEach.call(box.querySelectorAll('.evopt'), function(x){ x.classList.remove('on'); });
+				b.classList.add('on');
+
+				var free = card.querySelector('.f-evfree');
+				if (b.classList.contains('evfree')) {
+					if (!free) {
+						free = document.createElement('input');
+						free.type = 'text'; free.className = 'f-evfree'; free.maxLength = 120;
+						free.placeholder = 'What was it?';
+						b.parentNode.parentNode.insertBefore(free, b.parentNode.nextSibling);
+						free.oninput = function(){
+							card.querySelector('.f-event').value = free.value;
+							card.querySelector('.f-eventid').value = '';
+							touch(card, 'event');
+						};
+					}
+					free.hidden = false; free.focus();
+					card.querySelector('.f-event').value = free.value;
+					card.querySelector('.f-eventid').value = '';
+				} else {
+					if (free) { free.hidden = true; }
+					card.querySelector('.f-event').value = b.dataset.title;
+					card.querySelector('.f-eventid').value = b.dataset.id;
+				}
+				touch(card, 'event');
+			};
+		});
+	}
+
+	function evFor(card){
+		var box   = card.querySelector('.evlist');
+		var search= card.querySelector('.f-evsearch');
+		var date  = card.querySelector('.f-date');
+		var q     = search.value.trim().toLowerCase();
+		var chosen= card.querySelector('.f-event').value;
+
+		var list;
+		if (q) {
+			list = EV.filter(function(e){ return e.title.toLowerCase().indexOf(q) !== -1; }).slice(0, 12);
+		} else if (date && date.value) {
+			list = EV.filter(function(e){ return e.date === date.value; });
+			// Nothing that day: show the nearest handful rather than an empty
+			// panel, since a date can easily be a day out.
+			if (!list.length) { list = EV.slice(0, 8); }
+		} else {
+			list = EV.slice(0, 8);
+		}
+		evRender(box, list, chosen);
+	}
+
+	/* -------- photo 1's answers flow down, until touched -------- */
+	function touch(card, what){ card.dataset['touched' + what] = '1'; }
+	function touched(card, what){ return card.dataset['touched' + what] === '1'; }
+
+	var cards = Array.prototype.slice.call(document.querySelectorAll('.photo'));
+	var first = cards[0];
+
+	function inherit(){
+		if (!first || cards.length < 2) { return; }
+		var d = first.querySelector('.f-date');
+		var p = first.querySelector('.f-place:checked');
+		var e = first.querySelector('.f-event');
+		var i = first.querySelector('.f-eventid');
+
+		cards.slice(1).forEach(function(c){
+			// A value the photo itself carried is evidence about THIS picture and
+			// outranks anything copied from a different one.
+			var cd = c.querySelector('.f-date');
+			if (cd && !cd.dataset.own && !touched(c, 'date') && d) { cd.value = d.value; }
+
+			if (p && !touched(c, 'place')) {
+				var own = c.querySelector('.f-place[data-own]');
+				if (!own) {
+					var match = c.querySelector('.f-place[value="' + (window.CSS && CSS.escape ? CSS.escape(p.value) : p.value) + '"]');
+					if (match) { match.checked = true; }
+				}
+			}
+
+			if (e && !touched(c, 'event')) {
+				c.querySelector('.f-event').value = e.value;
+				c.querySelector('.f-eventid').value = i ? i.value : '';
+				evFor(c);
+			}
+		});
+	}
+
+	cards.forEach(function(card){
+		var search = card.querySelector('.f-evsearch');
+		var date   = card.querySelector('.f-date');
+
+		if (search) {
+			var t = null;
+			search.oninput = function(){ clearTimeout(t); t = setTimeout(function(){ evFor(card); }, 150); };
+		}
+		if (date) {
+			date.onchange = function(){
+				touch(card, 'date');
+				evFor(card);
+				if (card === first) { inherit(); }
+			};
+		}
+		Array.prototype.forEach.call(card.querySelectorAll('.f-place'), function(r){
+			r.onchange = function(){ touch(card, 'place'); if (card === first) { inherit(); } };
+		});
+		evFor(card);
 	});
 
 	// Characters remaining, counted down rather than up: the limit is the thing
