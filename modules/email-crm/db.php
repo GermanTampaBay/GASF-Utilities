@@ -368,6 +368,38 @@ function gasf_crm_set_contact_name( $id, $name ) {
 }
 
 /**
+ * Remove an address book entry. Returns the deleted address, or false.
+ *
+ * This removes the address book row and nothing else. No message, thread, reply
+ * or attachment is touched — the address book is a projection of traffic, not a
+ * record of it, and the mail itself lives in the messages and threads tables.
+ *
+ * Which also means the row COMES BACK the next time that address writes to the
+ * club or we write to it, because gasf_crm_touch_contact re-inserts it. That is
+ * the correct behaviour for a derived table, but "delete" reads as "block" to
+ * most people, so the admin screen says so on the confirmation and again in the
+ * notice afterwards. Deleting is for tidying a typo or a one-off out of the
+ * forward autocomplete; it is not a way to stop hearing from somebody.
+ *
+ * Logged, because "where did that address go?" is otherwise unanswerable.
+ */
+function gasf_crm_delete_contact( $id ) {
+	global $wpdb;
+
+	$id = (int) $id;
+	if ( ! $id ) { return false; }
+
+	$t     = gasf_crm_table( 'contacts' );
+	$email = (string) $wpdb->get_var( $wpdb->prepare( "SELECT email FROM {$t} WHERE id = %d", $id ) );
+	if ( '' === $email ) { return false; }
+
+	if ( ! $wpdb->delete( $t, array( 'id' => $id ), array( '%d' ) ) ) { return false; }
+
+	gasf_mec_log( 'CRM: address book entry ' . $email . ' deleted by user ' . get_current_user_id() );
+	return $email;
+}
+
+/**
  * Address book, most recently used first — which is the order that makes an
  * autocomplete useful, since the address you want is usually one you used lately.
  */

@@ -137,6 +137,17 @@ function gasf_crm_admin_tab() {
 			}
 		}
 
+		if ( 'contact_delete' === $act ) {
+			$gone = gasf_crm_delete_contact( (int) ( $_POST['contact_id'] ?? 0 ) );
+			$notice = $gone
+				// Say the reappearance out loud here too, not only on the confirm
+				// dialog — the dialog is read while deciding, this is read after
+				// the row has visibly vanished, which is when "is it gone for
+				// good?" actually gets asked.
+				? '<div class="notice notice-success"><p>' . esc_html( 'Removed ' . $gone . ' from the address book. Messages and replies are untouched, and the address will reappear by itself if it is used again.' ) . '</p></div>'
+				: '<div class="notice notice-error"><p>Could not remove that entry — it may already be gone.</p></div>';
+		}
+
 		if ( 'user_streams' === $act ) {
 			$uid = (int) ( $_POST['user_id'] ?? 0 );
 			// Unchecking every box submits nothing, which is a real answer here:
@@ -402,7 +413,7 @@ function gasf_crm_admin_tab() {
 	if ( ! $contacts ) {
 		echo '<p class="description">Empty. It fills itself in as mail is received, replied to and forwarded — there is nothing to maintain by hand.</p>';
 	} else {
-		echo '<table class="widefat striped"><thead><tr><th>Email</th><th>Name</th><th>Sent to</th><th>Received from</th><th>Last seen</th></tr></thead><tbody>';
+		echo '<table class="widefat striped"><thead><tr><th>Email</th><th>Name</th><th>Sent to</th><th>Received from</th><th>Last seen</th><th></th></tr></thead><tbody>';
 		foreach ( $contacts as $c ) {
 			echo '<tr><td><code>' . esc_html( $c['email'] ) . '</code></td>';
 
@@ -426,11 +437,27 @@ function gasf_crm_admin_tab() {
 
 			echo '<td>' . (int) $c['sent_count'] . '</td>';
 			echo '<td>' . (int) $c['recv_count'] . '</td>';
-			echo '<td>' . esc_html( $c['last_seen'] ? human_time_diff( strtotime( $c['last_seen'] . ' UTC' ) ) . ' ago' : '—' ) . '</td></tr>';
+			echo '<td>' . esc_html( $c['last_seen'] ? human_time_diff( strtotime( $c['last_seen'] . ' UTC' ) ) . ' ago' : '—' ) . '</td>';
+
+			// Its own form: the Name cell already contains one and forms cannot
+			// nest. Confirmed rather than one-click, and the confirmation states
+			// what delete does NOT do — a row vanishing from a list reads as
+			// "that person is dealt with", which is not what happened.
+			$warn = sprintf(
+				"Remove %s from the address book?\n\nMessages, threads and replies are not affected — only this entry in the list of addresses.\n\nIt will reappear on its own if that address is used again.",
+				$c['email']
+			);
+			echo '<td><form method="post">';
+			wp_nonce_field( 'gasf_crm' );
+			echo '<input type="hidden" name="gasf_crm_action" value="contact_delete">';
+			echo '<input type="hidden" name="contact_id" value="' . (int) $c['id'] . '">';
+			echo '<button class="button button-small" onclick="return confirm(' . esc_attr( wp_json_encode( $warn ) ) . ')">Delete</button>';
+			echo '</form></td></tr>';
 		}
 		echo '</tbody></table>';
 		echo '<p class="description">Newest 50. Every address the club has written to or heard from; the forward box on <code>/email</code> autocompletes from this list.</p>';
 		echo '<p class="description">Names normally arrive from the sender\'s own email, so there is nothing to maintain here — but some mail clients send no name at all, and those you can fill in. A name you type is marked &#128274; and the sync will not overwrite it. Clearing the box removes the padlock too, so the address goes back to naming itself. The address cannot be edited: it is what every message is filed against, and changing it would detach that history while looking like a correction.</p>';
+		echo '<p class="description"><strong>Delete</strong> removes the entry from this list and nothing else &mdash; no email, reply or thread is touched, and none of them stop working. This list is built from mail as it comes and goes, so a deleted address <strong>reappears by itself the next time it is used</strong>. It is for tidying a typo or a one-off out of the forward box\'s suggestions, not for stopping mail from somebody &mdash; for that, use <strong>Ignore&hellip;</strong> on the message itself.</p>';
 	}
 	?>
 
