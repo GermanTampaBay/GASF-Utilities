@@ -163,9 +163,60 @@ function gasf_crm_photo_page( $state, $invite = null, $notice = '' ) {
 	echo '<input type="text" name="place_other" maxlength="120" placeholder="Somewhere not on the list">';
 	echo '<em>Only if it is not above. Anything typed here wins.</em></div>';
 
-	echo '<label class="f"><span>What was the occasion?</span>';
-	echo '<input type="text" name="event" maxlength="120" placeholder="Oktoberfest 2026, Dinner Night, a work day…">';
-	echo '</label>';
+	/*
+	 * Occasion.
+	 *
+	 * If the photos carry a date and the club had something on that day, offer
+	 * it. "Was it one of these?" is a far better question than "type the name of
+	 * the event", which collects "oktoberfest", "Oktoberfest 2026" and "OKTOBER
+	 * FEST" as three different answers to the same thing.
+	 *
+	 * Server-rendered from the suggested date rather than looked up live: this
+	 * page is unauthenticated, and a search endpoint here would make the club's
+	 * whole calendar queryable by anyone holding a photo link.
+	 */
+	$on_day = ( $suggest_date && function_exists( 'gasf_photo_events_on_date' ) )
+		? gasf_photo_events_on_date( $suggest_date )
+		: array();
+
+	echo '<div class="f"><span>What was the occasion?</span>';
+
+	if ( $on_day ) {
+		printf(
+			'<p class="hint">%s</p>',
+			esc_html( sprintf(
+				1 === count( $on_day )
+					? 'The club had this on that day — was that it?'
+					: 'The club had these on that day — was it one of them?',
+				''
+			) )
+		);
+		echo '<div class="places">';
+		foreach ( $on_day as $ev ) {
+			printf(
+				'<label class="pl d0"><input type="radio" name="event" value="%s"> <span>%s</span> <em>%s</em></label>',
+				esc_attr( $ev['title'] ),
+				esc_html( $ev['title'] ),
+				esc_html( $ev['when'] )
+			);
+		}
+		echo '<label class="pl d0"><input type="radio" name="event" value="" checked> <span>Something else &mdash; or not sure</span></label>';
+		echo '</div>';
+		echo '<input type="text" name="event_other" maxlength="120" placeholder="Something not listed">';
+		echo '<em>Only if it is not above. Anything typed here wins.</em>';
+	} else {
+		// No date, or nothing on that day. A list of the names we actually use
+		// still beats a blank box: browsers offer them as you type.
+		$titles = function_exists( 'gasf_photo_event_titles' ) ? gasf_photo_event_titles() : array();
+		echo '<input type="text" name="event" maxlength="120" list="gasf-events" placeholder="Oktoberfest, Dinner Night, a work day…" autocomplete="off">';
+		if ( $titles ) {
+			echo '<datalist id="gasf-events">';
+			foreach ( $titles as $tt ) { printf( '<option value="%s">', esc_attr( $tt ) ); }
+			echo '</datalist>';
+			echo '<em>Start typing and the club\'s own event names appear.</em>';
+		}
+	}
+	echo '</div>';
 	echo '</div>';
 
 	/* ---- one block per photo ---- */

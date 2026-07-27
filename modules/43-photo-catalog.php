@@ -514,6 +514,111 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 	}, 10, 3 );
 
 	/* ---------------------------------------------------------------------
+	 * The club's own calendar
+	 *
+	 * A photo taken on a day the club held something was almost certainly taken
+	 * AT it, so the date is the strongest clue anybody has about the occasion —
+	 * and asking "which of these three?" is a much better question than "type
+	 * the name of the event", which invites "oktoberfest", "Oktoberfest 2026"
+	 * and "OKTOBERFEST" as three separate answers.
+	 *
+	 * Feature-detected throughout. GASF Events is a separate plugin: without it
+	 * these return nothing and the Occasion field stays plain free text, which
+	 * is exactly what it was before.
+	 * ------------------------------------------------------------------- */
+
+	/** True when there is a calendar to ask. */
+	function gasf_photo_has_calendar() {
+		return defined( 'GASF_EVENTS_CPT' ) && post_type_exists( GASF_EVENTS_CPT );
+	}
+
+	function gasf_photo_event_shape( array $row ) {
+		$ts = (int) $row['ts'];
+		return array(
+			'id'    => (int) $row['ID'],
+			'title' => (string) $row['post_title'],
+			'date'  => wp_date( 'Y-m-d', $ts ),
+			'when'  => wp_date( get_option( 'date_format' ) . ' g:ia', $ts ),
+		);
+	}
+
+	/**
+	 * Events on a given LOCAL calendar day.
+	 *
+	 * _gasf_start_ts is a UTC unix timestamp, so the day boundary has to be
+	 * built in the site's timezone. Comparing against UTC midnight would file a
+	 * 6pm Biergarten under the following day for the whole of the year that the
+	 * offset is negative — which here is all of it.
+	 */
+	function gasf_photo_events_on_date( $date, $limit = 12 ) {
+		if ( ! gasf_photo_has_calendar() ) { return array(); }
+		if ( ! preg_match( '~^\d{4}-\d{2}-\d{2}$~', (string) $date ) ) { return array(); }
+
+		try {
+			$start = new DateTimeImmutable( $date . ' 00:00:00', wp_timezone() );
+		} catch ( Exception $e ) {
+			return array();
+		}
+		$end = $start->modify( '+1 day' );
+
+		global $wpdb;
+		$rows = $wpdb->get_results( $wpdb->prepare(
+			"SELECT p.ID, p.post_title, CAST(m.meta_value AS UNSIGNED) AS ts
+			   FROM {$wpdb->posts} p
+			   JOIN {$wpdb->postmeta} m ON m.post_id = p.ID AND m.meta_key = '_gasf_start_ts'
+			  WHERE p.post_type = %s AND p.post_status = 'publish'
+			    AND CAST(m.meta_value AS UNSIGNED) >= %d
+			    AND CAST(m.meta_value AS UNSIGNED) <  %d
+			  ORDER BY ts ASC LIMIT %d",
+			GASF_EVENTS_CPT, $start->getTimestamp(), $end->getTimestamp(), (int) $limit
+		), ARRAY_A );
+
+		return array_map( 'gasf_photo_event_shape', (array) $rows );
+	}
+
+	/** Events whose title matches, newest first — for when the date is no help. */
+	function gasf_photo_events_search( $q, $limit = 15 ) {
+		if ( ! gasf_photo_has_calendar() ) { return array(); }
+		$q = trim( (string) $q );
+		if ( mb_strlen( $q ) < 2 ) { return array(); }
+
+		global $wpdb;
+		$rows = $wpdb->get_results( $wpdb->prepare(
+			"SELECT p.ID, p.post_title, CAST(m.meta_value AS UNSIGNED) AS ts
+			   FROM {$wpdb->posts} p
+			   JOIN {$wpdb->postmeta} m ON m.post_id = p.ID AND m.meta_key = '_gasf_start_ts'
+			  WHERE p.post_type = %s AND p.post_status = 'publish' AND p.post_title LIKE %s
+			  ORDER BY ts DESC LIMIT %d",
+			GASF_EVENTS_CPT, '%' . $wpdb->esc_like( $q ) . '%', (int) $limit
+		), ARRAY_A );
+
+		return array_map( 'gasf_photo_event_shape', (array) $rows );
+	}
+
+	/**
+	 * Distinct event names from recent years.
+	 *
+	 * DISTINCT on the title on purpose: there are 887 events but only a few
+	 * dozen names, because the Biergarten runs weekly. A submitter picking from
+	 * a list wants "Biergarten", not 200 Wednesdays.
+	 */
+	function gasf_photo_event_titles( $years = 5, $limit = 300 ) {
+		if ( ! gasf_photo_has_calendar() ) { return array(); }
+
+		global $wpdb;
+		$since = time() - ( (int) $years * YEAR_IN_SECONDS );
+		return (array) $wpdb->get_col( $wpdb->prepare(
+			"SELECT DISTINCT p.post_title
+			   FROM {$wpdb->posts} p
+			   JOIN {$wpdb->postmeta} m ON m.post_id = p.ID AND m.meta_key = '_gasf_start_ts'
+			  WHERE p.post_type = %s AND p.post_status = 'publish'
+			    AND CAST(m.meta_value AS UNSIGNED) >= %d
+			  ORDER BY p.post_title ASC LIMIT %d",
+			GASF_EVENTS_CPT, $since, (int) $limit
+		) );
+	}
+
+	/* ---------------------------------------------------------------------
 	 * Storing what we learned
 	 * ------------------------------------------------------------------- */
 

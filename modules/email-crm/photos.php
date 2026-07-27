@@ -314,9 +314,12 @@ function gasf_crm_photo_save_pending( array $invite ) {
 		'place' => sanitize_text_field( wp_unslash( $_POST['place'] ?? '' ) ),
 		'event' => sanitize_text_field( wp_unslash( $_POST['event'] ?? '' ) ),
 	);
-	// "Somewhere else" wins over the dropdown when it has been filled in.
+	// A typed answer beats a picked one: somebody who bothered to write it in
+	// the "something else" box has told us the list was wrong.
 	$other = sanitize_text_field( wp_unslash( $_POST['place_other'] ?? '' ) );
 	if ( '' !== $other ) { $batch['place'] = $other; }
+	$ev_other = sanitize_text_field( wp_unslash( $_POST['event_other'] ?? '' ) );
+	if ( '' !== $ev_other ) { $batch['event'] = $ev_other; }
 
 	$per = isset( $_POST['photo'] ) && is_array( $_POST['photo'] ) ? wp_unslash( $_POST['photo'] ) : array();
 
@@ -660,6 +663,20 @@ function gasf_crm_photo_confirm( $attachment_id, array $keep ) {
 		wp_set_object_terms( $id, '' === $v ? array() : array( $v ), $tax, false );
 	}
 
+	// Which occurrence, when the occasion came from the club's own calendar.
+	//
+	// The TERM stays the plain event name — "Oktoberfest", not "Oktoberfest
+	// 2026" — because "every Oktoberfest photo we have" is the question people
+	// actually ask, and a term per occurrence would mean 200 Biergarten terms
+	// for 200 Wednesdays. The exact event is kept alongside it as meta, so
+	// "photos from THIS one" stays answerable without polluting the vocabulary.
+	$eid = (int) ( $keep['event_id'] ?? 0 );
+	if ( $eid && gasf_photo_has_calendar() && GASF_EVENTS_CPT === get_post_type( $eid ) ) {
+		update_post_meta( $id, '_gasf_photo_event_id', $eid );
+	} else {
+		delete_post_meta( $id, '_gasf_photo_event_id' );
+	}
+
 	$taken = gasf_crm_photo_clean_date( $keep['taken'] ?? '' );
 	if ( $taken ) { update_post_meta( $id, '_gasf_photo_taken', $taken ); }
 
@@ -751,6 +768,27 @@ add_action( 'rest_api_init', function () {
 		},
 	) );
 
+	// What was on at the club that day, or a name search when the date is no
+	// help. Authenticated: the public tagging form gets its suggestions
+	// server-rendered instead, so the calendar is not queryable by anyone
+	// holding a photo link.
+	register_rest_route( 'gasf/v1', '/crm/photos/events', array(
+		'methods'             => 'GET',
+		'permission_callback' => $guard,
+		'callback'            => function ( WP_REST_Request $req ) {
+			if ( ! function_exists( 'gasf_photo_has_calendar' ) || ! gasf_photo_has_calendar() ) {
+				return array( 'calendar' => false, 'events' => array() );
+			}
+			$q = trim( (string) $req->get_param( 'q' ) );
+			return array(
+				'calendar' => true,
+				'events'   => '' !== $q
+					? gasf_photo_events_search( $q )
+					: gasf_photo_events_on_date( (string) $req->get_param( 'date' ) ),
+			);
+		},
+	) );
+
 	register_rest_route( 'gasf/v1', '/crm/photos/confirm', array(
 		'methods'             => 'POST',
 		'permission_callback' => $guard,
@@ -767,11 +805,12 @@ add_action( 'rest_api_init', function () {
 			}
 
 			$ok = gasf_crm_photo_confirm( $aid, array(
-				'people'  => (array) $req->get_param( 'people' ),
-				'place'   => (string) $req->get_param( 'place' ),
-				'event'   => (string) $req->get_param( 'event' ),
-				'taken'   => (string) $req->get_param( 'taken' ),
-				'caption' => (string) $req->get_param( 'caption' ),
+				'people'   => (array) $req->get_param( 'people' ),
+				'place'    => (string) $req->get_param( 'place' ),
+				'event'    => (string) $req->get_param( 'event' ),
+				'event_id' => (int) $req->get_param( 'event_id' ),
+				'taken'    => (string) $req->get_param( 'taken' ),
+				'caption'  => (string) $req->get_param( 'caption' ),
 			) );
 			if ( is_wp_error( $ok ) ) { return $ok; }
 

@@ -301,6 +301,16 @@ textarea{width:100%;min-height:150px;padding:10px;border:1px solid var(--gasf-bo
 .prow{display:flex;gap:8px;flex-wrap:wrap}
 .prow .pf{flex:1 1 130px}
 .pgeo{font-size:12px;color:var(--gasf-muted);margin:2px 0 8px}
+.pev{margin:0 0 8px}
+.pevlist{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:6px}
+.pevlist.muted{display:block;font-size:12px}
+.evpick{border:1px solid var(--gasf-border);background:var(--gasf-surface);border-radius:12px;
+	padding:3px 10px;font:inherit;font-size:12px;cursor:pointer;color:var(--gasf-text)}
+.evpick em{font-style:normal;color:var(--gasf-muted)}
+.evpick:hover{background:var(--s-tint);border-color:var(--s-accent)}
+.evpick.on{background:var(--s-ink);border-color:var(--s-ink);color:#fff}
+.evpick.on em{color:rgba(255,255,255,.75)}
+.p-evsearch{width:100%;padding:5px 8px;border:1px dashed var(--gasf-border);border-radius:4px;font:inherit;font-size:12px}
 .pdone{font-size:13px;font-weight:600;color:var(--ok)}
 .badge{display:inline-block;font-size:11px;padding:1px 7px;border-radius:9px;background:var(--gasf-chip);color:var(--gasf-muted);vertical-align:middle}
 .badge.ig{background:#fcf0f1;color:var(--danger)}
@@ -1043,7 +1053,14 @@ function gasf_crm_render_inbox() {
 			'<label class="pf"><span>Where</span><input type="text" class="p-place" value="' + esc(q.place||p.guess||'') + '"></label>' +
 			'<label class="pf"><span>Occasion</span><input type="text" class="p-event" value="' + esc(q.event||'') + '"></label>' +
 			'<label class="pf"><span>Date</span><input type="date" class="p-taken" value="' + esc(q.taken||p.taken||'') + '"></label>' +
-			'</div>';
+			'</div>' +
+			// What the club had on that day. Populated from the date field and
+			// refreshed whenever it changes, because correcting the date is
+			// exactly when the right occasion becomes knowable.
+			'<div class="pev"><div class="pevlist muted">…</div>' +
+			'<input type="text" class="p-evsearch" placeholder="…or search the calendar by name">' +
+			'</div>' +
+			'<input type="hidden" class="p-evid" value="">';
 
 		// The camera's own guess is shown next to what the sender typed, never
 		// merged into it. They disagree often enough — GPS is wider than a tight
@@ -1145,6 +1162,62 @@ function gasf_crm_render_inbox() {
 			};
 		});
 
+		// Calendar suggestions per card.
+		Array.prototype.forEach.call(pane.querySelectorAll('.pev'), function(box){
+			var card   = box.closest('.pcard');
+			var list   = box.querySelector('.pevlist');
+			var date   = card.querySelector('.p-taken');
+			var name   = card.querySelector('.p-event');
+			var evid   = card.querySelector('.p-evid');
+			var search = box.querySelector('.p-evsearch');
+			var seq    = 0;
+
+			function paint(events, why){
+				if (!events.length) { list.className = 'pevlist muted'; list.textContent = why; return; }
+				list.className = 'pevlist';
+				list.innerHTML = events.map(function(e){
+					return '<button type="button" class="evpick" data-id="' + e.id + '" data-title="' +
+						esc(e.title) + '">' + esc(e.title) + ' <em>' + esc(e.when) + '</em></button>';
+				}).join('');
+				Array.prototype.forEach.call(list.querySelectorAll('.evpick'), function(b){
+					b.onclick = function(){
+						name.value = b.dataset.title;
+						evid.value = b.dataset.id;
+						Array.prototype.forEach.call(list.querySelectorAll('.evpick'), function(x){ x.classList.remove('on'); });
+						b.classList.add('on');
+					};
+				});
+			}
+
+			function load(q){
+				var mine = ++seq;
+				var qs = q ? '&q=' + encodeURIComponent(q) : '&date=' + encodeURIComponent(date ? date.value : '');
+				if (!q && (!date || !date.value)) {
+					paint([], 'Set a date and the club’s calendar for that day appears here.');
+					return;
+				}
+				api('/photos/events?_=1' + qs).then(function(r){
+					// Ignore a reply that arrived after a newer request: typing in
+					// the search box fires several and they can land out of order.
+					if (mine !== seq) { return; }
+					if (!r.calendar) { list.remove(); if (search) { search.remove(); } return; }
+					paint(r.events, q ? 'Nothing in the calendar matches that.' : 'Nothing was on at the club that day.');
+				}).catch(function(){ if (mine === seq) { paint([], 'Could not reach the calendar.'); } });
+			}
+
+			// Typing a name by hand means it is not one of ours any more.
+			if (name) { name.oninput = function(){ evid.value = ''; }; }
+			if (date) { date.onchange = function(){ if (search) { search.value = ''; } load(''); }; }
+			if (search) {
+				var timer = null;
+				search.oninput = function(){
+					clearTimeout(timer);
+					timer = setTimeout(function(){ load(search.value.trim()); }, 250);
+				};
+			}
+			load('');
+		});
+
 		Array.prototype.forEach.call(pane.querySelectorAll('.pcard'), function(card){
 			var ok = card.querySelector('.p-ok');
 			if (!ok) { return; }
@@ -1160,6 +1233,9 @@ function gasf_crm_render_inbox() {
 					// composing one.
 					people: v('.p-people').split(',').map(function(s){ return s.trim(); }).filter(Boolean),
 					place: v('.p-place'), event: v('.p-event'),
+					// Set only when the occasion was picked from the calendar, so
+					// a hand-typed name never claims to be a specific event.
+					event_id: parseInt(v('.p-evid'), 10) || 0,
 					taken: v('.p-taken'), caption: v('.p-caption')
 				})}).then(function(){ open(id); })
 				  .catch(function(e){ ok.disabled = false; msg.textContent = e.message; });
