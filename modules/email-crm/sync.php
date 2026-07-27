@@ -90,7 +90,9 @@ function gasf_crm_sync() {
 				// Inserted rather than adopted means no placeholder matched, so
 				// nothing in the CRM sent it — somebody answered from Outlook.
 				if ( $r['inserted'] ) {
-					gasf_crm_log_event( $r['thread_id'], 'replied_outlook', 'Answered from Outlook rather than the CRM', 0 );
+					// Detail text is shown to volunteers in the History timeline, so
+					// it does not name a mail client none of them will ever open.
+					gasf_crm_log_event( $r['thread_id'], 'replied_outlook', 'A reply was sent without going through this page', 0 );
 					unset( $fresh[ $r['thread_id'] ] );
 				}
 			}
