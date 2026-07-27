@@ -110,7 +110,11 @@ function gasf_crm_auth_start( $provider ) {
 	// login-CSRF without the cookie that went with it.
 	$browser = bin2hex( random_bytes( 16 ) );
 	setcookie( 'gasf_crm_oauth', $browser, array(
-		'expires'  => time() + 900,
+		// Half an hour, not fifteen minutes. On a phone this leg can involve
+		// installing an app, a password manager and a two-factor prompt, and
+		// the window is not what makes this safe — single use, PKCE and the
+		// cookie binding are.
+		'expires'  => time() + ( 30 * MINUTE_IN_SECONDS ),
 		'path'     => '/email',
 		// Derived from the site URL, not is_ssl(). This host terminates TLS at a
 		// proxy and never sets $_SERVER['HTTPS'], so is_ssl() reports false on a
@@ -129,7 +133,7 @@ function gasf_crm_auth_start( $provider ) {
 		'provider' => $provider,
 		'verifier' => $verifier,
 		'browser'  => $browser,
-	), 15 * MINUTE_IN_SECONDS );
+	), 30 * MINUTE_IN_SECONDS );
 
 	wp_redirect( $p['authorize'] . '?' . http_build_query( array(
 		'client_id'             => $p['client_id'],
@@ -166,12 +170,25 @@ function gasf_crm_auth_callback( $provider ) {
 	$stash = get_transient( 'gasf_crm_oauth_' . $state );
 	delete_transient( 'gasf_crm_oauth_' . $state ); // single use, whatever happens next
 	if ( ! is_array( $stash ) || $stash['provider'] !== $provider ) {
-		gasf_crm_auth_fail( 'That sign-in link has expired. Please try again.' );
+		// Almost always a page that was reloaded or gone back to: the state is
+		// spent the first time through, so the second attempt lands here. Say
+		// what to do rather than just what went wrong — "expired" invites
+		// somebody to reload again, which fails in exactly the same way.
+		gasf_crm_auth_fail(
+			'That sign-in link has already been used, or was left too long. Start again from the sign-in page — reloading this page will not work.',
+			is_array( $stash ) ? 'provider mismatch' : 'state not found'
+		);
 	}
 
 	$browser = isset( $_COOKIE['gasf_crm_oauth'] ) ? sanitize_text_field( wp_unslash( $_COOKIE['gasf_crm_oauth'] ) ) : '';
 	if ( ! hash_equals( (string) $stash['browser'], $browser ) ) {
-		gasf_crm_auth_fail( 'Sign-in could not be verified for this browser. Please try again.' );
+		// The usual cause is finishing in a different browser from the one that
+		// started — an in-app browser handing off to Safari, most often.
+		gasf_crm_auth_fail(
+			'Sign-in finished in a different browser from the one it started in. Open '
+				. esc_html( home_url( '/email' ) ) . ' directly in Safari or Chrome and try there.',
+			'' === $browser ? 'no browser cookie returned' : 'browser cookie did not match'
+		);
 	}
 
 	$r = wp_remote_post( $p['token'], array(
@@ -308,9 +325,31 @@ function gasf_crm_find_or_create_user( $provider, array $claims ) {
 	return (int) $user_id;
 }
 
-function gasf_crm_auth_fail( $msg ) {
+/**
+ * End a sign-in attempt, and record why.
+ *
+ * Every one of these was previously silent. Somebody reported that they could
+ * not sign in and there was nothing whatsoever to look at — no way to tell a
+ * stale link from a missing cookie from a provider refusing the exchange, which
+ * are three different problems with three different answers.
+ *
+ * The log line carries the shape of the attempt, never its contents: whether a
+ * cookie arrived, not what was in it; which provider; the browser string, which
+ * is what separates "works on a laptop, fails in an in-app browser" from a real
+ * fault. No token, code or state value is written down.
+ */
+function gasf_crm_auth_fail( $msg, $detail = '' ) {
+	gasf_mec_log( sprintf(
+		'CRM auth FAILED: %s%s | cookie=%s | method=%s | ua=%s',
+		$msg,
+		$detail ? ' (' . $detail . ')' : '',
+		isset( $_COOKIE['gasf_crm_oauth'] ) ? 'present' : 'MISSING',
+		isset( $_SERVER['REQUEST_METHOD'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REQUEST_METHOD'] ) ) : '?',
+		isset( $_SERVER['HTTP_USER_AGENT'] ) ? substr( sanitize_text_field( wp_unslash( $_SERVER['HTTP_USER_AGENT'] ) ), 0, 120 ) : '?'
+	) );
+
 	wp_die(
-		esc_html( $msg ) . '<p><a href="' . esc_url( home_url( '/email' ) ) . '">Back to sign in</a></p>',
+		esc_html( $msg ) . '<p><a href="' . esc_url( home_url( '/email' ) ) . '">Start again</a></p>',
 		'Sign-in problem',
 		array( 'response' => 403 )
 	);
