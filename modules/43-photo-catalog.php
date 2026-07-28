@@ -1122,4 +1122,225 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 
 		gasf_photo_store_exif( $attachment_id, $exif );
 	}, 1 );
+
+	/* =================================================================
+	 * One-time backfill of the existing Media Library
+	 *
+	 * Everything above runs at upload time, which does nothing for the
+	 * fifteen years of photos already on the site. This walks them.
+	 *
+	 * The find that makes it worth doing: the host's WebP converter
+	 * destroys EXIF, but it KEEPS the original file beside the converted
+	 * one. So for most WebP attachments the camera data is still on disk,
+	 * in a file WordPress no longer points at — 117 photos' worth here,
+	 * against 29 readable from the attachments themselves.
+	 * ================================================================= */
+
+	/**
+	 * The best file to read EXIF from for an attachment.
+	 *
+	 * The attachment's own file normally. For a WebP, the original the
+	 * converter left behind — the converted copy has had its metadata
+	 * stripped, so reading it would truthfully report nothing at all.
+	 */
+	function gasf_photo_exif_source( $attachment_id ) {
+		$path = get_attached_file( (int) $attachment_id );
+		if ( ! $path ) { return ''; }
+
+		if ( ! preg_match( '~\.webp$~i', $path ) ) { return is_file( $path ) ? $path : ''; }
+
+		$stem = preg_replace( '~(-compressed)?\.webp$~i', '', $path );
+		foreach ( array( 'jpg', 'jpeg', 'JPG', 'JPEG', 'png', 'tif', 'tiff' ) as $ext ) {
+			if ( is_file( $stem . '.' . $ext ) ) { return $stem . '.' . $ext; }
+		}
+		return is_file( $path ) ? $path : '';
+	}
+
+	/**
+	 * Read what the camera recorded and turn it into catalogue terms.
+	 *
+	 * What it will assert, and what it will not:
+	 *
+	 *   - The DATE is a fact the camera recorded. Taken as read.
+	 *   - The PLACE is a geofence hit — the coordinates fell inside a
+	 *     boundary somebody drew. Applied, with the runners-up kept as
+	 *     alternatives, exactly as a fresh upload would.
+	 *   - The EVENT is applied ONLY when the club had exactly one thing on
+	 *     that day. Two events and the photo could be either; guessing
+	 *     would put a wrong, confident label on a photo nobody will ever
+	 *     re-check. Those are left for a person.
+	 *   - PEOPLE are never inferred. Nothing in a file says who is in it.
+	 *
+	 * Never overwrites. A taxonomy that already has a term on it was set by
+	 * somebody, and a batch job silently replacing a volunteer's answer with
+	 * a machine's is the worst thing this could do. Submissions still in the
+	 * CRM workflow are skipped entirely — they have their own path.
+	 *
+	 * Everything applied is recorded on the photo, so the whole run can be
+	 * undone without guessing which terms were the job's and which were not.
+	 *
+	 * @param bool $apply false reports what it WOULD do and writes nothing
+	 * @return array counts + per-photo notes
+	 */
+	function gasf_photo_backfill_library( $apply = false, $limit = 0 ) {
+		global $wpdb;
+
+		$ids = $wpdb->get_col(
+			"SELECT ID FROM {$wpdb->posts}
+			  WHERE post_type = 'attachment' AND post_mime_type LIKE 'image/%'
+			  ORDER BY ID"
+		);
+
+		$out = array(
+			'considered' => 0, 'dated' => 0, 'placed' => 0, 'evented' => 0,
+			'ambiguous'  => 0, 'skipped_workflow' => 0, 'skipped_tagged' => 0,
+			'from_original' => 0, 'notes' => array(),
+		);
+
+		foreach ( $ids as $id ) {
+			$id = (int) $id;
+			if ( $limit && $out['dated'] >= $limit ) { break; }
+
+			// The CRM owns its own submissions from intake to approval.
+			if ( get_post_meta( $id, '_gasf_photo_source', true ) ) { $out['skipped_workflow']++; continue; }
+
+			$src = gasf_photo_exif_source( $id );
+			if ( '' === $src ) { continue; }
+			$out['considered']++;
+
+			$exif = gasf_photo_read_exif( $src );
+			if ( empty( $exif['taken'] ) ) { continue; }
+
+			$own = get_attached_file( $id );
+			if ( $own && $src !== $own ) { $out['from_original']++; }
+
+			$out['dated']++;
+			$note = array( 'id' => $id, 'taken' => $exif['taken'], 'place' => '', 'event' => '' );
+
+			// Place, from the geofence — only onto a photo with no place yet.
+			$have_place = wp_get_object_terms( $id, 'gasf_photo_place', array( 'fields' => 'ids' ) );
+			$have_place = is_wp_error( $have_place ) ? array() : $have_place;
+
+			if ( null !== $exif['lat'] && null !== $exif['lon'] && ! $have_place ) {
+				$hits = gasf_photo_place_candidates( $exif['lat'], $exif['lon'] );
+				if ( $hits ) {
+					$term = get_term( (int) $hits[0]['term_id'], 'gasf_photo_place' );
+					if ( $term && ! is_wp_error( $term ) ) {
+						$note['place'] = $term->name;
+						$out['placed']++;
+					}
+				}
+			}
+
+			// Event, only where the day is unambiguous.
+			$have_event = wp_get_object_terms( $id, 'gasf_photo_event', array( 'fields' => 'ids' ) );
+			$have_event = is_wp_error( $have_event ) ? array() : $have_event;
+
+			if ( ! $have_event && gasf_photo_has_calendar() ) {
+				$evs = (array) gasf_photo_events_on_date( $exif['taken'] );
+				if ( 1 === count( $evs ) ) {
+					$note['event'] = (string) $evs[0]['title'];
+					$note['event_id'] = (int) $evs[0]['id'];
+					$out['evented']++;
+				} elseif ( count( $evs ) > 1 ) {
+					$out['ambiguous']++;
+				}
+			}
+
+			if ( $apply ) {
+				gasf_photo_store_exif( $id, $exif );
+
+				if ( '' !== $note['place'] ) {
+					wp_set_object_terms( $id, array( $note['place'] ), 'gasf_photo_place', false );
+				}
+				if ( '' !== $note['event'] ) {
+					wp_set_object_terms( $id, array( $note['event'] ), 'gasf_photo_event', false );
+					if ( ! empty( $note['event_id'] ) ) {
+						update_post_meta( $id, '_gasf_photo_event_id', (int) $note['event_id'] );
+					}
+				}
+
+				// The receipt. Without it an undo would have to guess which of a
+				// photo's terms this job put there.
+				update_post_meta( $id, '_gasf_photo_autotag', array(
+					'at'     => current_time( 'mysql', true ),
+					'source' => ( $own && $src !== $own ) ? 'kept original' : 'attachment',
+					'taken'  => $exif['taken'],
+					'place'  => $note['place'],
+					'event'  => $note['event'],
+				) );
+			}
+
+			if ( count( $out['notes'] ) < 40 ) { $out['notes'][] = $note; }
+		}
+
+		if ( $apply ) {
+			gasf_mec_log( sprintf(
+				'Photo catalogue: backfilled %d photo(s) from EXIF — %d placed by GPS, %d matched to a single event, %d left for a person (several events that day).',
+				$out['dated'], $out['placed'], $out['evented'], $out['ambiguous']
+			) );
+		}
+
+		return $out;
+	}
+
+	/**
+	 * Undo the backfill — remove only what it added.
+	 *
+	 * Reads each photo's receipt rather than clearing taxonomies wholesale,
+	 * so a term a volunteer added afterwards survives. A one-time job that
+	 * cannot be undone is one nobody should be willing to run.
+	 */
+	function gasf_photo_backfill_undo() {
+		global $wpdb;
+
+		$ids = $wpdb->get_col( $wpdb->prepare(
+			"SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key = %s", '_gasf_photo_autotag'
+		) );
+
+		$n = 0;
+		foreach ( $ids as $id ) {
+			$id  = (int) $id;
+			$rec = get_post_meta( $id, '_gasf_photo_autotag', true );
+			if ( ! is_array( $rec ) ) { continue; }
+
+			foreach ( array( 'place' => 'gasf_photo_place', 'event' => 'gasf_photo_event' ) as $k => $tax ) {
+				if ( empty( $rec[ $k ] ) ) { continue; }
+				$now = wp_get_object_terms( $id, $tax, array( 'fields' => 'names' ) );
+				$now = is_wp_error( $now ) ? array() : $now;
+				// Only if it is still exactly what we put there.
+				if ( array( $rec[ $k ] ) === $now ) { wp_set_object_terms( $id, array(), $tax, false ); }
+			}
+
+			delete_post_meta( $id, '_gasf_photo_autotag' );
+			$n++;
+		}
+
+		gasf_mec_log( 'Photo catalogue: undid the EXIF backfill on ' . $n . ' photo(s)' );
+		return $n;
+	}
+
+	// Runnable from the shell, because a one-time job over a thousand files
+	// belongs there rather than behind a page that can time out.
+	if ( defined( 'WP_CLI' ) && WP_CLI ) {
+		WP_CLI::add_command( 'gasf photo-backfill', function ( $args, $assoc ) {
+			if ( isset( $assoc['undo'] ) ) {
+				WP_CLI::success( gasf_photo_backfill_undo() . ' photo(s) reverted.' );
+				return;
+			}
+			$apply = isset( $assoc['apply'] );
+			$r     = gasf_photo_backfill_library( $apply, (int) ( $assoc['limit'] ?? 0 ) );
+
+			WP_CLI::log( sprintf(
+				"%s\n  considered      %d\n  dated           %d  (%d read from a kept original)\n  placed by GPS   %d\n  single event    %d\n  several events  %d  (left alone)\n  skipped: %d in the CRM workflow",
+				$apply ? 'Applied:' : 'Dry run — nothing written:',
+				$r['considered'], $r['dated'], $r['from_original'], $r['placed'],
+				$r['evented'], $r['ambiguous'], $r['skipped_workflow']
+			) );
+			foreach ( array_slice( $r['notes'], 0, 15 ) as $n ) {
+				WP_CLI::log( sprintf( '    #%-6d %s  %-28s %s', $n['id'], $n['taken'], $n['place'] ?: '—', $n['event'] ?: '' ) );
+			}
+			if ( ! $apply ) { WP_CLI::log( "\nRe-run with --apply to write these." ); }
+		} );
+	}
 }
