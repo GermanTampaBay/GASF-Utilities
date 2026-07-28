@@ -554,6 +554,27 @@ function gasf_crm_photo_publish( $attachment_id ) {
 		}
 	}
 
+	/*
+	 * The MAIN file has to be there. Not "most of them" — that one.
+	 *
+	 * Every loop here skips a missing file, which is right for a generated size
+	 * that was never produced and catastrophically wrong for the photo itself:
+	 * with the originals absent, publish moved nothing, reported success, and
+	 * left an attachment marked public and confirmed with no image behind it at
+	 * all. Reproduced by accident while testing something else, which is the
+	 * only reason it was found.
+	 *
+	 * Checked before the rename loop so nothing has moved when it fails.
+	 */
+	$main = $from . basename( $rel );
+	if ( ! file_exists( $main ) ) {
+		return new WP_Error( 'gasf_crm_pub', sprintf(
+			'The image file for this photo is missing from the review folder (%s), so it has not been published.',
+			basename( $rel )
+		) );
+	}
+
+	$moved_any = false;
 	foreach ( array_unique( $names ) as $n ) {
 		$src = $from . $n;
 		$dst = trailingslashit( $up['path'] ) . $n;
@@ -561,6 +582,14 @@ function gasf_crm_photo_publish( $attachment_id ) {
 		if ( ! @rename( $src, $dst ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors
 			return new WP_Error( 'gasf_crm_pub', 'Could not move ' . $n . ' out of the review folder.' );
 		}
+		$moved_any = true;
+	}
+
+	// Belt and braces on the same point: if the destination has no main file
+	// either, something moved it out from under us between the check above and
+	// here, and recording this as published would be a lie.
+	if ( ! $moved_any && ! file_exists( trailingslashit( $up['path'] ) . basename( $rel ) ) ) {
+		return new WP_Error( 'gasf_crm_pub', 'Nothing was moved out of the review folder, so this photo has not been published.' );
 	}
 
 	$new_rel = ltrim( trailingslashit( ltrim( (string) $up['subdir'], '/' ) ) . basename( $rel ), '/' );
