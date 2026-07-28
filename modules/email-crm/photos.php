@@ -606,13 +606,64 @@ function gasf_crm_video_ends( $path, $window = 2097152 ) {
 	return array( $head . $tail, $at ? $at - strlen( $head ) : 0 );
 }
 
-/** Does this video say where it was taken? Returns '' or a description. */
+/**
+ * Does this video still say where it was taken?
+ *
+ * Asked of the CONTENTS, not of the box. The (c)xyz atom's name has to stay
+ * where it is — removing four bytes would shift every offset after it and break
+ * the file — so its presence proves nothing. What matters is whether the string
+ * inside it still spells out coordinates, and after a blanking it does not.
+ *
+ * The first version checked for the name alone, which meant a video that had
+ * just been cleaned successfully was reported as still carrying GPS and
+ * refused. Right answer, wrong question.
+ *
+ * @return string '' when clean, otherwise what was found, in words.
+ */
 function gasf_crm_video_has_location( $path ) {
 	if ( ! is_file( $path ) ) { return ''; }
 	list( $buf ) = gasf_crm_video_ends( $path );
-	foreach ( gasf_crm_video_markers() as $sig => $label ) {
-		if ( false !== strpos( $buf, $sig ) ) { return $label; }
+	if ( '' === $buf ) { return 'an unreadable file'; }
+
+	$len_at = function ( $buf, $t ) {
+		$n = unpack( 'n', substr( $buf, $t + 4, 2 ) );
+		return is_array( $n ) ? (int) reset( $n ) : 0;
+	};
+
+	// The one we can empty: judged on whether anything is left in it.
+	$sig = chr( 0xA9 ) . 'xyz';
+	$at  = 0;
+	while ( false !== ( $t = strpos( $buf, $sig, $at ) ) ) {
+		$at  = $t + 4;
+		$len = $len_at( $buf, $t );
+		if ( $len < 1 || $len > 128 || ( $t + 8 + $len ) > strlen( $buf ) ) { continue; }
+		if ( '' !== trim( substr( $buf, $t + 8, $len ) ) ) { return 'a GPS atom'; }
 	}
+
+	/*
+	 * A 3GPP location box, which we cannot empty safely.
+	 *
+	 * Only counted when the four bytes in front of it read as a plausible box
+	 * length. "loci" is four common letters and this buffer is four megabytes of
+	 * video; without that check it turns up by chance and refuses a clean file.
+	 */
+	$at = 0;
+	while ( false !== ( $t = strpos( $buf, 'loci', $at ) ) ) {
+		$at = $t + 4;
+		if ( $t < 4 ) { continue; }
+		$n    = unpack( 'N', substr( $buf, $t - 4, 4 ) );
+		$size = is_array( $n ) ? (int) reset( $n ) : 0;
+		if ( $size >= 12 && $size <= 4096 ) { return 'a 3GPP location box'; }
+	}
+
+	// Long, distinctive strings — chance is not a realistic explanation for these.
+	foreach ( array(
+		'GPSCoordinates'               => 'GPS coordinates in XMP',
+		'com.apple.quicktime.location' => 'a QuickTime location tag',
+	) as $needle => $label ) {
+		if ( false !== strpos( $buf, $needle ) ) { return $label; }
+	}
+
 	return '';
 }
 
