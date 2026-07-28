@@ -1,0 +1,470 @@
+<?php
+/**
+ * The photo library — modules/email-crm/photos-library.php
+ *
+ * The point of all the tagging. Everything before this file takes photos IN and
+ * works out what they show; this is where a volunteer finally gets them back
+ * out — to look through, to pick from, and to download for a newsletter, a
+ * poster or a Facebook post.
+ *
+ * Deliberately NOT the Media Library. That holds 1,400-odd files, almost all of
+ * them website furniture — button backgrounds, sponsor logos, theme headers —
+ * and a volunteer looking for "a good picture of the Biergarten" should not have
+ * to wade through them. The library is only photos the club has actually
+ * catalogued: submissions that were approved, plus anything a volunteer has
+ * tagged by hand.
+ *
+ * Reads only. Nothing here changes a photo, so there is no revision, no lock and
+ * no state machine — the worst a bug in this file can do is show somebody the
+ * wrong list, which is a different order of problem from the rest of this build.
+ */
+if ( ! defined( 'ABSPATH' ) ) { exit; }
+
+/** Most photos in one page of the grid. */
+define( 'GASF_CRM_LIB_PER_PAGE', 60 );
+
+/**
+ * Budgets for a bulk download.
+ *
+ * A zip is the one thing here that costs real resources, and the person asking
+ * for it has no idea how large the originals are — a "select all" on a year of
+ * Oktoberfest is several gigabytes. Both caps are checked BEFORE anything is
+ * written, and going over is refused with the actual numbers rather than
+ * silently truncated: a zip missing four photos nobody mentioned is worse than
+ * one that did not build.
+ */
+define( 'GASF_CRM_LIB_ZIP_MAX_FILES', 80 );
+define( 'GASF_CRM_LIB_ZIP_MAX_BYTES', 750 * MB_IN_BYTES );
+
+/** How long a built zip stays downloadable before it is swept. */
+define( 'GASF_CRM_LIB_ZIP_TTL', 30 * MINUTE_IN_SECONDS );
+
+/* =====================================================================
+ * What counts as being in the library
+ * ================================================================== */
+
+/**
+ * Every catalogued photo, newest first.
+ *
+ * Two ways in, deliberately:
+ *   - approved through the submission workflow (_gasf_photo_confirmed), or
+ *   - carrying any catalogue term, which is how a volunteer adds a photo that
+ *     never came through the mailbox — a scan, a committee member's camera roll.
+ *
+ * Merged in PHP rather than expressed as one query because WP_Query cannot OR a
+ * meta_query against a tax_query. At this size that is not worth a custom join:
+ * both halves are indexed lookups and the union is a few hundred integers.
+ *
+ * Private photos are excluded outright. Anything still awaiting review is not
+ * cleared for use, and this list exists to be used from.
+ *
+ * @param array $f person|place|event|year|q
+ * @return int[]
+ */
+function gasf_crm_photo_library_ids( array $f = array() ) {
+	$common = array(
+		'post_type'      => 'attachment',
+		'post_status'    => 'inherit', // never 'private' — see above
+		'posts_per_page' => -1,
+		'fields'         => 'ids',
+		'no_found_rows'  => true,
+	);
+
+	$ids = get_posts( $common + array(
+		'meta_query' => array( array( 'key' => '_gasf_photo_confirmed', 'compare' => 'EXISTS' ) ),
+	) );
+
+	$tagged = get_posts( $common + array(
+		'tax_query' => array(
+			'relation' => 'OR',
+			array( 'taxonomy' => 'gasf_photo_person', 'operator' => 'EXISTS' ),
+			array( 'taxonomy' => 'gasf_photo_place',  'operator' => 'EXISTS' ),
+			array( 'taxonomy' => 'gasf_photo_event',  'operator' => 'EXISTS' ),
+		),
+	) );
+
+	$all = array_values( array_unique( array_map( 'intval', array_merge( $ids, $tagged ) ) ) );
+	if ( ! $all ) { return array(); }
+
+	$all = gasf_crm_photo_library_filter( $all, $f );
+
+	// Newest first by when the photo was TAKEN, falling back to when it reached
+	// us. A collection sorted by upload date puts a 1974 Fasching scan between
+	// last week's two, which is not how anybody looks for a picture.
+	usort( $all, function ( $a, $b ) {
+		$ta = get_post_meta( $a, '_gasf_photo_taken', true ) ?: get_post_field( 'post_date', $a );
+		$tb = get_post_meta( $b, '_gasf_photo_taken', true ) ?: get_post_field( 'post_date', $b );
+		return strcmp( (string) $tb, (string) $ta ) ?: ( $b - $a );
+	} );
+
+	return $all;
+}
+
+/**
+ * Narrow a set of photo ids by the filter bar.
+ *
+ * A place filter includes everything BENEATH it. Asking for photos at the
+ * German-American Society and being shown none — because they are all tagged
+ * Bierstube or Main Hall, which are rooms inside it — would make the hierarchy
+ * an obstacle rather than the point of it.
+ */
+function gasf_crm_photo_library_filter( array $ids, array $f ) {
+	$want_place = trim( (string) ( $f['place'] ?? '' ) );
+	$places     = array();
+	if ( '' !== $want_place ) {
+		$places[] = $want_place;
+		$term     = get_term_by( 'name', $want_place, 'gasf_photo_place' );
+		if ( $term && ! is_wp_error( $term ) ) {
+			foreach ( (array) get_term_children( $term->term_id, 'gasf_photo_place' ) as $kid ) {
+				$k = get_term( (int) $kid, 'gasf_photo_place' );
+				if ( $k && ! is_wp_error( $k ) ) { $places[] = $k->name; }
+			}
+		}
+	}
+
+	$person = trim( (string) ( $f['person'] ?? '' ) );
+	$event  = trim( (string) ( $f['event'] ?? '' ) );
+	$year   = preg_replace( '~\D~', '', (string) ( $f['year'] ?? '' ) );
+	$q      = trim( (string) ( $f['q'] ?? '' ) );
+
+	if ( '' === $person && '' === $event && '' === $year && '' === $q && ! $places ) { return $ids; }
+
+	return array_values( array_filter( $ids, function ( $id ) use ( $places, $person, $event, $year, $q ) {
+		$names = function ( $tax ) use ( $id ) {
+			$t = wp_get_object_terms( $id, $tax, array( 'fields' => 'names' ) );
+			return is_wp_error( $t ) ? array() : $t;
+		};
+
+		if ( $places && ! array_intersect( $places, $names( 'gasf_photo_place' ) ) ) { return false; }
+		if ( '' !== $person && ! in_array( $person, $names( 'gasf_photo_person' ), true ) ) { return false; }
+		if ( '' !== $event && ! in_array( $event, $names( 'gasf_photo_event' ), true ) ) { return false; }
+
+		if ( '' !== $year ) {
+			$taken = (string) get_post_meta( $id, '_gasf_photo_taken', true );
+			if ( 0 !== strpos( $taken ?: (string) get_post_field( 'post_date', $id ), $year ) ) { return false; }
+		}
+
+		// Free text sweeps everything a person might half-remember: the caption,
+		// the title, and every name on it. Someone looking for a photo rarely
+		// remembers which field the word was in.
+		if ( '' !== $q ) {
+			$hay = strtolower( implode( ' ', array_merge(
+				array( get_the_title( $id ), get_post_field( 'post_excerpt', $id ) ),
+				$names( 'gasf_photo_person' ), $names( 'gasf_photo_place' ), $names( 'gasf_photo_event' )
+			) ) );
+			if ( false === strpos( $hay, strtolower( $q ) ) ) { return false; }
+		}
+
+		return true;
+	} ) );
+}
+
+/**
+ * One photo as the grid needs it.
+ *
+ * dlname is the descriptive filename the catalogue builds — "2026-07-11-
+ * Oktoberfest-Biergarten-Hans-Mueller.jpg" rather than "PXL_20260711_233635720".
+ * That name is the whole reason for tagging as far as a volunteer is concerned:
+ * it survives being dropped into a folder, emailed, or handed to a designer,
+ * where the tags themselves do not.
+ */
+function gasf_crm_photo_library_card( $attachment_id ) {
+	$id = (int) $attachment_id;
+	if ( 'attachment' !== get_post_type( $id ) ) { return null; }
+
+	$info  = function_exists( 'gasf_photo_info' ) ? gasf_photo_info( $id ) : array();
+	$file  = get_attached_file( $id );
+	$meta  = (array) wp_get_attachment_metadata( $id );
+	$src   = get_post_meta( $id, '_gasf_photo_source', true );
+
+	return array(
+		'id'      => $id,
+		'thumb'   => wp_get_attachment_image_url( $id, 'medium' ),
+		'full'    => wp_get_attachment_image_url( $id, 'large' ),
+		'url'     => wp_get_attachment_url( $id ),
+		'dlname'  => function_exists( 'gasf_photo_filename' ) ? gasf_photo_filename( $id ) : '',
+		'title'   => get_the_title( $id ),
+		'caption' => (string) ( $info['caption'] ?? '' ),
+		'taken'   => (string) ( $info['taken'] ?? '' ),
+		'people'  => (array) ( $info['people'] ?? array() ),
+		'places'  => (array) ( $info['places'] ?? array() ),
+		'events'  => (array) ( $info['events'] ?? array() ),
+		'w'       => (int) ( $meta['width'] ?? 0 ),
+		'h'       => (int) ( $meta['height'] ?? 0 ),
+		'bytes'   => ( $file && is_file( $file ) ) ? (int) filesize( $file ) : 0,
+		// Who gave it to the club. Shown because using a photo in marketing is
+		// exactly when somebody needs to know whom to credit, or ask.
+		'from'    => is_array( $src ) ? (string) ( $src['name'] ?: $src['email'] ) : '',
+	);
+}
+
+/**
+ * What is worth offering in the filter bar, with counts.
+ *
+ * Built from the photos actually in the library rather than from the taxonomies,
+ * so a filter can never come back empty. Offering "Kitchen" when no photo is
+ * tagged Kitchen wastes a click and makes the whole bar less trustworthy.
+ */
+function gasf_crm_photo_library_facets( array $ids ) {
+	$out = array( 'people' => array(), 'places' => array(), 'events' => array(), 'years' => array() );
+
+	foreach ( $ids as $id ) {
+		foreach ( array( 'people' => 'gasf_photo_person', 'places' => 'gasf_photo_place', 'events' => 'gasf_photo_event' ) as $k => $tax ) {
+			$t = wp_get_object_terms( $id, $tax, array( 'fields' => 'names' ) );
+			foreach ( ( is_wp_error( $t ) ? array() : $t ) as $name ) {
+				$label = function_exists( 'gasf_photo_label' ) ? gasf_photo_label( $name ) : $name;
+				if ( ! isset( $out[ $k ][ $name ] ) ) { $out[ $k ][ $name ] = array( 'value' => $name, 'label' => $label, 'n' => 0 ); }
+				$out[ $k ][ $name ]['n']++;
+			}
+		}
+		$taken = (string) get_post_meta( $id, '_gasf_photo_taken', true );
+		$year  = substr( $taken ?: (string) get_post_field( 'post_date', $id ), 0, 4 );
+		if ( preg_match( '~^\d{4}$~', $year ) ) {
+			if ( ! isset( $out['years'][ $year ] ) ) { $out['years'][ $year ] = array( 'value' => $year, 'label' => $year, 'n' => 0 ); }
+			$out['years'][ $year ]['n']++;
+		}
+	}
+
+	foreach ( array( 'people', 'places', 'events' ) as $k ) {
+		usort( $out[ $k ], function ( $a, $b ) { return strnatcasecmp( $a['label'], $b['label'] ); } );
+		$out[ $k ] = array_values( $out[ $k ] );
+	}
+	krsort( $out['years'] );
+	$out['years'] = array_values( $out['years'] );
+
+	return $out;
+}
+
+/* =====================================================================
+ * Bulk download
+ * ================================================================== */
+
+/** Where built zips live — the private root, never the webroot. */
+function gasf_crm_photo_zip_dir() {
+	$dir = gasf_crm_photo_private_root() . '/zips';
+	if ( ! is_dir( $dir ) ) { wp_mkdir_p( $dir ); }
+	return $dir;
+}
+
+/**
+ * Build a zip of the requested photos.
+ *
+ * The ORIGINAL files, not the web-sized copies — the entire point is using them
+ * somewhere the web size is not good enough. Each one is named by the catalogue,
+ * so what lands on the volunteer's desktop is already labelled.
+ *
+ * @return array{token:string,name:string,files:int,bytes:int}|WP_Error
+ */
+function gasf_crm_photo_zip_build( array $ids ) {
+	if ( ! class_exists( 'ZipArchive' ) ) {
+		return new WP_Error( 'gasf_crm_nozip', 'This server cannot build zip files, so photos have to be downloaded one at a time.' );
+	}
+
+	$ids = array_values( array_unique( array_map( 'intval', $ids ) ) );
+	if ( ! $ids ) { return new WP_Error( 'gasf_crm_nozip', 'No photos were selected.' ); }
+
+	if ( count( $ids ) > GASF_CRM_LIB_ZIP_MAX_FILES ) {
+		return new WP_Error( 'gasf_crm_toomany', sprintf(
+			'That is %d photos; %d is the most in one download. Narrow the filter, or take them in a couple of goes.',
+			count( $ids ), GASF_CRM_LIB_ZIP_MAX_FILES
+		) );
+	}
+
+	// Sized up before a byte is written. Discovering the limit halfway through
+	// means throwing away work AND leaving a part-built file behind.
+	$files = array();
+	$bytes = 0;
+	foreach ( $ids as $id ) {
+		if ( 'attachment' !== get_post_type( $id ) ) { continue; }
+		if ( gasf_crm_photo_is_private( $id ) ) { continue; } // not cleared for use
+		$path = get_attached_file( $id );
+		if ( ! $path || ! is_file( $path ) ) { continue; }
+		$bytes  += (int) filesize( $path );
+		$files[] = array( 'path' => $path, 'id' => $id );
+	}
+
+	if ( ! $files ) { return new WP_Error( 'gasf_crm_nozip', 'None of those photos have a file to download.' ); }
+	if ( $bytes > GASF_CRM_LIB_ZIP_MAX_BYTES ) {
+		return new WP_Error( 'gasf_crm_toobig', sprintf(
+			'That selection is %s; %s is the most in one download. Narrow the filter, or take them in a couple of goes.',
+			size_format( $bytes ), size_format( GASF_CRM_LIB_ZIP_MAX_BYTES )
+		) );
+	}
+
+	$dir   = gasf_crm_photo_zip_dir();
+	$token = bin2hex( random_bytes( 16 ) );
+	$path  = $dir . '/' . $token . '.zip';
+
+	$zip = new ZipArchive();
+	if ( true !== $zip->open( $path, ZipArchive::CREATE | ZipArchive::OVERWRITE ) ) {
+		return new WP_Error( 'gasf_crm_nozip', 'The server could not start building that download.' );
+	}
+
+	$used = array();
+	foreach ( $files as $f ) {
+		$name = function_exists( 'gasf_photo_filename' ) ? gasf_photo_filename( $f['id'] ) : '';
+		if ( '' === $name ) { $name = basename( $f['path'] ); }
+
+		// Two photos of the same people at the same event on the same day get
+		// the same catalogued name. Numbered rather than overwritten — a zip
+		// that quietly contains four files when five were asked for is the kind
+		// of silent loss this whole build exists to avoid.
+		if ( isset( $used[ $name ] ) ) {
+			$used[ $name ]++;
+			$ext  = pathinfo( $name, PATHINFO_EXTENSION );
+			$stem = $ext ? substr( $name, 0, -( strlen( $ext ) + 1 ) ) : $name;
+			$name = $stem . '-' . $used[ $name ] . ( $ext ? '.' . $ext : '' );
+		} else {
+			$used[ $name ] = 1;
+		}
+
+		$zip->addFile( $f['path'], $name );
+	}
+
+	$org  = sanitize_file_name( gasf_crm_cfg()['signature_org'] ?: 'photos' );
+	$name = 'GASF-photos-' . gmdate( 'Y-m-d' ) . '-' . count( $files ) . '.zip';
+	$zip->setArchiveComment( $org . ' — ' . count( $files ) . ' photo(s), downloaded ' . gmdate( 'Y-m-d' ) );
+
+	if ( ! $zip->close() ) {
+		@unlink( $path ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+		return new WP_Error( 'gasf_crm_nozip', 'The download could not be finished. Try a smaller selection.' );
+	}
+
+	set_transient( 'gasf_crm_zip_' . $token, array(
+		'path' => $path,
+		'name' => $name,
+		'by'   => get_current_user_id(),
+	), GASF_CRM_LIB_ZIP_TTL );
+
+	gasf_mec_log( sprintf( 'CRM library: built a %s zip of %d photo(s) for user %d',
+		size_format( filesize( $path ) ), count( $files ), get_current_user_id() ) );
+
+	return array( 'token' => $token, 'name' => $name, 'files' => count( $files ), 'bytes' => (int) filesize( $path ) );
+}
+
+/**
+ * Remove zips whose download window has passed.
+ *
+ * Transients expire on their own; the FILES do not, and these are the only
+ * things in this system that hold full-size copies of the whole collection in
+ * one place. Left alone they would accumulate until the disk filled.
+ */
+function gasf_crm_photo_zip_sweep() {
+	$dir = gasf_crm_photo_private_root() . '/zips';
+	if ( ! is_dir( $dir ) ) { return 0; }
+
+	$n = 0;
+	foreach ( (array) glob( $dir . '/*.zip' ) as $f ) {
+		if ( ( time() - (int) filemtime( $f ) ) < GASF_CRM_LIB_ZIP_TTL ) { continue; }
+		@unlink( $f ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+		$n++;
+	}
+	if ( $n ) { gasf_mec_log( 'CRM library: swept ' . $n . ' expired download(s)' ); }
+	return $n;
+}
+add_action( 'gasf_crm_sync_event', 'gasf_crm_photo_zip_sweep', 30 );
+
+/* =====================================================================
+ * REST
+ * ================================================================== */
+
+add_action( 'rest_api_init', function () {
+	// Same gate as the rest of the photo surface: holding the photos stream,
+	// which is not the same thing as being a WordPress administrator.
+	$lib_guard = function () {
+		$sess = gasf_crm_rest_guard();
+		if ( is_wp_error( $sess ) || ! $sess ) { return $sess ?: false; }
+		return gasf_crm_user_can_stream( 'photos' );
+	};
+
+	register_rest_route( 'gasf/v1', '/crm/photos/library', array(
+		'methods'             => 'GET',
+		'permission_callback' => $lib_guard,
+		'callback'            => function ( WP_REST_Request $req ) {
+			$filters = array(
+				'person' => (string) $req->get_param( 'person' ),
+				'place'  => (string) $req->get_param( 'place' ),
+				'event'  => (string) $req->get_param( 'event' ),
+				'year'   => (string) $req->get_param( 'year' ),
+				'q'      => (string) $req->get_param( 'q' ),
+			);
+
+			// Facets come from the UNFILTERED set, so the bar does not collapse
+			// to whatever is left after the first choice — picking a place must
+			// not hide every year you might narrow it to next.
+			$all      = gasf_crm_photo_library_ids();
+			$matching = gasf_crm_photo_library_filter( $all, $filters );
+
+			$page  = max( 1, (int) $req->get_param( 'page' ) );
+			$slice = array_slice( $matching, ( $page - 1 ) * GASF_CRM_LIB_PER_PAGE, GASF_CRM_LIB_PER_PAGE );
+
+			$photos = array();
+			foreach ( $slice as $id ) {
+				$card = gasf_crm_photo_library_card( $id );
+				if ( $card ) { $photos[] = $card; }
+			}
+
+			return array(
+				'photos'  => $photos,
+				'total'   => count( $matching ),
+				'all'     => count( $all ),
+				'page'    => $page,
+				'pages'   => max( 1, (int) ceil( count( $matching ) / GASF_CRM_LIB_PER_PAGE ) ),
+				'facets'  => gasf_crm_photo_library_facets( $all ),
+				// Every matching id, so "select all" can act on the whole result
+				// rather than only the page in front of you.
+				'ids'     => array_map( 'intval', $matching ),
+				'zipmax'  => GASF_CRM_LIB_ZIP_MAX_FILES,
+			);
+		},
+	) );
+
+	register_rest_route( 'gasf/v1', '/crm/photos/zip', array(
+		'methods'             => 'POST',
+		'permission_callback' => $lib_guard,
+		'callback'            => function ( WP_REST_Request $req ) {
+			$ids = (array) $req->get_param( 'ids' );
+			$res = gasf_crm_photo_zip_build( $ids );
+			if ( is_wp_error( $res ) ) { return $res; }
+
+			$res['url'] = add_query_arg( array(
+				'token'    => $res['token'],
+				'_wpnonce' => wp_create_nonce( 'wp_rest' ),
+			), rest_url( 'gasf/v1/crm/photos/zipfile' ) );
+
+			return $res;
+		},
+	) );
+
+	register_rest_route( 'gasf/v1', '/crm/photos/zipfile', array(
+		'methods'             => 'GET',
+		'permission_callback' => $lib_guard,
+		'callback'            => function ( WP_REST_Request $req ) {
+			$token = preg_replace( '~[^a-f0-9]~', '', (string) $req->get_param( 'token' ) );
+			$row   = $token ? get_transient( 'gasf_crm_zip_' . $token ) : false;
+
+			if ( ! is_array( $row ) || empty( $row['path'] ) || ! is_file( $row['path'] ) ) {
+				return new WP_Error( 'gasf_crm_404', 'That download has expired. Build it again — it only takes a moment.', array( 'status' => 404 ) );
+			}
+			// Built for one person. The token is not a capability anyone else
+			// inherits by being handed the URL.
+			if ( (int) $row['by'] !== get_current_user_id() ) {
+				return new WP_Error( 'gasf_crm_403', 'That download belongs to somebody else.', array( 'status' => 403 ) );
+			}
+
+			nocache_headers();
+			header( 'Content-Type: application/zip' );
+			header( 'Content-Disposition: attachment; filename="' . $row['name'] . '"' );
+			header( 'Content-Length: ' . filesize( $row['path'] ) );
+			header( 'X-Robots-Tag: noindex, nofollow', true );
+
+			readfile( $row['path'] ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+
+			// Gone the moment it has been taken. One download per build keeps
+			// full-size copies of the collection from lingering on disk.
+			@unlink( $row['path'] ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+			delete_transient( 'gasf_crm_zip_' . $token );
+			exit;
+		},
+	) );
+} );

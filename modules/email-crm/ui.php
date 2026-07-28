@@ -356,6 +356,37 @@ textarea{width:100%;min-height:150px;padding:10px;border:1px solid var(--gasf-bo
 .pdone{font-size:13px;font-weight:600;color:var(--ok)}
 /* Photos screen */
 .tabs.pstates button{font-size:12px}
+/* Photo library — a wall of pictures, not a worklist. */
+header.bar .hbtn.nav.on{background:#fff;color:var(--gasf-ink,#1d1d1b);border-color:#fff}
+.libhead h2{font-size:17px}
+.lfrow{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
+.lf{display:block}
+.lf>span{display:block;font-size:11px;color:var(--gasf-muted);margin-bottom:2px}
+.lf input,.lf select{padding:6px 8px;border:1px solid var(--gasf-border);border-radius:4px;font:inherit;font-size:13px;background:var(--gasf-surface);color:var(--gasf-text);min-width:150px}
+.lf input[type=search]{min-width:230px}
+.libbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;position:sticky;top:0;z-index:5;background:var(--s-tint);border-bottom:2px solid var(--s-accent)}
+.libcount{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.lgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px;padding:10px}
+.lcard{position:relative;border:1px solid var(--gasf-border);border-radius:5px;overflow:hidden;background:var(--gasf-surface)}
+.lcard.sel{outline:3px solid var(--s-accent);outline-offset:-3px}
+.lcard .lthumb{display:block;width:100%;aspect-ratio:4/3;object-fit:cover;cursor:zoom-in;background:var(--s-wash)}
+.lcard .lmeta{padding:6px 8px;font-size:12px;line-height:1.35}
+.lcard .lmeta .lt{font-weight:600;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lcard .lmeta .lsub{color:var(--gasf-muted);display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lcard .ltick{position:absolute;top:6px;left:6px;width:22px;height:22px;cursor:pointer;accent-color:var(--s-accent)}
+.lcard .ldl{position:absolute;top:6px;right:6px;background:rgba(0,0,0,.62);color:#fff;border-radius:4px;
+	padding:3px 7px;font-size:12px;text-decoration:none}
+.lcard .ldl:hover{background:rgba(0,0,0,.85)}
+/* Full size, over everything, because "can I actually use this one" is a
+   question you cannot answer from a thumbnail. */
+.lightbox{position:fixed;inset:0;background:rgba(0,0,0,.9);z-index:9999;display:flex;
+	align-items:center;justify-content:center;flex-direction:column;padding:20px;gap:12px}
+.lightbox img{max-width:100%;max-height:78vh;object-fit:contain}
+.lbinfo{color:#fff;font-size:13px;text-align:center;max-width:760px;line-height:1.5}
+.lbinfo a{color:#fff}
+.lbclose{position:absolute;top:14px;right:18px;background:none;border:0;color:#fff;font-size:34px;line-height:1;cursor:pointer}
+@media(max-width:640px){.lf input,.lf select,.lf input[type=search]{min-width:0;width:100%}.lf{flex:1 1 100%}}
+
 .pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px;padding:10px}
 .pgrid .pane{grid-column:1/-1;padding:14px 4px}
 .pthumbcard{border:1px solid var(--gasf-border);background:var(--gasf-surface);border-radius:6px;
@@ -574,7 +605,15 @@ function gasf_crm_render_inbox() {
 	<h1>Club inbox<span class="box" id="hbox"><?php echo $one_box ? ' &mdash; ' . esc_html( $one_box ) : ''; ?></span></h1>
 	<div>
 		<?php if ( gasf_crm_user_can_stream( 'photos' ) ) : ?>
-			<button class="hbtn" id="toview" data-view="photos">Photos</button>
+			<?php
+			// Three places rather than a toggle. Reviewing submissions and
+			// looking through the collection are different jobs — a volunteer
+			// fetching a picture for a poster is not mid-workflow — and a button
+			// that renames itself cannot show you where you are.
+			?>
+			<button class="hbtn nav on" data-view="mail">Mail</button>
+			<button class="hbtn nav" data-view="photos">Photos</button>
+			<button class="hbtn nav" data-view="library">Photo library</button>
 		<?php endif; ?>
 		<button class="hbtn" id="checkmail">Check for new mail</button>
 		<button class="hbtn" onclick="var h=document.getElementById('help');h.style.display=h.style.display==='none'?'block':'none';window.scrollTo(0,0)">Help</button>
@@ -672,6 +711,59 @@ function gasf_crm_render_inbox() {
 		<p class="muted">Pick a photo on the left.</p>
 	</div></div>
 </div></div>
+
+<?php
+/*
+ * The photo library.
+ *
+ * One column, not the two-pane layout the review queue uses. Reviewing is a
+ * list you work down; browsing is a wall you look at, and the picture wants the
+ * width.
+ */
+?>
+<div class="wrap" id="libview" hidden data-stream="photos">
+	<div class="card pad libhead">
+		<h2 style="margin:0 0 4px">The club's photos</h2>
+		<p class="muted" style="margin:0">Everything we have catalogued. Click a photo to see it full size; tick them to download a batch. The filenames carry the date, event, place and names, so they stay meaningful wherever you put them.</p>
+	</div>
+
+	<div class="card pad libfilters">
+		<div class="lfrow">
+			<label class="lf"><span>Search</span>
+				<input type="search" id="lq" placeholder="A name, a place, anything in the caption" autocomplete="off"></label>
+			<label class="lf"><span>Who</span><select id="lperson"><option value="">Anyone</option></select></label>
+			<label class="lf"><span>Where</span><select id="lplace"><option value="">Anywhere</option></select></label>
+			<label class="lf"><span>Occasion</span><select id="levent"><option value="">Any</option></select></label>
+			<label class="lf"><span>Year</span><select id="lyear"><option value="">Any</option></select></label>
+			<button class="btn sec" id="lclear" type="button">Clear</button>
+		</div>
+	</div>
+
+	<div class="card pad libbar" id="libbar" hidden>
+		<strong><span id="lnsel">0</span> selected</strong>
+		<button class="btn" id="lzip" type="button">Download as a zip</button>
+		<button class="btn sec" id="lnone" type="button">Clear selection</button>
+		<span class="muted" id="lzipmsg"></span>
+	</div>
+
+	<div class="card">
+		<div class="pad libcount"><span id="lcount" class="muted">Loading…</span>
+			<button class="btn sec" id="lall" type="button" hidden>Select all</button>
+		</div>
+		<div class="lgrid" id="lgrid"></div>
+		<div class="pad" id="lpager" hidden>
+			<button class="btn sec" id="lprev" type="button">Previous</button>
+			<span class="muted" id="lpage"></span>
+			<button class="btn sec" id="lnext" type="button">Next</button>
+		</div>
+	</div>
+</div>
+
+<div class="lightbox" id="lbox" hidden>
+	<button class="lbclose" id="lbclose" type="button" aria-label="Close">&times;</button>
+	<img id="lbimg" src="" alt="">
+	<div class="lbinfo" id="lbinfo"></div>
+</div>
 <?php endif; ?>
 
 <div class="wrap" id="mailview"><div class="layout">
@@ -1718,15 +1810,20 @@ function gasf_crm_render_inbox() {
 	var pstate = 'review', pcur = null;
 
 	function showView(which){
-		var mail = document.getElementById('mailview'), ph = document.getElementById('photoview');
-		if (!ph) { return; }
-		var toPhotos = (which === 'photos');
-		mail.hidden = toPhotos;
-		ph.hidden   = !toPhotos;
-		var b = document.getElementById('toview');
-		b.textContent = toPhotos ? 'Back to mail' : 'Photos';
-		b.dataset.view = toPhotos ? 'mail' : 'photos';
-		if (toPhotos) { loadPhotos(); }
+		var panes = {
+			mail:    document.getElementById('mailview'),
+			photos:  document.getElementById('photoview'),
+			library: document.getElementById('libview')
+		};
+		if (!panes.photos) { return; } // no photos stream: mail is the only view
+
+		Object.keys(panes).forEach(function(k){ if (panes[k]) { panes[k].hidden = (k !== which); } });
+		Array.prototype.forEach.call(document.querySelectorAll('header .hbtn.nav'), function(b){
+			b.classList.toggle('on', b.dataset.view === which);
+		});
+
+		if (which === 'photos')  { loadPhotos(); }
+		if (which === 'library') { loadLib(); }
 		window.scrollTo(0, 0);
 	}
 
@@ -1864,8 +1961,243 @@ function gasf_crm_render_inbox() {
 		};
 	});
 
-	var toview = document.getElementById('toview');
-	if (toview) { toview.onclick = function(){ showView(toview.dataset.view); }; }
+	Array.prototype.forEach.call(document.querySelectorAll('header .hbtn.nav'), function(b){
+		b.onclick = function(){ showView(b.dataset.view); };
+	});
+
+	/* ======================= the photo library =======================
+	 *
+	 * Read-only, so none of the revision or locking machinery applies. The only
+	 * state it keeps is what the volunteer has ticked, and that deliberately
+	 * SURVIVES filtering and paging — picking six photos for a newsletter means
+	 * searching, taking one, searching again, and a selection cleared by the act
+	 * of looking for the next one would make the batch download useless.
+	 */
+	var lgrid = document.getElementById('lgrid');
+	var lsel  = {};              // id -> card, the running selection
+	var lpage = 1, lids = [], lfacets = null, lqTimer = null;
+
+	function lval(id){ var e = document.getElementById(id); return e ? e.value : ''; }
+
+	function lfilters(){
+		return { q: lval('lq'), person: lval('lperson'), place: lval('lplace'),
+		         event: lval('levent'), year: lval('lyear') };
+	}
+
+	function lselCount(){ return Object.keys(lsel).length; }
+
+	function lsyncBar(){
+		var n = lselCount();
+		document.getElementById('libbar').hidden = (n === 0);
+		document.getElementById('lnsel').textContent = n;
+	}
+
+	// Options are rebuilt from the UNFILTERED set every load, so choosing a place
+	// never empties the year list underneath it. Current choice is preserved —
+	// rebuilding a select normally resets it, which would undo the filter the
+	// volunteer just applied.
+	function lfill(id, rows, anyLabel){
+		var sel = document.getElementById(id);
+		if (!sel) { return; }
+		var keep = sel.value;
+		sel.innerHTML = '<option value="">' + esc(anyLabel) + '</option>' +
+			rows.map(function(r){
+				return '<option value="' + esc(r.value) + '">' + esc(r.label) + ' (' + r.n + ')</option>';
+			}).join('');
+		sel.value = keep;
+		if (sel.value !== keep) { sel.value = ''; } // the choice no longer exists
+	}
+
+	function loadLib(){
+		if (!lgrid) { return; }
+		var f = lfilters();
+		var qs = Object.keys(f).map(function(k){ return k + '=' + encodeURIComponent(f[k]); }).join('&');
+
+		document.getElementById('lcount').textContent = 'Loading…';
+		return api('/photos/library?page=' + lpage + '&' + qs).then(function(r){
+			lids    = r.ids || [];
+			lfacets = r.facets;
+
+			lfill('lperson', r.facets.people, 'Anyone');
+			lfill('lplace',  r.facets.places, 'Anywhere');
+			lfill('levent',  r.facets.events, 'Any');
+			lfill('lyear',   r.facets.years,  'Any');
+
+			var count = document.getElementById('lcount');
+			if (!r.total) {
+				count.textContent = r.all
+					? 'No photos match that. Try clearing a filter.'
+					: 'No photos have been catalogued yet. Approved submissions land here.';
+			} else {
+				count.textContent = r.total === r.all
+					? r.total + ' photo' + (r.total === 1 ? '' : 's')
+					: r.total + ' of ' + r.all + ' photos';
+			}
+			document.getElementById('lall').hidden = !r.total;
+
+			lgrid.innerHTML = (r.photos || []).map(function(p){
+				var sub = [p.taken, (p.places[0] || ''), (p.events[0] || '')].filter(Boolean).join(' · ');
+				var who = p.people.length ? p.people.join(', ') : '';
+				return '<div class="lcard' + (lsel[p.id] ? ' sel' : '') + '" data-id="' + p.id + '">' +
+					'<input type="checkbox" class="ltick" ' + (lsel[p.id] ? 'checked' : '') +
+						' aria-label="Select this photo">' +
+					(p.dlname
+						? '<a class="ldl" href="' + esc(p.url) + '" download="' + esc(p.dlname) + '" title="Download">&darr;</a>'
+						: '') +
+					'<img class="lthumb" src="' + esc(p.thumb || p.url) + '" alt="' + esc(p.title) + '" loading="lazy">' +
+					'<div class="lmeta">' +
+						'<span class="lt">' + esc(who || p.title) + '</span>' +
+						'<span class="lsub">' + esc(sub || '—') + '</span>' +
+					'</div></div>';
+			}).join('');
+
+			// Kept for the lightbox and the download, so clicking a photo does not
+			// need another round trip.
+			lgrid._photos = {};
+			(r.photos || []).forEach(function(p){ lgrid._photos[p.id] = p; });
+
+			var pager = document.getElementById('lpager');
+			pager.hidden = (r.pages <= 1);
+			document.getElementById('lpage').textContent = 'Page ' + r.page + ' of ' + r.pages;
+			document.getElementById('lprev').disabled = (r.page <= 1);
+			document.getElementById('lnext').disabled = (r.page >= r.pages);
+
+			document.getElementById('lzip').textContent = 'Download as a zip';
+			lsyncBar();
+		}).catch(function(e){
+			document.getElementById('lcount').textContent = e.message;
+		});
+	}
+
+	// Filters reset to page one: staying on page 4 of a result that now has two
+	// pages shows an empty grid and looks broken.
+	function lrefilter(){ lpage = 1; loadLib(); }
+
+	['lperson','lplace','levent','lyear'].forEach(function(id){
+		var e = document.getElementById(id);
+		if (e) { e.onchange = lrefilter; }
+	});
+	var lq = document.getElementById('lq');
+	if (lq) {
+		lq.oninput = function(){ clearTimeout(lqTimer); lqTimer = setTimeout(lrefilter, 250); };
+	}
+	var lclear = document.getElementById('lclear');
+	if (lclear) {
+		lclear.onclick = function(){
+			['lq','lperson','lplace','levent','lyear'].forEach(function(id){
+				var e = document.getElementById(id); if (e) { e.value = ''; }
+			});
+			lrefilter();
+		};
+	}
+
+	var lprev = document.getElementById('lprev'), lnext = document.getElementById('lnext');
+	if (lprev) { lprev.onclick = function(){ if (lpage > 1) { lpage--; loadLib(); } }; }
+	if (lnext) { lnext.onclick = function(){ lpage++; loadLib(); }; }
+
+	if (lgrid) {
+		lgrid.addEventListener('click', function(ev){
+			var card = ev.target.closest ? ev.target.closest('.lcard') : null;
+			if (!card) { return; }
+			var id = parseInt(card.dataset.id, 10);
+
+			if (ev.target.classList.contains('ltick')) {
+				if (ev.target.checked) { lsel[id] = true; } else { delete lsel[id]; }
+				card.classList.toggle('sel', !!lsel[id]);
+				lsyncBar();
+				return;
+			}
+			// The download link is a real anchor; let the browser have it.
+			if (ev.target.classList.contains('ldl')) { return; }
+			if (ev.target.classList.contains('lthumb')) { lbOpen(id); }
+		});
+	}
+
+	var lall = document.getElementById('lall');
+	if (lall) {
+		lall.onclick = function(){
+			// Every MATCHING photo, not just the page on screen — otherwise
+			// "select all" after a search means something different depending on
+			// how far you happened to scroll.
+			lids.forEach(function(id){ lsel[id] = true; });
+			Array.prototype.forEach.call(lgrid.querySelectorAll('.lcard'), function(c){
+				c.classList.add('sel');
+				var t = c.querySelector('.ltick'); if (t) { t.checked = true; }
+			});
+			lsyncBar();
+		};
+	}
+	var lnone = document.getElementById('lnone');
+	if (lnone) {
+		lnone.onclick = function(){
+			lsel = {};
+			Array.prototype.forEach.call(lgrid.querySelectorAll('.lcard'), function(c){
+				c.classList.remove('sel');
+				var t = c.querySelector('.ltick'); if (t) { t.checked = false; }
+			});
+			lsyncBar();
+		};
+	}
+
+	var lzip = document.getElementById('lzip');
+	if (lzip) {
+		lzip.onclick = function(){
+			var ids = Object.keys(lsel).map(Number);
+			if (!ids.length) { return; }
+			var msg = document.getElementById('lzipmsg');
+			lzip.disabled = true;
+			lzip.textContent = 'Building…';
+			msg.textContent = ids.length + ' photo' + (ids.length === 1 ? '' : 's') + ' — this can take a moment.';
+
+			api('/photos/zip', { method:'POST', body: JSON.stringify({ ids: ids }) })
+				.then(function(r){
+					// Navigating to it rather than fetching: the browser's own
+					// download handles a large file far better than holding it in
+					// memory as a blob, and it names the file from the header.
+					msg.textContent = 'Ready — ' + r.files + ' photo(s), ' + Math.round(r.bytes / 1048576) + ' MB.';
+					window.location.href = r.url;
+					lzip.disabled = false;
+					lzip.textContent = 'Download as a zip';
+				})
+				.catch(function(e){
+					lzip.disabled = false;
+					lzip.textContent = 'Download as a zip';
+					msg.textContent = e.message;
+				});
+		};
+	}
+
+	/* The lightbox. Escape and a click on the backdrop both close it — a
+	   full-screen overlay with only a small × is a trap on a phone. */
+	function lbOpen(id){
+		var p = lgrid._photos ? lgrid._photos[id] : null;
+		if (!p) { return; }
+		var box = document.getElementById('lbox');
+		document.getElementById('lbimg').src = p.full || p.url;
+
+		var bits = [];
+		if (p.people.length) { bits.push('<strong>' + esc(p.people.join(', ')) + '</strong>'); }
+		if (p.caption) { bits.push(esc(p.caption)); }
+		var when = [p.taken, (p.places[0] || ''), (p.events[0] || '')].filter(Boolean).join(' · ');
+		if (when) { bits.push(esc(when)); }
+		if (p.w) { bits.push(p.w + '×' + p.h + ' · ' + Math.round(p.bytes / 1024) + ' KB'); }
+		if (p.from) { bits.push('Given to the club by ' + esc(p.from)); }
+		if (p.dlname) {
+			bits.push('<a href="' + esc(p.url) + '" download="' + esc(p.dlname) + '">Download ' + esc(p.dlname) + '</a>');
+		}
+		document.getElementById('lbinfo').innerHTML = bits.join('<br>');
+		box.hidden = false;
+	}
+	function lbClose(){ var b = document.getElementById('lbox'); if (b) { b.hidden = true; document.getElementById('lbimg').src = ''; } }
+	var lbox = document.getElementById('lbox');
+	if (lbox) {
+		lbox.addEventListener('click', function(ev){
+			if (ev.target === lbox || ev.target.id === 'lbclose') { lbClose(); }
+		});
+		document.addEventListener('keydown', function(ev){
+			if (ev.key === 'Escape' && !lbox.hidden) { lbClose(); }
+		});
+	}
 
 	// The "photos waiting" banner sits outside the pane, so its buttons need
 	// wiring to the same open() the list rows use.

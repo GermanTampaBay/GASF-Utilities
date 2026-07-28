@@ -66,6 +66,9 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 	// After rest.php: photos.php registers its own routes and leans on
 	// gasf_crm_rest_thread() and gasf_crm_rest_guard() from it.
 	require_once GASF_CRM_DIR . '/photos.php';
+	// After photos.php: the library leans on its private-path helpers and on
+	// gasf_crm_photos_available().
+	require_once GASF_CRM_DIR . '/photos-library.php';
 	require_once GASF_CRM_DIR . '/ui.php';
 	require_once GASF_CRM_DIR . '/admin.php';
 
