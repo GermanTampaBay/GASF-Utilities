@@ -515,14 +515,27 @@ function gasf_crm_photo_unpublish( $attachment_id ) {
  *
  * @return array{email:string,name:string}|WP_Error
  */
-function gasf_crm_photo_message_sender( $graph_message_id ) {
+function gasf_crm_photo_message_sender( $graph_message_id, $stream = '' ) {
 	global $wpdb;
 
-	$row = $wpdb->get_row( $wpdb->prepare(
-		'SELECT from_addr, from_name, direction FROM ' . gasf_crm_table( 'messages' ) . '
-		  WHERE graph_message_id = %s LIMIT 1',
-		(string) $graph_message_id
-	), ARRAY_A );
+	/*
+	 * Scoped to the mailbox. A Graph message id belongs to the mailbox holding
+	 * it, so LIMIT 1 across every stream was picking whichever row the engine
+	 * happened to return — and the answer decides whose name goes on a photo
+	 * permanently and who receives the tagging email. Two mailboxes is all it
+	 * takes for "whichever came first" to be the wrong person.
+	 *
+	 * The stream is optional only so older callers keep working; every caller in
+	 * this file passes one.
+	 */
+	$sql  = 'SELECT from_addr, from_name, direction FROM ' . gasf_crm_table( 'messages' ) . ' WHERE graph_message_id = %s';
+	$args = array( (string) $graph_message_id );
+	if ( '' !== (string) $stream ) {
+		$sql   .= ' AND stream = %s';
+		$args[] = (string) $stream;
+	}
+
+	$row = $wpdb->get_row( $wpdb->prepare( $sql . ' LIMIT 1', $args ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL
 
 	if ( ! $row ) {
 		return new WP_Error( 'gasf_crm_nosender', 'No record of the message these photos came on.' );
@@ -559,7 +572,7 @@ function gasf_crm_photo_approve( array $thread, $graph_message_id, $graph_attach
 	// established is not taken in at all — an unattributable image in the club's
 	// collection is worse than a missing one, because nobody can later say
 	// whether there was permission to use it.
-	$sender = gasf_crm_photo_message_sender( $graph_message_id );
+	$sender = gasf_crm_photo_message_sender( $graph_message_id, $stream );
 	if ( is_wp_error( $sender ) ) { return $sender; }
 
 	$meta = gasf_crm_graph_attachment_meta( $graph_message_id, $graph_attachment_id, $stream );
@@ -1320,7 +1333,7 @@ function gasf_crm_photo_submission_open( array $msg, array $thread ) {
 	$t   = gasf_crm_table( 'photo_submissions' );
 	$now = current_time( 'mysql', true );
 
-	$sender = gasf_crm_photo_message_sender( (string) $msg['graph_message_id'] );
+	$sender = gasf_crm_photo_message_sender( (string) $msg['graph_message_id'], (string) $thread['stream'] );
 	if ( is_wp_error( $sender ) ) { return $sender; }
 
 	// INSERT IGNORE against the unique (stream, graph_message_id): two workers

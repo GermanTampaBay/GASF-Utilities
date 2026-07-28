@@ -250,9 +250,25 @@ function gasf_crm_install_tables() {
 		KEY library (in_library, uploaded_at)
 	) {$charset};" );
 
+	/*
+	 * stream is denormalised onto the message deliberately.
+	 *
+	 * A Graph message id is scoped to the MAILBOX that holds it, not to the
+	 * tenant — the same conversation delivered to info@ and photos@ produces two
+	 * different ids, and nothing forbids a collision between mailboxes. A single
+	 * global UNIQUE(graph_message_id) therefore asserted something Graph does not
+	 * guarantee: the second mailbox's copy would be silently discarded by INSERT
+	 * IGNORE, so a message really sent to photos@ could simply never appear.
+	 *
+	 * It could be reached by joining threads, but the uniqueness constraint needs
+	 * it in this table, and a lookup that must join to be correct is a lookup
+	 * somebody will eventually write without the join — which is exactly how the
+	 * sender-provenance query came to be unscoped.
+	 */
 	dbDelta( "CREATE TABLE {$messages} (
 		id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
 		thread_id BIGINT UNSIGNED NOT NULL,
+		stream VARCHAR(32) NOT NULL DEFAULT 'general',
 		graph_message_id VARCHAR(191) NOT NULL,
 		direction VARCHAR(4) NOT NULL DEFAULT 'in',
 		from_name VARCHAR(191) NULL,
@@ -265,7 +281,7 @@ function gasf_crm_install_tables() {
 		photos_done TINYINT(1) NOT NULL DEFAULT 0,
 		sent_by_user_id BIGINT UNSIGNED NULL,
 		PRIMARY KEY  (id),
-		UNIQUE KEY graph_message_id (graph_message_id),
+		UNIQUE KEY stream_message (stream, graph_message_id),
 		KEY thread_sent (thread_id, sent_at)
 	) {$charset};" );
 }
@@ -355,14 +371,31 @@ function gasf_crm_upsert_thread( $conversation_id, $subject, $from_name, $from_a
 	return array( 'id' => (int) $row['id'], 'reopened' => $reopened, 'created' => false );
 }
 
-/** Insert a message, ignoring duplicates. Returns true if a row was written. */
+/**
+ * Insert a message, ignoring duplicates. Returns true if a row was written.
+ *
+ * The stream is required in practice but defaulted from the thread when absent,
+ * so a caller that predates the column writes the right value rather than
+ * silently filing everything under 'general' — which, with the unique key now
+ * spanning it, would be a collision rather than a mislabel.
+ */
 function gasf_crm_insert_message( array $m ) {
 	global $wpdb;
+
+	$stream = (string) ( $m['stream'] ?? '' );
+	if ( '' === $stream ) {
+		$stream = (string) $wpdb->get_var( $wpdb->prepare(
+			'SELECT stream FROM ' . gasf_crm_table( 'threads' ) . ' WHERE id = %d',
+			(int) $m['thread_id']
+		) );
+	}
+	if ( '' === $stream ) { $stream = 'general'; }
+
 	$sql = $wpdb->prepare(
 		'INSERT IGNORE INTO ' . gasf_crm_table( 'messages' ) .
-		' (thread_id, graph_message_id, direction, from_name, from_addr, to_addrs, sent_at, body_preview, body_html, has_attachments, sent_by_user_id)
-		  VALUES (%d, %s, %s, %s, %s, %s, %s, %s, %s, %d, %d)',
-		$m['thread_id'], $m['graph_message_id'], $m['direction'], $m['from_name'], $m['from_addr'],
+		' (thread_id, stream, graph_message_id, direction, from_name, from_addr, to_addrs, sent_at, body_preview, body_html, has_attachments, sent_by_user_id)
+		  VALUES (%d, %s, %s, %s, %s, %s, %s, %s, %s, %s, %d, %d)',
+		$m['thread_id'], $stream, $m['graph_message_id'], $m['direction'], $m['from_name'], $m['from_addr'],
 		$m['to_addrs'], $m['sent_at'], $m['body_preview'], $m['body_html'],
 		$m['has_attachments'] ? 1 : 0, (int) $m['sent_by_user_id']
 	);

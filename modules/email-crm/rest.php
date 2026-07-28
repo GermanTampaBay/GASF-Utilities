@@ -661,14 +661,24 @@ function gasf_crm_rest_attachment( WP_REST_Request $req ) {
 	// by anything in the URL — otherwise a photos volunteer could point this at
 	// the general mailbox and pull down attachments from an inbox they cannot
 	// even list.
+	//
+	// Every mailbox holding a message with this id, not the first one the engine
+	// happens to return. A Graph id is mailbox-scoped, so the same id can exist
+	// in two streams — and picking arbitrarily meant a volunteer could be refused
+	// a message they hold, or served from a mailbox they do not, depending on row
+	// order. The caller's own grants decide which candidate is used, so the
+	// authorisation still comes from our records rather than from the URL.
 	global $wpdb;
-	$stream = (string) $wpdb->get_var( $wpdb->prepare(
-		'SELECT t.stream FROM ' . gasf_crm_table( 'messages' ) . ' m
-		   JOIN ' . gasf_crm_table( 'threads' ) . ' t ON t.id = m.thread_id
-		  WHERE m.graph_message_id = %s LIMIT 1',
+	$streams = $wpdb->get_col( $wpdb->prepare(
+		'SELECT DISTINCT stream FROM ' . gasf_crm_table( 'messages' ) . ' WHERE graph_message_id = %s',
 		$msg
 	) );
-	if ( '' === $stream || ! gasf_crm_user_can_stream( $stream ) ) {
+
+	$stream = '';
+	foreach ( (array) $streams as $s ) {
+		if ( gasf_crm_user_can_stream( (string) $s ) ) { $stream = (string) $s; break; }
+	}
+	if ( '' === $stream ) {
 		gasf_crm_attachment_problem( 'That attachment is not available to your account.' );
 	}
 

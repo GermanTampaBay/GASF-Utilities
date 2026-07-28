@@ -33,7 +33,7 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 	// upgrade check below runs dbDelta and flushes rules on any change. This
 	// plugin runs as an mu-plugin on the main site, where activation hooks
 	// never fire, so a version-compare on every load is the only reliable hook.
-	define( 'GASF_CRM_SCHEMA', '1.14.0' );
+	define( 'GASF_CRM_SCHEMA', '1.15.0' );
 
 	/**
 	 * How long the sign-in history is kept.
@@ -226,15 +226,59 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 		 * Dropped by name and only when present, so this is safe to re-run and
 		 * harmless on a fresh install that never had them.
 		 */
+		/*
+		 * Messages get their mailbox stamped on before the index that needs it.
+		 *
+		 * dbDelta has just added the column with its 'general' default, which is
+		 * wrong for every photos-stream message already stored. Backfilled from
+		 * the owning thread, which is where the truth has been all along.
+		 *
+		 * The ordering is the point. The new UNIQUE(stream, graph_message_id)
+		 * exists by now, and while every row still reads 'general' it is exactly
+		 * as strict as the old global key — so nothing can collide during the
+		 * window, and the legacy key is dropped only afterwards.
+		 */
+		$msgs  = gasf_crm_table( 'messages' );
+		$fixed = (int) $wpdb->query(
+			"UPDATE {$msgs} m
+			   JOIN " . gasf_crm_table( 'threads' ) . " t ON t.id = m.thread_id
+			    SET m.stream = t.stream
+			  WHERE m.stream <> t.stream" // phpcs:ignore WordPress.DB
+		);
+		if ( $fixed ) {
+			gasf_mec_log( 'CRM: stamped the owning mailbox onto ' . $fixed . ' message(s)' );
+		}
+
+		/*
+		 * graph_message_id joins this list for the same reason as the others, and
+		 * one of its own: a Graph message id is scoped to the MAILBOX holding it,
+		 * not the tenant. The global key asserted a uniqueness Graph never
+		 * promised, and INSERT IGNORE meant the second mailbox's copy of a
+		 * conversation was discarded rather than stored — a message sent to
+		 * photos@ that simply never arrived, with nothing reporting it.
+		 */
 		foreach ( array(
-			gasf_crm_table( 'threads' )  => 'conversation_id',
-			gasf_crm_table( 'contacts' ) => 'email',
-		) as $table => $index ) {
+			gasf_crm_table( 'threads' )  => array( 'conversation_id', 'conv_stream' ),
+			gasf_crm_table( 'contacts' ) => array( 'email', 'stream_email' ),
+			$msgs                        => array( 'graph_message_id', 'stream_message' ),
+		) as $table => $pair ) {
+			list( $index, $replacement ) = $pair;
+
 			$has = $wpdb->get_var( $wpdb->prepare( "SHOW INDEX FROM {$table} WHERE Key_name = %s", $index ) ); // phpcs:ignore
-			if ( $has ) {
-				$wpdb->query( "ALTER TABLE {$table} DROP INDEX `{$index}`" ); // phpcs:ignore
-				gasf_mec_log( 'CRM: dropped legacy global unique index ' . $index . ' on ' . $table );
+			if ( ! $has ) { continue; }
+
+			// Never drop the old key unless its replacement is actually present.
+			// A dbDelta that failed would otherwise leave the table with NO
+			// uniqueness, which is worse than the wrong uniqueness — duplicate
+			// messages and threads, silently, with no constraint to catch them.
+			$ok = $wpdb->get_var( $wpdb->prepare( "SHOW INDEX FROM {$table} WHERE Key_name = %s", $replacement ) ); // phpcs:ignore
+			if ( ! $ok ) {
+				gasf_mec_log( 'CRM: NOT dropping ' . $index . ' on ' . $table . ' — its replacement ' . $replacement . ' is missing' );
+				continue;
 			}
+
+			$wpdb->query( "ALTER TABLE {$table} DROP INDEX `{$index}`" ); // phpcs:ignore
+			gasf_mec_log( 'CRM: dropped legacy global unique index ' . $index . ' on ' . $table );
 		}
 
 		// Give every photo taken in before the item table a claim of its own.

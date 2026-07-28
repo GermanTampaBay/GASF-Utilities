@@ -277,6 +277,10 @@ function gasf_crm_ingest( array $m, $direction, $stream = 'general' ) {
 
 	$inserted = $adopted ? false : gasf_crm_insert_message( array(
 		'thread_id'        => $thread['id'],
+		// The mailbox this was actually read from, passed explicitly rather than
+		// derived later — it is what makes graph_message_id unique, and the sync
+		// is the only place that knows it first-hand.
+		'stream'           => $stream,
 		'graph_message_id' => $graph_id,
 		'direction'        => $direction,
 		'from_name'        => $from_name,
