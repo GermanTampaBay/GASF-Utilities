@@ -2339,25 +2339,46 @@ function gasf_crm_render_inbox() {
 
 	function remember(){
 		if (routing) { return; }
-		var h = '#mail';
-		if (!document.getElementById('photoview').hidden) { h = pcur ? '#photo/' + pcur : '#photos'; }
-		else if (!document.getElementById('libview').hidden) { h = '#library'; }
-		else if (current) { h = "#thread/" + current; }
-		if (h !== location.hash) { history.replaceState(null, '', h); }
+
+		/*
+		 * window.history, spelled out.
+		 *
+		 * This scope already declares `function history(events)` for the thread's
+		 * event log, and a hoisted function declaration shadows the global for
+		 * the WHOLE scope — so a bare `history.replaceState` resolved to that
+		 * function and threw. It threw from the first line of open(), which meant
+		 * clicking any message in the CRM did nothing at all.
+		 *
+		 * Wrapped as well, because remembering your place is a convenience and
+		 * must never be able to stop you opening a message. A nicety that can
+		 * break the primary action is not a nicety.
+		 */
+		try {
+			var h = '#mail';
+			if (!document.getElementById('photoview').hidden) { h = pcur ? '#photo/' + pcur : '#photos'; }
+			else if (!document.getElementById('libview').hidden) { h = '#library'; }
+			else if (current) { h = '#thread/' + current; }
+
+			if (h !== location.hash && window.history && window.history.replaceState) {
+				window.history.replaceState(null, '', h);
+			}
+		} catch (e) { /* never fatal */ }
 	}
 
 	function restore(){
 		var h = (location.hash || '').replace(/^#/, '');
 		if (!h) { return false; }
 		routing = true;
+		// Same reasoning: a bad fragment must not stop the app starting.
 		try {
 			var m;
 			if ((m = h.match(/^thread\/(\d+)$/))) { showView('mail');    open(parseInt(m[1], 10)); }
 			else if ((m = h.match(/^photo\/(\d+)$/))) { showView('photos'); openPhoto(parseInt(m[1], 10)); }
 			else if (h === 'photos')  { showView('photos'); }
 			else if (h === 'library') { showView('library'); }
-			else { routing = false; return false; }
-		} finally { routing = false; }
+			else { return false; }
+		} catch (e) { return false; }
+		finally { routing = false; }
 		return true;
 	}
 
