@@ -522,6 +522,67 @@ JS;
 		return $out;
 	}
 
+	/**
+	 * How many photos each place is actually on.
+	 *
+	 * Same $term->count trap as people — the Places panel was reporting 2 photos
+	 * for a place holding 41, and 0 for places holding 3 and 10.
+	 *
+	 * But places nest, and that makes the honest number a judgement rather than
+	 * a lookup. A place FILTER returns everything beneath it — see the note over
+	 * gasf_crm_photo_library_ids — so a count of the direct assignments alone
+	 * disagrees with the list you get by clicking the place: the Biergarten
+	 * would read "34 photos" and open onto 37. Counting the subtree keeps the
+	 * number and the click telling the same story, which is the whole job of a
+	 * count sitting next to a filter.
+	 *
+	 * DISTINCT across the subtree, because a photo tagged both Biergarten and
+	 * Bierhaus is one photo. Summing the children would have quietly inflated
+	 * every parent that had a photo tagged at two depths.
+	 *
+	 * @param bool $with_children Include the subtree. False gives the photos
+	 *                            directly on the place, which is the right
+	 *                            number when a place is deleted and its children
+	 *                            are lifted out from under it.
+	 * @return array<int,int> term_id => photos
+	 */
+	function gasf_photo_place_counts( $with_children = true ) {
+		global $wpdb;
+
+		$rows = $wpdb->get_results( $wpdb->prepare(
+			"SELECT tt.term_id AS tid, tr.object_id AS oid
+			   FROM {$wpdb->term_taxonomy} tt
+			   JOIN {$wpdb->term_relationships} tr ON tr.term_taxonomy_id = tt.term_taxonomy_id
+			   JOIN {$wpdb->posts} p ON p.ID = tr.object_id AND p.post_type = 'attachment'
+			  WHERE tt.taxonomy = %s",
+			'gasf_photo_place'
+		), ARRAY_A );
+
+		// term_id => set of photo IDs, keyed by ID so the union below dedupes.
+		$own = array();
+		foreach ( (array) $rows as $r ) { $own[ (int) $r['tid'] ][ (int) $r['oid'] ] = true; }
+
+		$terms = get_terms( array( 'taxonomy' => 'gasf_photo_place', 'hide_empty' => false ) );
+		$out   = array();
+
+		foreach ( ( is_wp_error( $terms ) ? array() : (array) $terms ) as $t ) {
+			$id  = (int) $t->term_id;
+			$set = isset( $own[ $id ] ) ? $own[ $id ] : array();
+
+			if ( $with_children ) {
+				// get_term_children returns the whole subtree, not just the
+				// immediate children, so this does not need to recurse.
+				foreach ( (array) get_term_children( $id, 'gasf_photo_place' ) as $kid ) {
+					if ( isset( $own[ (int) $kid ] ) ) { $set += $own[ (int) $kid ]; }
+				}
+			}
+
+			$out[ $id ] = count( $set );
+		}
+
+		return $out;
+	}
+
 	function gasf_photo_place_tree_public( array $candidates, $first = 0 ) {
 		$allow = array();
 

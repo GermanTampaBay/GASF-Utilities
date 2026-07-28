@@ -778,10 +778,16 @@ add_action( 'rest_api_init', function () {
 				) );
 				if ( is_wp_error( $res ) ) { return $res; }
 
-				gasf_mec_log( sprintf( 'Photo library: renamed “%s” to “%s” across %d photo(s) — user %d',
-					$term->name, $to, (int) $term->count, get_current_user_id() ) );
+				// Same $term->count trap as the panel had. Worse here: this one
+				// was writing "across 0 photo(s)" into the audit log, where a
+				// wrong number is not a cosmetic problem — it is the record.
+				$nc = function_exists( 'gasf_photo_person_counts' ) ? gasf_photo_person_counts() : array();
+				$n  = isset( $nc[ (int) $term->term_id ] ) ? (int) $nc[ (int) $term->term_id ] : 0;
 
-				return array( 'ok' => true, 'action' => 'rename', 'from' => $term->name, 'to' => $to, 'photos' => (int) $term->count );
+				gasf_mec_log( sprintf( 'Photo library: renamed “%s” to “%s” across %d photo(s) — user %d',
+					$term->name, $to, $n, get_current_user_id() ) );
+
+				return array( 'ok' => true, 'action' => 'rename', 'from' => $term->name, 'to' => $to, 'photos' => $n );
 			}
 
 			if ( 'merge' === $action ) {
@@ -861,6 +867,12 @@ add_action( 'rest_api_init', function () {
 		'permission_callback' => $lib_guard,
 		'callback'            => function () {
 			if ( ! function_exists( 'gasf_photo_place_tree' ) ) { return array( 'places' => array() ); }
+
+			// Real counts, and inclusive of the subtree, so the number beside a
+			// place matches the list you get by filtering on it. $term->count is
+			// 0 for attachment terms — see gasf_photo_place_counts.
+			$counts = function_exists( 'gasf_photo_place_counts' ) ? gasf_photo_place_counts() : array();
+
 			$out = array();
 			foreach ( gasf_photo_place_tree( 0 ) as $r ) {
 				$t = $r['term'];
@@ -870,7 +882,7 @@ add_action( 'rest_api_init', function () {
 					'label'  => function_exists( 'gasf_photo_label' ) ? gasf_photo_label( $t->name ) : $t->name,
 					'parent' => (int) $t->parent,
 					'depth'  => (int) $r['depth'],
-					'photos' => (int) $t->count,
+					'photos' => isset( $counts[ (int) $t->term_id ] ) ? (int) $counts[ (int) $t->term_id ] : 0,
 					'lat'    => (string) get_term_meta( $t->term_id, 'gasf_lat', true ),
 					'lon'    => (string) get_term_meta( $t->term_id, 'gasf_lon', true ),
 					'radius' => (string) get_term_meta( $t->term_id, 'gasf_radius', true ),
@@ -957,7 +969,11 @@ add_action( 'rest_api_init', function () {
 				foreach ( $kids as $k ) {
 					wp_update_term( (int) $k->term_id, 'gasf_photo_place', array( 'parent' => (int) $term->parent ) );
 				}
-				$n = (int) $term->count;
+				// Direct, not inclusive: the children were just lifted out from
+				// under this place and kept their own photos, so the ones this
+				// deletion actually touches are the ones tagged here.
+				$pc = function_exists( 'gasf_photo_place_counts' ) ? gasf_photo_place_counts( false ) : array();
+				$n  = isset( $pc[ (int) $term->term_id ] ) ? (int) $pc[ (int) $term->term_id ] : 0;
 				$nm = $term->name;
 				wp_delete_term( (int) $term->term_id, 'gasf_photo_place' );
 				gasf_mec_log( sprintf( 'Photo places: deleted "%s" (was on %d photo(s); %d child place(s) moved up) — user %d',
