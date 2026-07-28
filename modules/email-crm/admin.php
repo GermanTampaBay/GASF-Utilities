@@ -29,8 +29,37 @@ function gasf_crm_admin_tab() {
 		if ( 'save' === $act ) {
 			$cfg = gasf_crm_cfg();
 
+			// Remembered before they are overwritten, so a changed address can
+			// reset the cursor that belongs to the OLD one — see below.
+			$was = array( 'general' => (string) $cfg['mailbox'], 'photos' => (string) $cfg['mailbox_photos'] );
+
 			$cfg['mailbox']        = sanitize_email( wp_unslash( $_POST['mailbox'] ?? $cfg['mailbox'] ) );
 			$cfg['mailbox_photos'] = sanitize_email( wp_unslash( $_POST['mailbox_photos'] ?? '' ) );
+
+			/*
+			 * A stream's sync cursor belongs to the mailbox it was read from.
+			 *
+			 * Point a stream at a different address and the cursor stays — so the
+			 * new mailbox is asked only for mail newer than the moment the OLD one
+			 * was last read. Everything already sitting in it is never fetched, and
+			 * nothing reports that: the sync succeeds, returns no new messages, and
+			 * the inbox simply appears empty.
+			 *
+			 * Cleared on change so the new mailbox is read from the first-run
+			 * lookback, exactly as if it had just been configured.
+			 */
+			$now = array( 'general' => (string) $cfg['mailbox'], 'photos' => (string) $cfg['mailbox_photos'] );
+			$by  = (array) $cfg['last_sync_by'];
+			foreach ( $now as $stream => $addr ) {
+				if ( 0 === strcasecmp( $addr, $was[ $stream ] ) ) { continue; }
+				unset( $by[ $stream ] );
+				if ( 'general' === $stream ) { $cfg['last_sync'] = 0; }
+				gasf_mec_log( sprintf(
+					'CRM: %s mailbox changed from %s to %s — sync cursor reset so the new mailbox is read from the start.',
+					$stream, $was[ $stream ] ?: '(none)', $addr ?: '(none)'
+				) );
+			}
+			$cfg['last_sync_by'] = $by;
 			$cfg['tenant_id']      = sanitize_text_field( wp_unslash( $_POST['tenant_id'] ?? '' ) );
 			$cfg['client_id']      = sanitize_text_field( wp_unslash( $_POST['client_id'] ?? '' ) );
 			$cfg['google_id']      = sanitize_text_field( wp_unslash( $_POST['google_id'] ?? '' ) );

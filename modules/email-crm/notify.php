@@ -28,6 +28,15 @@ define( 'GASF_CRM_NOTIFY_INTERVAL', HOUR_IN_SECONDS );
 define( 'GASF_CRM_NOTIFY_LIST_MAX', 10 );
 
 /**
+ * Most threads carried forward for one recipient who could not be reached.
+ *
+ * A cap rather than a queue length: an address that has been bouncing for a
+ * month must not grow an unbounded option row, and a digest listing ninety
+ * threads is not a summary anybody reads.
+ */
+define( 'GASF_CRM_NOTIFY_OWED_MAX', 40 );
+
+/**
  * Mark a thread as needing a notification.
  *
  * notified_at is stamped here rather than at send time, and that ordering is
@@ -61,7 +70,13 @@ function gasf_crm_queue_notification( $thread_id ) {
  */
 function gasf_crm_flush_notifications( $force = false ) {
 	$queue = array_map( 'intval', (array) get_option( 'gasf_crm_notify_queue', array() ) );
-	if ( ! $queue ) { return 0; }
+
+	// Somebody owed from a previous run is reason enough to run, even with an
+	// empty queue. Returning early on the queue alone would mean a recipient who
+	// missed a batch is only retried if MORE mail happens to arrive — so a quiet
+	// week is exactly when the retry never comes.
+	$owed_now = (array) get_option( 'gasf_crm_notify_owed', array() );
+	if ( ! $queue && ! $owed_now ) { return 0; }
 
 	$last = (int) get_option( 'gasf_crm_notify_last', 0 );
 	if ( ! $force && ( time() - $last ) < GASF_CRM_NOTIFY_INTERVAL ) {
@@ -85,9 +100,9 @@ function gasf_crm_flush_notifications( $force = false ) {
 		update_option( 'gasf_crm_notify_queue', array_values( array_diff( $now_q, $queue ) ), false );
 	};
 
-	// Nothing left to announce: the settled items still leave the queue, or
-	// they would reappear in every future summary.
-	if ( ! $threads ) {
+	// Nothing left to announce AND nobody owed: the settled items still leave
+	// the queue, or they would reappear in every future summary.
+	if ( ! $threads && ! $owed_now ) {
 		$dequeue();
 		return 0;
 	}
@@ -97,10 +112,24 @@ function gasf_crm_flush_notifications( $force = false ) {
 		// Nobody to tell. Clear rather than hold — a batch held until a
 		// recipient is finally configured would open with week-old "new mail".
 		$dequeue();
+		delete_option( 'gasf_crm_notify_owed' );
 		return 0;
 	}
 
+	/*
+	 * Delivery is tracked PER RECIPIENT, not per batch.
+	 *
+	 * It used to be one flag for the whole run: any single success dequeued the
+	 * batch, so if four of five deliveries failed, those four people were never
+	 * told about those threads and nothing recorded it. The old comment defended
+	 * that as avoiding duplicates for whoever did receive it — a real problem,
+	 * but the answer is to remember who is still owed rather than to give up on
+	 * them. Retrying only the people who missed out duplicates for nobody.
+	 */
+	$owed      = (array) get_option( 'gasf_crm_notify_owed', array() );
 	$delivered = 0;
+	$failed    = 0;
+
 	foreach ( $recipients as $to => $streams ) {
 		// The digest is built PER RECIPIENT from the threads they are allowed to
 		// see. A single shared summary would leak general-inbox senders and
@@ -109,21 +138,57 @@ function gasf_crm_flush_notifications( $force = false ) {
 		$mine = array_values( array_filter( $threads, static function ( $t ) use ( $streams ) {
 			return in_array( (string) $t['stream'], $streams, true );
 		} ) );
-		if ( ! $mine ) { continue; }
+
+		// Plus anything a previous run owed them and could not deliver, still
+		// unanswered and still theirs to see.
+		foreach ( (array) ( $owed[ $to ] ?? array() ) as $id ) {
+			foreach ( $mine as $m ) {
+				if ( (int) $m['id'] === (int) $id ) { continue 2; } // already in this digest
+			}
+			$t = gasf_crm_get_thread( (int) $id );
+			if ( $t && 'new' === $t['status'] && in_array( (string) $t['stream'], $streams, true ) ) {
+				$mine[] = $t;
+			}
+		}
+
+		if ( ! $mine ) {
+			unset( $owed[ $to ] );
+			continue;
+		}
 
 		list( $subject, $body ) = gasf_crm_notify_digest( $mine );
-		if ( gasf_crm_notify_send( $to, $subject, $body ) ) { $delivered++; }
+		if ( gasf_crm_notify_send( $to, $subject, $body ) ) {
+			$delivered++;
+			unset( $owed[ $to ] );
+			continue;
+		}
+
+		// Still owed. Capped so a permanently undeliverable address cannot grow
+		// an unbounded option row, and newest kept — an old thread is the one
+		// most likely to have been dealt with by the time anyone reads it.
+		$failed++;
+		$ids = array_map( static function ( $t ) { return (int) $t['id']; }, $mine );
+		$owed[ $to ] = array_slice( array_values( array_unique( $ids ) ), -GASF_CRM_NOTIFY_OWED_MAX );
 	}
 
-	// The queue is cleared only on confirmed delivery to at least one
-	// recipient. It used to be cleared BEFORE sending, which meant one failed
-	// delivery pass discarded the batch permanently — mail arrived, nobody was
-	// ever told, and nothing recorded that they weren't. Total failure now
-	// keeps the batch queued and leaves the interval stamp alone, so the next
-	// hourly sync retries; the hourly cadence is the backoff. Partial success
-	// counts as delivered — retrying for the failed recipients would duplicate
-	// for the ones who got it, and duplicates are how notifications end up
-	// ignored.
+	// Recipients who have since been removed stop being owed anything.
+	$owed = array_intersect_key( $owed, $recipients );
+	if ( $owed ) {
+		update_option( 'gasf_crm_notify_owed', $owed, false );
+	} else {
+		delete_option( 'gasf_crm_notify_owed' );
+	}
+
+	/*
+	 * The shared queue is emptied once every recipient has been ATTEMPTED,
+	 * because from here each one's retry is carried individually. Holding the
+	 * batch as well would announce the same threads again to whoever already
+	 * received them.
+	 *
+	 * Total failure is the exception: nothing was attempted successfully, so the
+	 * interval stamp is left alone and the next hourly sync retries the batch as
+	 * a whole. The hourly cadence is the backoff.
+	 */
 	if ( 0 === $delivered ) {
 		gasf_mec_log( sprintf(
 			'CRM: notification delivery failed for all %d recipient(s); batch of %d thread(s) held for retry.',
@@ -135,7 +200,11 @@ function gasf_crm_flush_notifications( $force = false ) {
 	$dequeue();
 	update_option( 'gasf_crm_notify_last', time(), false );
 
-	gasf_mec_log( sprintf( 'CRM: notified %d of %d recipient(s) about %d thread(s).', $delivered, count( $recipients ), count( $threads ) ) );
+	gasf_mec_log( sprintf(
+		'CRM: notified %d of %d recipient(s) about %d thread(s)%s.',
+		$delivered, count( $recipients ), count( $threads ),
+		$failed ? sprintf( '; %d still owed and carried to the next run', $failed ) : ''
+	) );
 
 	return count( $threads );
 }
