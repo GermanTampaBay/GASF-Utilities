@@ -119,6 +119,15 @@ function gasf_crm_styles() {
 	?>
 <style>
 *,*::before,*::after{box-sizing:border-box}
+/* hidden means hidden.
+   The browser's own [hidden] rule is display:none at the lowest possible
+   specificity, so ANY class that sets display beats it. That is not a corner
+   case here: the whole UI toggles panes with el.hidden = true, and three of the
+   library's own elements carry a display of their own — the lightbox is
+   display:flex, and it rendered over the entire signed-in page as a black
+   overlay that ate every click, with a close button that set .hidden and
+   changed nothing. Stated once, globally, so it cannot happen again. */
+[hidden]{display:none !important}
 /* Design tokens — the same names and values the rest of germantampabay.com
    uses (GASF Events' gasf-events.css defines them for the theme side).
 
