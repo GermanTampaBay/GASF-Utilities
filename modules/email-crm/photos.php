@@ -574,6 +574,23 @@ function gasf_crm_photo_publish( $attachment_id ) {
 		) );
 	}
 
+	/*
+	 * Files in the review folder are 0600 — deliberately, so nothing but this
+	 * process can read an unreviewed photo even if the directory protection
+	 * fails. rename() PRESERVES permissions, so every approved photo arrived in
+	 * public uploads still readable only by the owner, and the web server
+	 * answered 403 for all of it.
+	 *
+	 * The failure was invisible from every angle that mattered: the file was on
+	 * disk, the metadata was right, the URL was right, and the page showed an
+	 * empty frame. It looked like a broken image, not a permission.
+	 *
+	 * So publishing has to hand the mode over too. FS_CHMOD_FILE is what
+	 * WordPress uses for its own uploads, which is the correct thing to match
+	 * rather than a hardcoded 0644 that ignores a host's umask.
+	 */
+	$mode = defined( 'FS_CHMOD_FILE' ) ? FS_CHMOD_FILE : 0644;
+
 	$moved_any = false;
 	foreach ( array_unique( $names ) as $n ) {
 		$src = $from . $n;
@@ -582,7 +599,18 @@ function gasf_crm_photo_publish( $attachment_id ) {
 		if ( ! @rename( $src, $dst ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors
 			return new WP_Error( 'gasf_crm_pub', 'Could not move ' . $n . ' out of the review folder.' );
 		}
+		@chmod( $dst, $mode ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
 		$moved_any = true;
+	}
+
+	// Verified, not assumed — the whole point of publishing is that the picture
+	// can be seen, and "the bytes are in the right folder" is not that.
+	$main_pub = trailingslashit( $up['path'] ) . basename( $rel );
+	if ( is_file( $main_pub ) && ! is_readable( $main_pub ) ) {
+		return new WP_Error( 'gasf_crm_pub', sprintf(
+			'%s was moved but is not readable by the web server, so it would show as a broken image. Publishing stopped.',
+			basename( $rel )
+		) );
 	}
 
 	// Belt and braces on the same point: if the destination has no main file
@@ -680,6 +708,11 @@ function gasf_crm_photo_unpublish( $attachment_id ) {
 		if ( ! @rename( $src, $dst ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors
 			return new WP_Error( 'gasf_crm_unpub', 'Could not move ' . $n . ' into the review folder.' );
 		}
+		// The mirror of publish: a file coming BACK from public uploads carries
+		// its public 0644 with it, which would leave a withdrawn photo more
+		// readable than one that never left. Withdrawing has to actually
+		// withdraw it.
+		@chmod( $dst, 0600 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
 	}
 
 	$new_rel = GASF_CRM_PHOTO_REVIEW_DIR . '/' . basename( $rel );
