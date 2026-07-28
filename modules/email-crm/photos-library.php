@@ -258,6 +258,9 @@ function gasf_crm_photo_library_card( $attachment_id ) {
 		'caption' => (string) ( $info['caption'] ?? '' ),
 		'taken'   => (string) ( $info['taken'] ?? '' ),
 		'taken_at' => function_exists( 'gasf_photo_taken_time' ) ? gasf_photo_taken_time( $id ) : '',
+		// A clip has no thumbnail and no sizes, so the grid and the viewer both
+		// need to know before they try to put it in an <img>.
+		'kind'    => wp_attachment_is( 'video', $id ) ? 'video' : 'image',
 		'people'  => (array) ( $info['people'] ?? array() ),
 		'places'  => (array) ( $info['places'] ?? array() ),
 		'events'  => (array) ( $info['events'] ?? array() ),

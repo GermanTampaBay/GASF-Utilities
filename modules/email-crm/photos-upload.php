@@ -31,10 +31,33 @@
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-/** What a browser will hand us that WordPress can actually process. */
+/** Stills a browser will hand us that WordPress can actually process. */
 function gasf_crm_upload_types() {
 	return array( 'jpg', 'jpeg', 'png', 'gif', 'webp' );
 }
+
+/**
+ * Moving pictures.
+ *
+ * Kept to the two containers every phone and every browser agree on. The rest of
+ * WordPress's video list — wmv, flv, avi, mkv — plays nowhere useful without a
+ * conversion step this server cannot run, so accepting them would take the file
+ * and then leave somebody with a club video nothing will open.
+ */
+function gasf_crm_upload_video_types() {
+	return array( 'mp4', 'm4v', 'mov' );
+}
+
+/*
+ * A minute of phone video, near enough.
+ *
+ * 1080p runs about 130 MB a minute and 4K about three times that, so this is a
+ * short clip rather than a film — which is what a club actually posts. It is
+ * also under the 100 MB a request that sits in front of most Cloudflare plans:
+ * a bigger file is refused at the edge before PHP is ever reached, and no
+ * message this code could write would ever be seen.
+ */
+define( 'GASF_CRM_UPLOAD_MAX_VIDEO_BYTES', 96 * MB_IN_BYTES );
 
 /**
  * Take one uploaded file into the collection, tagged with the batch's answers.
@@ -70,8 +93,10 @@ function gasf_crm_photo_upload_one( array $f, array $in ) {
 			$why[ (int) $f['error'] ] ?? 'could not be uploaded' ), array( 'status' => 400 ) );
 	}
 
-	$ext = strtolower( (string) pathinfo( $name, PATHINFO_EXTENSION ) );
-	if ( ! in_array( $ext, gasf_crm_upload_types(), true ) ) {
+	$ext     = strtolower( (string) pathinfo( $name, PATHINFO_EXTENSION ) );
+	$isVideo = in_array( $ext, gasf_crm_upload_video_types(), true );
+
+	if ( ! $isVideo && ! in_array( $ext, gasf_crm_upload_types(), true ) ) {
 		// HEIC named explicitly: it is what an iPhone produces by default, so it
 		// is the likeliest thing to be turned away, and "not a supported image"
 		// gives somebody no idea that the fix is a setting on their phone.
@@ -79,24 +104,44 @@ function gasf_crm_photo_upload_one( array $f, array $in ) {
 			? ' iPhones save HEIC by default — in Settings → Camera → Formats, choose "Most Compatible", or share the photos rather than sending the originals.'
 			: '';
 		return new WP_Error( 'gasf_crm_type', sprintf(
-			'%s is a .%s, which cannot be catalogued. JPEG, PNG, GIF and WebP work.%s', $name, $ext ?: '?', $hint
+			'%s is a .%s, which cannot be catalogued. JPEG, PNG, GIF and WebP work, and MP4 or MOV for video.%s',
+			$name, $ext ?: '?', $hint
 		), array( 'status' => 415 ) );
 	}
 
 	$size = (int) ( $f['size'] ?? 0 );
-	if ( defined( 'GASF_CRM_PHOTO_MAX_BYTES' ) && $size > GASF_CRM_PHOTO_MAX_BYTES ) {
-		return new WP_Error( 'gasf_crm_big', sprintf( '%s is %s, over the %s limit for one photo.',
-			$name, size_format( $size ), size_format( GASF_CRM_PHOTO_MAX_BYTES ) ), array( 'status' => 413 ) );
+	$cap  = $isVideo ? GASF_CRM_UPLOAD_MAX_VIDEO_BYTES : ( defined( 'GASF_CRM_PHOTO_MAX_BYTES' ) ? GASF_CRM_PHOTO_MAX_BYTES : 0 );
+	if ( $cap && $size > $cap ) {
+		return new WP_Error( 'gasf_crm_big', sprintf( '%s is %s, over the %s limit for one %s.',
+			$name, size_format( $size ), size_format( $cap ), $isVideo ? 'video' : 'photo' ), array( 'status' => 413 ) );
 	}
 
-	// Refuse a decompression bomb before WordPress tries to make six sizes of it.
-	$dim = @getimagesize( $f['tmp_name'] ); // phpcs:ignore WordPress.PHP.NoSilencedErrors -- a bad image is an expected input here.
-	if ( ! $dim || empty( $dim[0] ) || empty( $dim[1] ) ) {
-		return new WP_Error( 'gasf_crm_type', $name . ' does not look like an image we can read.', array( 'status' => 415 ) );
-	}
-	if ( defined( 'GASF_CRM_PHOTO_MAX_PIXELS' ) && ( $dim[0] * $dim[1] ) > GASF_CRM_PHOTO_MAX_PIXELS ) {
-		return new WP_Error( 'gasf_crm_big', sprintf( '%s is %s×%s, which is more than we resize in one go.',
-			$name, number_format_i18n( $dim[0] ), number_format_i18n( $dim[1] ) ), array( 'status' => 413 ) );
+	if ( $isVideo ) {
+		/*
+		 * Checked BEFORE the file is taken in, not after.
+		 *
+		 * A photo can be stripped, so it is accepted and cleaned. A video on this
+		 * server can only be stripped of the one box we know how to blank, and if
+		 * it turns out to carry something else there is nothing to be done with it
+		 * — so the answer has to come before it is in the collection, not after.
+		 */
+		$loc = gasf_crm_video_has_location( $f['tmp_name'] );
+		if ( $loc && false === strpos( $loc, 'GPS atom' ) ) {
+			return new WP_Error( 'gasf_crm_geo', sprintf(
+				'%s carries %s that cannot be removed on this server, so it has not been taken in. Turning location off in the camera app before recording, or re-saving the clip in an editor, clears it.',
+				$name, $loc
+			), array( 'status' => 415 ) );
+		}
+	} else {
+		// Refuse a decompression bomb before WordPress tries to make sixteen sizes of it.
+		$dim = @getimagesize( $f['tmp_name'] ); // phpcs:ignore WordPress.PHP.NoSilencedErrors -- a bad image is an expected input here.
+		if ( ! $dim || empty( $dim[0] ) || empty( $dim[1] ) ) {
+			return new WP_Error( 'gasf_crm_type', $name . ' does not look like an image we can read.', array( 'status' => 415 ) );
+		}
+		if ( defined( 'GASF_CRM_PHOTO_MAX_PIXELS' ) && ( $dim[0] * $dim[1] ) > GASF_CRM_PHOTO_MAX_PIXELS ) {
+			return new WP_Error( 'gasf_crm_big', sprintf( '%s is %s×%s, which is more than we resize in one go.',
+				$name, number_format_i18n( $dim[0] ), number_format_i18n( $dim[1] ) ), array( 'status' => 413 ) );
+		}
 	}
 
 	require_once ABSPATH . 'wp-admin/includes/image.php';

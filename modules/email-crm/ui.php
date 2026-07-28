@@ -575,6 +575,12 @@ input:focus,select:focus,textarea:focus,.edbody:focus{
    rather than the tagging page's single print. */
 .lcard{background:var(--gasf-chip);padding:5px}
 .lcard .lthumb{border:3px solid var(--print);box-shadow:0 1px 3px rgba(36,29,21,.22)}
+/* A clip has no frame to show without ffmpeg, so it gets a plate rather than a
+   broken image. Labelled, because "why is this one grey" is a fair question. */
+.lcard .lvid{display:flex;align-items:center;justify-content:center;aspect-ratio:4/3;
+	background:var(--gasf-dark);color:var(--gasf-page)}
+.lcard .lvid span{font:700 10px/1 var(--slug);letter-spacing:.18em;text-transform:uppercase;opacity:.85}
+.lightbox video{max-width:100%;max-height:78vh;background:#000}
 .lcard .lmeta{padding:6px 3px 1px;border-top:1px solid var(--gasf-border);margin-top:5px}
 .lcard .lmeta .lsub{font-family:var(--slug);font-size:10px;letter-spacing:.04em}
 .lcard .ltick{top:9px;left:9px}
@@ -1302,8 +1308,8 @@ function gasf_crm_render_inbox() {
 	<div class="card pad">
 		<div class="dropzone" id="updrop" tabindex="0" role="button" aria-label="Choose photos, or drag them here">
 			<strong>Drag photos here</strong>
-			<span class="muted">or click to choose them &mdash; JPEG, PNG, GIF or WebP</span>
-			<input type="file" id="upinput" accept="image/jpeg,image/png,image/gif,image/webp" multiple hidden>
+			<span class="muted">or click to choose them &mdash; JPEG, PNG, GIF, WebP, and MP4 or MOV up to 96&nbsp;MB</span>
+			<input type="file" id="upinput" accept="image/jpeg,image/png,image/gif,image/webp,video/mp4,video/quicktime" multiple hidden>
 		</div>
 		<div id="uplist" class="uplist"></div>
 		<div class="actions" style="margin-top:14px">
@@ -1317,6 +1323,8 @@ function gasf_crm_render_inbox() {
 <div class="lightbox" id="lbox" role="dialog" aria-modal="true" aria-label="Photo" hidden>
 	<button class="lbclose" id="lbclose" type="button" aria-label="Close">&times;</button>
 	<img id="lbimg" src="" alt="">
+	<?php // A clip plays here instead. Never both — see openLb(). ?>
+	<video id="lbvid" controls preload="metadata" playsinline hidden></video>
 	<div class="lbinfo" id="lbinfo"></div>
 	<?php // The editor, on a light card — the same form the rest of the app uses. ?>
 	<div class="lbedit" id="lbedit" data-stream="photos" hidden></div>
@@ -2722,7 +2730,9 @@ function gasf_crm_render_inbox() {
 
 	function upAdd(files){
 		Array.prototype.forEach.call(files, function(f){
-			if (!/^image\//.test(f.type)) { return; }   // a dragged folder or PDF, silently skipped
+			// A dragged folder, a PDF, a .zip of the evening — skipped rather than
+			// sent, since the server would only turn them away one round trip later.
+			if (!/^(image|video)\//.test(f.type)) { return; }
 			upQueue.push({ file: f, state: 'waiting', msg: '' });
 		});
 		upPaint();
@@ -3208,7 +3218,9 @@ function gasf_crm_render_inbox() {
 						? '<span class="lno" title="Somebody asked us not to publish this. It is left out of bulk downloads.">do not publish</span>'
 						: '') +
 					'<button type="button" class="lopen" aria-label="Open ' + esc(p.title || 'photo') + '">' +
-						'<img class="lthumb" src="' + esc(p.thumb || p.url) + '" alt="' + esc(p.title) + '" loading="lazy">' +
+						(p.kind === 'video'
+							? '<span class="lthumb lvid" aria-hidden="true"><span>video</span></span>'
+							: '<img class="lthumb" src="' + esc(p.thumb || p.url) + '" alt="' + esc(p.title) + '" loading="lazy">') +
 					'</button>' +
 					'<div class="lmeta">' +
 						'<span class="lt">' + esc(who || p.title) + '</span>' +
@@ -3582,7 +3594,15 @@ function gasf_crm_render_inbox() {
 		var p = card || (lgrid && lgrid._photos ? lgrid._photos[id] : null);
 		if (!p) { return; }
 		var box = document.getElementById('lbox');
-		document.getElementById('lbimg').src = p.full || p.url;
+		// A video has no full-size still to show, so the viewer swaps element.
+		var lbi = document.getElementById('lbimg'), lbv = document.getElementById('lbvid');
+		if (p.kind === 'video') {
+			lbi.hidden = true; lbi.src = '';
+			lbv.hidden = false; lbv.src = p.url;
+		} else {
+			lbv.hidden = true; lbv.removeAttribute('src'); lbv.load();
+			lbi.hidden = false; lbi.src = p.full || p.url;
+		}
 
 		var bits = [];
 		if (p.people.length) { bits.push('<strong>' + esc(p.people.join(', ')) + '</strong>'); }
@@ -3783,6 +3803,10 @@ function gasf_crm_render_inbox() {
 		b.hidden = true;
 		b.classList.remove('editing');
 		document.getElementById('lbimg').src = '';
+		// Stop the sound. A clip left playing behind a closed viewer is a phone
+		// talking in somebody's hand for no reason they can see.
+		var lbv2 = document.getElementById('lbvid');
+		if (lbv2) { lbv2.pause(); lbv2.removeAttribute('src'); lbv2.load(); lbv2.hidden = true; }
 
 		// Back to the photo they opened, not to the top of the page. Losing your
 		// place in a wall of two hundred thumbnails is the whole cost of getting

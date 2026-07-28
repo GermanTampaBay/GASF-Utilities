@@ -542,6 +542,123 @@ function gasf_crm_photo_is_private( $attachment_id ) {
 	return 0 === strpos( $rel, GASF_CRM_PHOTO_REVIEW_DIR . '/' );
 }
 
+/* --------------------------------------------------------------------------
+ * Video
+ *
+ * A phone tags a video with where it was taken exactly as it tags a photo, and
+ * this club's own files prove it: eight of the fifteen videos already on the
+ * site carry GPS coordinates, most of them one evening's Oktoberfest clips.
+ *
+ * Photos get that removed by Imagick. There is no Imagick for video, and this
+ * server has no ffmpeg and no exiftool, so there is nothing to hand the file to.
+ * What there is, is the shape of the container: the location sits in a
+ * fixed-length string carrying its own length two bytes ahead of it. Blanking
+ * exactly that many bytes in place moves nothing and changes no box size, so the
+ * file stays as valid as it was and the coordinates are gone.
+ *
+ * Anything that cannot be blanked that way is refused rather than published,
+ * which is the same answer gasf_crm_photo_scrub gives when a strip does not take.
+ * -------------------------------------------------------------------------- */
+
+/** Byte signatures for "this file says where it was". */
+function gasf_crm_video_markers() {
+	return array(
+		"©xyz"                      => 'a GPS atom',
+		'loci'                         => 'a 3GPP location box',
+		'GPSCoordinates'               => 'GPS coordinates in XMP',
+		'com.apple.quicktime.location' => 'a QuickTime location tag',
+	);
+}
+
+/**
+ * Read the two ends of a file, which is where a container keeps its metadata.
+ *
+ * Never the whole thing: these run to a hundred megabytes, and the moov atom
+ * lives at the front or the back, never buried among the frames.
+ *
+ * @return array{0:string,1:int} the buffer, and how far its indexes sit from the file's.
+ */
+function gasf_crm_video_ends( $path, $window = 2097152 ) {
+	$size = (int) filesize( $path );
+	$fh   = fopen( $path, 'rb' ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+	if ( ! $fh ) { return array( '', 0 ); }
+
+	$head = (string) fread( $fh, min( $window, $size ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+	$tail = '';
+	$at   = 0;
+	if ( $size > $window ) {
+		$at = max( $window, $size - $window );
+		fseek( $fh, $at );
+		$tail = (string) fread( $fh, $size - $at ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+	}
+	fclose( $fh ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+
+	return array( $head . $tail, $at ? $at - strlen( $head ) : 0 );
+}
+
+/** Does this video say where it was taken? Returns '' or a description. */
+function gasf_crm_video_has_location( $path ) {
+	if ( ! is_file( $path ) ) { return ''; }
+	list( $buf ) = gasf_crm_video_ends( $path );
+	foreach ( gasf_crm_video_markers() as $sig => $label ) {
+		if ( false !== strpos( $buf, $sig ) ) { return $label; }
+	}
+	return '';
+}
+
+/**
+ * Blank the coordinates in an mp4/mov, in place.
+ *
+ * The box is [size:4][type:4][len:2][lang:2][text:len], so the coordinates are a
+ * plain ISO-6709 string carrying its own length. Overwriting exactly that many
+ * bytes with spaces leaves every size field in the file still true: nothing
+ * moves, nothing needs recomputing, and a player reads an empty location instead
+ * of somebody's house.
+ *
+ * Verified afterwards, never assumed. A blanking that quietly missed something is
+ * the failure this exists to prevent, and refusing to publish is the right way to
+ * lose that argument.
+ *
+ * @return true|WP_Error
+ */
+function gasf_crm_video_scrub( $path ) {
+	if ( ! is_file( $path ) ) { return true; }
+
+	list( $buf, $base ) = gasf_crm_video_ends( $path );
+	if ( '' === $buf ) {
+		return new WP_Error( 'gasf_crm_scrub', 'Could not read ' . basename( $path ) . ' to check it for location data.' );
+	}
+
+	$fh = fopen( $path, 'r+b' ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+	if ( ! $fh ) {
+		return new WP_Error( 'gasf_crm_scrub', 'Could not open ' . basename( $path ) . ' to remove its location data.' );
+	}
+
+	$at = 0;
+	while ( false !== ( $t = strpos( $buf, "©xyz", $at ) ) ) {
+		$at = $t + 4;
+
+		// Bounded before it is trusted. A coincidental run of bytes that happens
+		// to spell the atom name must not send a write somewhere interesting.
+		$n   = unpack( 'n', substr( $buf, $t + 4, 2 ) );
+		$len = is_array( $n ) ? (int) reset( $n ) : 0;
+		if ( $len < 1 || $len > 128 || ( $t + 8 + $len ) > strlen( $buf ) ) { continue; }
+
+		fseek( $fh, $base + $t + 8 );
+		fwrite( $fh, str_repeat( ' ', $len ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+	}
+	fclose( $fh ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+
+	$left = gasf_crm_video_has_location( $path );
+	if ( $left ) {
+		return new WP_Error( 'gasf_crm_scrub', sprintf(
+			'%s still carries %s that cannot be removed on this server, so it has not been kept. Turning location off in the camera app before recording, or re-saving the clip in an editor, clears it.',
+			basename( $path ), $left
+		) );
+	}
+	return true;
+}
+
 /**
  * Does this file still carry embedded metadata?
  *
@@ -588,6 +705,19 @@ function gasf_crm_photo_has_metadata( $path ) {
  */
 function gasf_crm_photo_scrub( $path ) {
 	if ( ! is_file( $path ) ) { return true; }
+
+	/*
+	 * Video takes the other door.
+	 *
+	 * Handled here rather than in publish so that nothing upstream has to know
+	 * one kind of file from another: publish walks a list of paths and asks for
+	 * each to be made safe, and that stays true whether the path is a JPEG or a
+	 * clip. Imagick would either refuse the file or, worse, re-encode a hundred
+	 * megabytes of video into a still.
+	 */
+	if ( preg_match( '~\.(mp4|m4v|mov)$~i', $path ) ) {
+		return gasf_crm_video_scrub( $path );
+	}
 
 	/*
 	 * Nothing to strip? Then do not re-encode it.
