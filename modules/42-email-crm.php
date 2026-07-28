@@ -294,9 +294,87 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 		if ( function_exists( 'gasf_crm_photo_backfill' ) ) { gasf_crm_photo_backfill(); }
 
 		flush_rewrite_rules( false );
+
+		/*
+		 * Stamped only if the database actually looks the way this version needs.
+		 *
+		 * dbDelta reports nothing useful and never throws: a CREATE TABLE that
+		 * failed on a permission, a full disk or an incompatible column type
+		 * leaves it silently returning an empty diff. Stamping the version
+		 * regardless meant the upgrade would never run again — the tables would
+		 * simply be absent for good, and every later feature would fail one
+		 * query at a time with no trace back to the upgrade that did not happen.
+		 *
+		 * This is the same principle as everywhere else in this build: verify
+		 * rather than assume, and if it did not work, say so and try again next
+		 * load rather than recording success.
+		 */
+		$missing = gasf_crm_schema_gaps();
+		if ( $missing ) {
+			gasf_mec_log( 'CRM: schema upgrade to ' . GASF_CRM_SCHEMA . ' INCOMPLETE — ' . implode( '; ', $missing )
+				. '. Version NOT stamped; it will be retried on the next load.' );
+			return;
+		}
+
 		update_option( 'gasf_crm_schema', GASF_CRM_SCHEMA, false );
 		gasf_mec_log( 'CRM: schema/rewrites upgraded to ' . GASF_CRM_SCHEMA );
 	}, 20 );
+
+	/**
+	 * What this version needs and the database does not have.
+	 *
+	 * Checked against the live schema rather than against dbDelta's opinion of
+	 * what it did. Returns an empty array when everything is in place.
+	 */
+	function gasf_crm_schema_gaps() {
+		global $wpdb;
+		$gaps = array();
+
+		$tables = array(
+			'threads', 'messages', 'contacts', 'events', 'attachments',
+			'photo_submissions', 'photo_items', 'photo_invite_items', 'photo_invites', 'auth_log',
+		);
+		foreach ( $tables as $t ) {
+			$name = gasf_crm_table( $t );
+			if ( $name !== $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $name ) ) ) {
+				$gaps[] = 'table ' . $t . ' is missing';
+			}
+		}
+
+		// The stream-scoped uniqueness the whole multi-mailbox design rests on.
+		// Present but wrong here means cross-stream collisions, which is worse
+		// than a missing table because it fails quietly.
+		foreach ( array(
+			'threads'  => 'conv_stream',
+			'contacts' => 'stream_email',
+			'messages' => 'stream_message',
+		) as $t => $index ) {
+			$name = gasf_crm_table( $t );
+			if ( ! in_array( 'table ' . $t . ' is missing', $gaps, true )
+				&& ! $wpdb->get_var( $wpdb->prepare( "SHOW INDEX FROM {$name} WHERE Key_name = %s", $index ) ) ) { // phpcs:ignore WordPress.DB
+				$gaps[] = 'index ' . $index . ' on ' . $t . ' is missing';
+			}
+		}
+
+		// Columns added by later versions, where their absence is silent: a
+		// write to a missing column fails and wpdb returns false, which most
+		// callers read as "the compare-and-swap lost".
+		foreach ( array(
+			'photo_items'       => array( 'lease_owner', 'lease_until', 'attempt_count', 'fail_reason' ),
+			'photo_submissions' => array( 'lease_owner', 'lease_until', 'next_attempt_at' ),
+			'photo_invites'     => array( 'remind_attempts' ),
+			'messages'          => array( 'stream' ),
+		) as $t => $cols ) {
+			$name = gasf_crm_table( $t );
+			if ( in_array( 'table ' . $t . ' is missing', $gaps, true ) ) { continue; }
+			$have = $wpdb->get_col( "SHOW COLUMNS FROM {$name}" ); // phpcs:ignore WordPress.DB
+			foreach ( $cols as $c ) {
+				if ( ! in_array( $c, (array) $have, true ) ) { $gaps[] = 'column ' . $t . '.' . $c . ' is missing'; }
+			}
+		}
+
+		return $gaps;
+	}
 
 	/* ---------------------------------------------------------------------
 	 * Sync cron — hourly, per spec (~4 emails/week; Graph change

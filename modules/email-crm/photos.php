@@ -955,22 +955,32 @@ function gasf_crm_photo_keep( array $thread, $graph_message_id, $graph_attachmen
 		return new WP_Error( 'gasf_crm_busy', 'That photo is already being fetched — give it a moment.', array( 'status' => 409 ) );
 	}
 
-	$id = gasf_crm_photo_approve( $thread, $graph_message_id, $graph_attachment_id, $item );
+	$id = gasf_crm_photo_approve( $thread, $graph_message_id, $graph_attachment_id, $item['id'] );
 	if ( is_wp_error( $id ) ) {
-		gasf_crm_photo_item_move( $item, 'importing', 'failed', array(
+		gasf_crm_photo_item_move( $item['id'], 'importing', 'failed', array(
 			'fail_reason' => substr( $id->get_error_message(), 0, 191 ),
 			'lease_owner' => null,
 			'lease_until' => null,
-		) );
+		), $item['owner'] );
 		return $id;
 	}
 
-	gasf_crm_photo_item_move( $item, 'importing', 'imported', array(
+	// Fenced on the lease: if this claim lapsed and somebody else took the
+	// photo on while we were fetching it, our copy is the stale one and must
+	// not be recorded. The bytes we downloaded are swept as an unclaimed
+	// private image on the next intake run.
+	if ( ! gasf_crm_photo_item_move( $item['id'], 'importing', 'imported', array(
 		'wp_attachment_id' => (int) $id,
 		'private_path'     => (string) get_post_meta( (int) $id, '_wp_attached_file', true ),
 		'lease_owner'      => null,
 		'lease_until'      => null,
-	) );
+	), $item['owner'] ) ) {
+		gasf_mec_log( 'CRM photos: discarding a fetch of ' . $graph_attachment_id . ' — the claim was taken over while it was downloading' );
+		wp_delete_attachment( (int) $id, true );
+		$have = gasf_crm_photo_already_kept( $graph_message_id, $graph_attachment_id );
+		if ( $have ) { return $have; }
+		return new WP_Error( 'gasf_crm_busy', 'That photo is already being fetched — give it a moment.', array( 'status' => 409 ) );
+	}
 
 	return (int) $id;
 }
@@ -1778,14 +1788,37 @@ function gasf_crm_photo_item_claim( $submission_id, $graph_attachment_id, $filen
 	) );
 	if ( 1 !== $won ) { return 0; } // somebody else holds it, or it is already past import
 
-	return (int) $wpdb->get_var( $wpdb->prepare(
+	$id = (int) $wpdb->get_var( $wpdb->prepare(
 		"SELECT id FROM {$t} WHERE submission_id = %d AND graph_attachment_id = %s AND lease_owner = %s LIMIT 1",
 		(int) $submission_id, (string) $graph_attachment_id, $owner
 	) );
+	if ( ! $id ) { return 0; }
+
+	/*
+	 * The owner token comes back with the id, and every later write has to
+	 * present it.
+	 *
+	 * Checking the lease only to ACQUIRE is not enough. A worker that hangs
+	 * long enough for its lease to lapse gets reset to pending_import by the
+	 * sweep and re-claimed by somebody else — and then finishes, and writes.
+	 * Its move CAS'd on state = 'importing', which was true, so it succeeded
+	 * against the SECOND worker's claim: the item would end up pointing at the
+	 * first worker's attachment while the second was still downloading another
+	 * copy, and whichever wrote last would strand the other's files.
+	 *
+	 * A fence is only a fence if it is checked on the way through, not just at
+	 * the gate.
+	 */
+	return array( 'id' => $id, 'owner' => $owner );
 }
 
-/** Advance an item, compare-and-swapping on the state we believe it is in. */
-function gasf_crm_photo_item_move( $item_id, $from, $to, array $set = array() ) {
+/**
+ * Advance an item, compare-and-swapping on the state we believe it is in.
+ *
+ * @param string|null $owner when given, the write only lands if this worker
+ *                           still holds the lease — see gasf_crm_photo_item_claim.
+ */
+function gasf_crm_photo_item_move( $item_id, $from, $to, array $set = array(), $owner = null ) {
 	global $wpdb;
 
 	$data = array_merge( $set, array(
@@ -1804,6 +1837,13 @@ function gasf_crm_photo_item_move( $item_id, $from, $to, array $set = array() ) 
 	if ( null !== $from ) {
 		$sql   .= ' AND state = %s';
 		$args[] = $from;
+	}
+
+	// The fence. A worker whose lease lapsed and was re-claimed by somebody else
+	// fails here rather than writing over the new owner's work.
+	if ( null !== $owner ) {
+		$sql   .= ' AND lease_owner = %s';
+		$args[] = (string) $owner;
 	}
 
 	$wpdb->last_error = '';
@@ -2376,24 +2416,30 @@ function gasf_crm_photo_autoprocess_run() {
 
 			gasf_crm_photo_submission_touch( $sub['id'], $owner );
 
-			$id = gasf_crm_photo_approve( $thread, (string) $row['graph_message_id'], $att, $item );
+			$id = gasf_crm_photo_approve( $thread, (string) $row['graph_message_id'], $att, $item['id'] );
 			if ( is_wp_error( $id ) ) {
-				gasf_crm_photo_item_move( $item, 'importing', 'failed', array(
+				gasf_crm_photo_item_move( $item['id'], 'importing', 'failed', array(
 					'fail_reason' => substr( $id->get_error_message(), 0, 191 ),
 					'lease_owner' => null,
 					'lease_until' => null,
-				) );
+				), $item['owner'] );
 				gasf_mec_log( 'CRM photos: auto-keep failed for ' . ( $a['name'] ?? '?' ) . ' — ' . $id->get_error_message() );
 				$stuck = $id->get_error_message();
 				continue;
 			}
 
-			gasf_crm_photo_item_move( $item, 'importing', 'imported', array(
+			// Fenced: a lapsed-then-reclaimed worker must not record its copy
+			// over the new owner's. The orphaned bytes are swept next run.
+			if ( ! gasf_crm_photo_item_move( $item['id'], 'importing', 'imported', array(
 				'wp_attachment_id' => (int) $id,
 				'private_path'     => (string) get_post_meta( (int) $id, '_wp_attached_file', true ),
 				'lease_owner'      => null,
 				'lease_until'      => null,
-			) );
+			), $item['owner'] ) ) {
+				gasf_mec_log( 'CRM photos: discarding a fetch of ' . ( $a['name'] ?? '?' ) . ' — the claim was taken over mid-download' );
+				wp_delete_attachment( (int) $id, true );
+				continue;
+			}
 
 			$kept[] = (int) $id;
 			$fresh++;
@@ -2934,6 +2980,30 @@ function gasf_crm_photo_confirm( $attachment_id, array $keep ) {
 	}
 	$people = array_slice( array_values( array_unique( $people ) ), 0, GASF_CRM_PHOTO_MAX_PEOPLE );
 
+	/*
+	 * Publish BEFORE anything is written, and hand the revision back if it
+	 * refuses.
+	 *
+	 * Publishing is the only step here that can genuinely fail — it strips EXIF
+	 * from every derivative, verifies the strip, and moves a dozen files. Doing
+	 * it last meant a refusal (metadata that would not come out, a full disk)
+	 * returned an error AFTER the tags had been applied and the revision spent:
+	 * the photo was left tagged, unpublished, its revision consumed, and the
+	 * screen said the approval had failed. Nothing about that state told anyone
+	 * which half had happened.
+	 *
+	 * Approval is the one operation here that spans taxonomy, files and state,
+	 * and this is the closest thing to atomic available without a transaction
+	 * across the filesystem: do the fallible part first, and if it fails leave
+	 * the photo exactly as it was found.
+	 */
+	$moved = gasf_crm_photo_publish( $id );
+	if ( is_wp_error( $moved ) ) {
+		update_post_meta( $id, '_gasf_photo_rev', $have ); // give the revision back
+		gasf_mec_log( 'CRM photos: could not publish media #' . $id . ' — ' . $moved->get_error_message() );
+		return $moved;
+	}
+
 	// wp_set_object_terms with names creates any that do not exist. That is
 	// exactly what is wanted HERE and exactly what must not happen on the public
 	// form.
@@ -2965,15 +3035,6 @@ function gasf_crm_photo_confirm( $attachment_id, array $keep ) {
 	$caption = trim( sanitize_text_field( (string) ( $keep['caption'] ?? '' ) ) );
 	if ( '' !== $caption ) {
 		wp_update_post( array( 'ID' => $id, 'post_excerpt' => $caption ) );
-	}
-
-	// Approving is what makes a photo public. Until this moment it has only ever
-	// been served through the handler; from here it is an ordinary attachment
-	// with an ordinary URL, which is what it now is.
-	$moved = gasf_crm_photo_publish( $id );
-	if ( is_wp_error( $moved ) ) {
-		gasf_mec_log( 'CRM photos: could not publish media #' . $id . ' — ' . $moved->get_error_message() );
-		return $moved;
 	}
 
 	// Title and alt, now that there is finally something true to say. Both are
