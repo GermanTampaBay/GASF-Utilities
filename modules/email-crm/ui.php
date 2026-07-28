@@ -337,6 +337,9 @@ textarea{width:100%;min-height:150px;padding:10px;border:1px solid var(--gasf-bo
 .pf>span{display:block;font-size:11px;color:var(--gasf-muted);margin-bottom:2px}
 .pf input,.pf select{width:100%;padding:6px 8px;border:1px solid var(--gasf-border);border-radius:4px;font:inherit;font-size:13px;background:var(--gasf-surface);color:var(--gasf-text)}
 .pf .p-placeother{margin-top:5px}
+.p-people .p-person+.p-person{margin-top:5px}
+.addp{background:none;border:0;padding:2px 0;margin:4px 0 0;font:inherit;font-size:12px;color:var(--s-accent);cursor:pointer}
+.addp:hover{text-decoration:underline}
 .prow{display:flex;gap:8px;flex-wrap:wrap}
 .prow .pf{flex:1 1 130px}
 .pgeo{font-size:12px;color:var(--gasf-muted);margin:2px 0 8px}
@@ -1214,12 +1217,56 @@ function gasf_crm_render_inbox() {
 		});
 	}
 
+	// One box per person, and a button to add another.
+	//
+	// This was a single comma-separated field, on the reasoning that a volunteer
+	// is correcting a list rather than composing one. That reasoning was wrong in
+	// the way that matters: the sender's form has "+ Add another person", so the
+	// volunteer checking their answers had fewer ways to name people than the
+	// stranger who sent the photos in. Nothing about the comma field said a
+	// second name was even possible.
+	function peopleField(names){
+		var list = (names || []).filter(Boolean);
+		if (!list.length) { list = ['']; }
+		var s = '<div class="p-people">';
+		list.forEach(function(n){ s += personBox(n); });
+		return s + '</div><button type="button" class="addp">+ Add another person</button>';
+	}
+
+	function personBox(v){
+		return '<input type="text" class="p-person" maxlength="80" value="' + esc(v || '') + '" placeholder="Name" autocomplete="off">';
+	}
+
+	// Every non-empty box, in the order they appear. Trimmed and de-duplicated,
+	// because "Hans" typed twice is one person and the taxonomy would otherwise
+	// be asked to hold him twice.
+	function peopleValues(root){
+		var out = [];
+		Array.prototype.forEach.call(root.querySelectorAll('.p-person'), function(el){
+			var v = el.value.trim();
+			if (v && out.indexOf(v) === -1) { out.push(v); }
+		});
+		return out;
+	}
+
+	// Clones a box onto the end and puts the cursor in it, so adding three
+	// people is three clicks and three names rather than a guess about commas.
+	function wirePeople(root){
+		Array.prototype.forEach.call(root.querySelectorAll('.addp'), function(b){
+			b.onclick = function(){
+				var box = b.previousElementSibling;
+				if (!box || !box.classList.contains('p-people')) { return; }
+				box.insertAdjacentHTML('beforeend', personBox(''));
+				box.lastElementChild.focus();
+			};
+		});
+	}
+
 	// The labelling form: identical whether the sender filled it in or nobody
 	// did. A volunteer working from scratch needs exactly the fields a
 	// volunteer checking somebody's answers needs, so there is one of them.
 	function photoForm(p, q){
-		var s = '<label class="pf"><span>Who is in it</span>' +
-			'<input type="text" class="p-people" value="' + esc((q.people||[]).join(', ')) + '" placeholder="Nobody named"></label>' +
+		var s = '<div class="pf"><span>Who is in it</span>' + peopleField(q.people || []) + '</div>' +
 			'<label class="pf"><span>What is happening</span>' +
 			'<input type="text" class="p-caption" maxlength="150" value="' + esc(q.caption||'') + '"></label>' +
 			'<div class="prow">' +
@@ -1365,6 +1412,7 @@ function gasf_crm_render_inbox() {
 
 		wireEventPickers(pane);
 		wirePlaceSelects(pane);
+		wirePeople(pane);
 
 		Array.prototype.forEach.call(pane.querySelectorAll('.pcard'), function(card){
 			var ok = card.querySelector('.p-ok');
@@ -1376,9 +1424,7 @@ function gasf_crm_render_inbox() {
 				api('/photos/confirm', { method:'POST', body: JSON.stringify({
 					id: id,
 					photo: parseInt(card.dataset.photo, 10),
-					// Split on commas rather than asking the volunteer to manage
-					// separate boxes: they are correcting a list, not composing one.
-					people: v('.p-people').split(',').map(function(s){ return s.trim(); }).filter(Boolean),
+					people: peopleValues(card),
 					place: placeValue(card), event: v('.p-event'),
 					// Set only when the occasion was picked from the calendar, so
 					// a hand-typed name never claims to be a specific event.
@@ -1750,6 +1796,7 @@ function gasf_crm_render_inbox() {
 	function wirePhotoPane(id, p){
 		wireEventPickers(ppane);
 		wirePlaceSelects(ppane);
+		wirePeople(ppane);
 
 		var ok = ppane.querySelector('.p-ok');
 		if (ok) {
@@ -1760,7 +1807,7 @@ function gasf_crm_render_inbox() {
 				var v = function(s){ var el = ppane.querySelector(s); return el ? el.value : ''; };
 				api('/photos/save', { method:'POST', body: JSON.stringify({
 					photo: id,
-					people: v('.p-people').split(',').map(function(s){ return s.trim(); }).filter(Boolean),
+					people: peopleValues(ppane),
 					place: placeValue(ppane), event: v('.p-event'),
 					event_id: parseInt(v('.p-evid'), 10) || 0,
 					taken: v('.p-taken'), caption: v('.p-caption'),
