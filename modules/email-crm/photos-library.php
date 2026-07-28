@@ -166,10 +166,7 @@ function gasf_crm_photo_library_filter( array $ids, array $f ) {
 	if ( '' === $person && '' === $event && '' === $year && '' === $q && ! $places ) { return $ids; }
 
 	return array_values( array_filter( $ids, function ( $id ) use ( $places, $person, $event, $year, $q ) {
-		$names = function ( $tax ) use ( $id ) {
-			$t = wp_get_object_terms( $id, $tax, array( 'fields' => 'names' ) );
-			return is_wp_error( $t ) ? array() : $t;
-		};
+		$names = function ( $tax ) use ( $id ) { return gasf_crm_photo_term_names( $id, $tax ); };
 
 		if ( $places && ! array_intersect( $places, $names( 'gasf_photo_place' ) ) ) { return false; }
 		if ( '' !== $person && ! in_array( $person, $names( 'gasf_photo_person' ), true ) ) { return false; }
@@ -196,6 +193,21 @@ function gasf_crm_photo_library_filter( array $ids, array $f ) {
 }
 
 /**
+ * Term names on a photo, from the cache primed for the whole page.
+ *
+ * get_the_terms, not wp_get_object_terms. They look interchangeable and are
+ * not: update_object_term_cache() fills the cache get_the_terms reads, while
+ * wp_get_object_terms goes to the database first and caches only its own exact
+ * query afterwards. Building the facets with it cost 420 queries for 140
+ * photos — three per photo, every one avoidable.
+ */
+function gasf_crm_photo_term_names( $id, $tax ) {
+	$t = get_the_terms( (int) $id, $tax );
+	if ( ! $t || is_wp_error( $t ) ) { return array(); }
+	return wp_list_pluck( $t, 'name' );
+}
+
+/**
  * Is this attachment part of the club collection?
  *
  * The same three routes in that the listing uses, asked about one photo. Kept
@@ -211,8 +223,7 @@ function gasf_crm_photo_in_library( $attachment_id ) {
 	if ( get_post_meta( $id, '_gasf_photo_autotag', true ) ) { return true; }
 
 	foreach ( array( 'gasf_photo_person', 'gasf_photo_place', 'gasf_photo_event' ) as $tax ) {
-		$t = wp_get_object_terms( $id, $tax, array( 'fields' => 'ids' ) );
-		if ( ! is_wp_error( $t ) && $t ) { return true; }
+		if ( gasf_crm_photo_term_names( $id, $tax ) ) { return true; }
 	}
 	return false;
 }
@@ -281,9 +292,9 @@ function gasf_crm_photo_library_card( $attachment_id ) {
 		'alts'     => ! empty( $info['place_alts'] ) ? wp_list_pluck( $info['place_alts'], 'name' ) : array(),
 		'auto'     => (bool) get_post_meta( $id, '_gasf_photo_autotag', true ),
 		'saved'    => array(
-			'people'   => array_map( 'strval', (array) wp_get_object_terms( $id, 'gasf_photo_person', array( 'fields' => 'names' ) ) ),
-			'place'    => (string) ( wp_get_object_terms( $id, 'gasf_photo_place', array( 'fields' => 'names' ) )[0] ?? '' ),
-			'event'    => (string) ( wp_get_object_terms( $id, 'gasf_photo_event', array( 'fields' => 'names' ) )[0] ?? '' ),
+			'people'   => gasf_crm_photo_term_names( $id, 'gasf_photo_person' ),
+			'place'    => (string) ( gasf_crm_photo_term_names( $id, 'gasf_photo_place' )[0] ?? '' ),
+			'event'    => (string) ( gasf_crm_photo_term_names( $id, 'gasf_photo_event' )[0] ?? '' ),
 			'event_id' => (int) get_post_meta( $id, '_gasf_photo_event_id', true ),
 			'caption'  => (string) get_post_field( 'post_excerpt', $id ),
 			'taken'    => (string) get_post_meta( $id, '_gasf_photo_taken', true ),
@@ -303,8 +314,7 @@ function gasf_crm_photo_library_facets( array $ids ) {
 
 	foreach ( $ids as $id ) {
 		foreach ( array( 'people' => 'gasf_photo_person', 'places' => 'gasf_photo_place', 'events' => 'gasf_photo_event' ) as $k => $tax ) {
-			$t = wp_get_object_terms( $id, $tax, array( 'fields' => 'names' ) );
-			foreach ( ( is_wp_error( $t ) ? array() : $t ) as $name ) {
+			foreach ( gasf_crm_photo_term_names( $id, $tax ) as $name ) {
 				$label = function_exists( 'gasf_photo_label' ) ? gasf_photo_label( $name ) : $name;
 				if ( ! isset( $out[ $k ][ $name ] ) ) { $out[ $k ][ $name ] = array( 'value' => $name, 'label' => $label, 'n' => 0 ); }
 				$out[ $k ][ $name ]['n']++;
