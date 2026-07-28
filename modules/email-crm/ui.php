@@ -603,6 +603,11 @@ input:focus,select:focus,textarea:focus,.edbody:focus{
 /* Save and Remove as marks, not words — see ICO_SAVE in the script.
    Square, thumb-sized, and no wider than they need to be, because every pixel
    here is a pixel the name field does not get. */
+/* Nothing in the row shrinks except the field. Belt and braces rather than a
+   fix for anything observed — Merge measured clean at every width — but a
+   button that gives up width does not get smaller, it gets its label clipped,
+   and the field beside it is already asking for every pixel in the row. */
+.nrow button,.prow2 button,.nrow .nct,.prow2 .pct{flex:0 0 auto}
 .nrow button.ico,.prow2 button.ico{
 	flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;
 	width:32px;min-height:30px;padding:0;line-height:0;
@@ -617,6 +622,14 @@ input:focus,select:focus,textarea:focus,.edbody:focus{
 .nrow .nname{flex:1 1 16ch;min-width:13ch;width:auto}
 .prow2 input[type=text].pname{flex:1 1 16ch;min-width:13ch}
 .nmain,.nmerge-row,.prow2{flex-wrap:wrap}
+
+/* Below about this width the row cannot hold a long name and its controls side
+   by side — measured, not guessed: at 360-400px "Pamela LaFleur Horgen" was
+   still losing its last word while the row stayed stubbornly on one line. The
+   name is the content, so it takes the line and the controls drop beneath it. */
+@media(max-width:500px){
+	.nrow .nname,.prow2 input[type=text].pname{flex:1 1 100%;min-width:0}
+}
 
 /* The reading pane's own edge, and the notes, keep their meanings and take the
    square corners. */
@@ -670,6 +683,13 @@ input:focus,select:focus,textarea:focus,.edbody:focus{
 	   buttons approve and delete photographs, a miss is not cosmetic. */
 	.btn,.hbtn{min-height:44px;padding:10px 14px}
 	.tabs button,.pstates button{min-height:44px}
+	/* The icon buttons need saying explicitly: .nrow button.ico outranks .btn
+	   on specificity, so the 44px above does not reach them. Restated here at
+	   matching specificity, because an icon is a smaller target than a word and
+	   one of these two removes a name from every photo it is on. Below 500px
+	   the controls already have a line to themselves, so the width is free. */
+	.nrow button.ico,.prow2 button.ico{width:44px;min-height:44px}
+	.nrow button,.prow2 button{min-height:44px}
 	.tabs{overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}
 	.tabs::-webkit-scrollbar{display:none}
 	.tabs button{flex:0 0 auto;white-space:nowrap}
