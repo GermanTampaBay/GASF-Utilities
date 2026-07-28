@@ -282,6 +282,20 @@ function gasf_crm_photo_page( $state, $invite = null, $notice = '' ) {
 		// data-orig records what the camera said, so a correction to photo one
 		// can be recognised as fixing a shared wrong clock and carried across,
 		// while a photo that genuinely came from another day keeps its own.
+		// The camera's clock, shown but never editable. The same thing that
+		// separates two events on one day for a volunteer separates them for the
+		// person who was actually there — and they are the one who can tell you
+		// which of the two it was.
+		$own_time = function_exists( 'gasf_photo_taken_time' ) ? gasf_photo_taken_time( $id ) : '';
+
+		if ( $own_date && $own_time ) {
+			$date_hint = sprintf( 'Read from the photo itself, taken at %s — change the date if it looks wrong.', $own_time );
+		} elseif ( $own_date ) {
+			$date_hint = 'Read from the photo itself — change it if it looks wrong.';
+		} else {
+			$date_hint = 'A rough date is much better than none.';
+		}
+
 		printf(
 			'<label class="f"><span>When was it taken?</span>' .
 			'<input type="date" class="f-date" name="photo[%d][taken]" value="%s" max="%s"%s>' .
@@ -290,7 +304,7 @@ function gasf_crm_photo_page( $state, $invite = null, $notice = '' ) {
 			esc_attr( $own_date ),
 			esc_attr( gmdate( 'Y-m-d' ) ),
 			$own_date ? ' data-orig="' . esc_attr( $own_date ) . '"' : '',
-			$own_date ? 'Read from the photo itself — change it if it looks wrong.' : 'A rough date is much better than none.'
+			esc_html( $date_hint )
 		);
 
 		// Where. Hierarchical rows, because GPS can put a photo on the grounds

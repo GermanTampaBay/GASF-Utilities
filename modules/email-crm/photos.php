@@ -3643,6 +3643,7 @@ function gasf_crm_photo_card( $attachment_id ) {
 		'subject' => (string) ( $src['subject'] ?? '' ),
 		'thread'  => (int) ( $src['thread'] ?? 0 ),
 		'taken'   => $info['taken'] ?? '',
+		'taken_at' => function_exists( 'gasf_photo_taken_time' ) ? gasf_photo_taken_time( $id ) : '',
 		'guess'   => ( ! empty( $info['place_guess'] ) && ! is_wp_error( $info['place_guess'] ) ) ? $info['place_guess']->name : '',
 		'alts'    => ! empty( $info['place_alts'] ) ? wp_list_pluck( $info['place_alts'], 'name' ) : array(),
 		'people'  => $info['people'] ?? array(),
@@ -3673,6 +3674,9 @@ function gasf_crm_photo_card( $attachment_id ) {
 			'event_id' => (int) get_post_meta( $id, '_gasf_photo_event_id', true ),
 			'caption'  => (string) get_post_field( 'post_excerpt', $id ),
 			'taken'    => (string) get_post_meta( $id, '_gasf_photo_taken', true ),
+			// Read-only, and most useful right here: this is the card where a
+			// volunteer picks the event, and two of them can share a day.
+			'taken_at' => function_exists( 'gasf_photo_taken_time' ) ? gasf_photo_taken_time( $id ) : '',
 		),
 		// Sent out with the card and required back with the decision, so a
 		// volunteer acting on a stale screen is told rather than obeyed.

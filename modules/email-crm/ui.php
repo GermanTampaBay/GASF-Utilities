@@ -595,6 +595,16 @@ input:focus,select:focus,textarea:focus,.edbody:focus{
 .msg .hd b{font-family:var(--body);font-size:14px;letter-spacing:0}
 .streamtag,.badge,.firsttime{border-radius:2px;font-weight:700;letter-spacing:.06em}
 
+/* The camera's clock. Typed, because it is recorded fact rather than anything
+   anyone gets to edit — the register does that telling on its own, without a
+   "read only" label to say it. */
+.ptime{
+	display:block;margin-top:5px;font-style:normal;
+	font:400 11px/1.4 var(--slug);letter-spacing:.06em;
+	color:var(--gasf-muted);
+}
+.ptime b{font-weight:700;color:var(--gasf-text);letter-spacing:.04em}
+
 /* The library's four panels have always said class="card pad". The class was
    never defined anywhere in this sheet, so all four ran their text, their
    headings and their filter labels straight into their own left border. */
@@ -1893,6 +1903,20 @@ function gasf_crm_render_inbox() {
 	// opts.big is the library's editor: a volunteer writing up who is in a 1974
 	// Fasching picture is doing the archive's real work, and the 150-character
 	// single line exists to keep a STRANGER's form to one screen on a phone.
+	// The capture time, wherever it happens to be hanging. The review card
+	// carries it on the photo, the library editor on the tag set; one helper so
+	// both read the same value and neither has to know which.
+	function timeOf(p, q){
+		return (q && q.taken_at) || (p && p.taken_at) || '';
+	}
+
+	// Date and time as one phrase, for the places that print a photo's details
+	// on a line. Either half can be missing: plenty of photos have a date from
+	// the filename and no EXIF at all.
+	function whenOf(p){
+		return [ (p && p.taken) || '', (p && p.taken_at) || '' ].filter(Boolean).join(' ');
+	}
+
 	function photoForm(p, q, opts){
 		opts = opts || {};
 		var note = opts.big
@@ -1905,7 +1929,16 @@ function gasf_crm_render_inbox() {
 			'<div class="prow">' +
 			'<label class="pf"><span>Where</span>' + placeSelect(q.place || p.guess || '') + '</label>' +
 			'<label class="pf"><span>Occasion</span><input type="text" class="p-event" value="' + esc(q.event||'') + '"></label>' +
-			'<label class="pf"><span>Date</span><input type="date" class="p-taken" value="' + esc(q.taken||p.taken||'') + '"></label>' +
+			// The camera's clock, beside the date and immediately above the
+			// occasion picker, because that is the decision it settles: two
+			// World Cup games on one afternoon look identical until you know
+			// which one you were at. Shown, never editable — the date can be
+			// corrected because a human can know better than a camera about the
+			// day, but the time is evidence, and its only value is that nobody
+			// has touched it.
+			'<label class="pf"><span>Date</span><input type="date" class="p-taken" value="' + esc(q.taken||p.taken||'') + '">' +
+				(timeOf(p, q) ? '<em class="ptime">Camera clock <b>' + esc(timeOf(p, q)) + '</b></em>' : '') +
+			'</label>' +
 			'</div>' +
 			// What the club had on that day. Populated from the date field and
 			// refreshed whenever it changes, because correcting the date is
@@ -1986,7 +2019,7 @@ function gasf_crm_render_inbox() {
 			} else if (p.state === 'waiting') {
 				s += '<div class="muted">Waiting on the sender until <strong>' + esc(p.release) + '</strong>. ' +
 					'They have been asked, and reminded once. If they never reply it becomes yours to label.' +
-					(p.taken ? ' The camera said ' + esc(p.taken) + '.' : '') + '</div>' +
+					(p.taken ? ' The camera said ' + esc(whenOf(p)) + '.' : '') + '</div>' +
 					// Never blocked, only un-nagged. Somebody who happens to know
 					// should not have to wait five days to say so.
 					'<div class="actions"><button class="btn sec p-early">I know what this is — label it now</button></div>' +
@@ -2387,7 +2420,7 @@ function gasf_crm_render_inbox() {
 				return '<button class="pthumbcard' + (pcur === p.id ? ' on' : '') + '" data-photo="' + p.id + '">' +
 					(p.thumb ? '<img src="' + esc(p.thumb) + '" alt="" loading="lazy">' : '') +
 					'<span class="pmeta">' + esc(p.from) +
-					(p.taken ? ' · ' + esc(p.taken) : '') +
+					(whenOf(p) ? ' · ' + esc(whenOf(p)) : '') +
 					(p.bucket === 'review' && p.pending ? '<em>described</em>'
 						: (p.bucket === 'review' ? '<em>no reply</em>' : '')) +
 					'</span></button>';
@@ -2662,7 +2695,7 @@ function gasf_crm_render_inbox() {
 			document.getElementById('lall').hidden = !r.total;
 
 			lgrid.innerHTML = (r.photos || []).map(function(p){
-				var sub = [p.taken, (p.places[0] || ''), (p.events[0] || '')].filter(Boolean).join(' · ');
+				var sub = [whenOf(p), (p.places[0] || ''), (p.events[0] || '')].filter(Boolean).join(' · ');
 				var who = p.people.length ? p.people.join(', ') : '';
 				return '<div class="lcard' + (lsel[p.id] ? ' sel' : '') + '" data-id="' + p.id + '">' +
 					'<input type="checkbox" class="ltick" ' + (lsel[p.id] ? 'checked' : '') +
@@ -3014,7 +3047,7 @@ function gasf_crm_render_inbox() {
 		var bits = [];
 		if (p.people.length) { bits.push('<strong>' + esc(p.people.join(', ')) + '</strong>'); }
 		if (p.caption) { bits.push(esc(p.caption)); }
-		var when = [p.taken, (p.places[0] || ''), (p.events[0] || '')].filter(Boolean).join(' · ');
+		var when = [whenOf(p), (p.places[0] || ''), (p.events[0] || '')].filter(Boolean).join(' · ');
 		if (when) { bits.push(esc(when)); }
 		if (p.w) { bits.push(p.w + '×' + p.h + ' · ' + Math.round(p.bytes / 1024) + ' KB'); }
 		if (p.from) { bits.push('Given to the club by ' + esc(p.from)); }

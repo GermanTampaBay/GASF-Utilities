@@ -257,6 +257,7 @@ function gasf_crm_photo_library_card( $attachment_id ) {
 		'title'   => gasf_crm_photo_display_title( $id ),
 		'caption' => (string) ( $info['caption'] ?? '' ),
 		'taken'   => (string) ( $info['taken'] ?? '' ),
+		'taken_at' => function_exists( 'gasf_photo_taken_time' ) ? gasf_photo_taken_time( $id ) : '',
 		'people'  => (array) ( $info['people'] ?? array() ),
 		'places'  => (array) ( $info['places'] ?? array() ),
 		'events'  => (array) ( $info['events'] ?? array() ),
@@ -307,6 +308,10 @@ function gasf_crm_photo_library_card( $attachment_id ) {
 			'event_id' => (int) get_post_meta( $id, '_gasf_photo_event_id', true ),
 			'caption'  => (string) get_post_field( 'post_excerpt', $id ),
 			'taken'    => (string) get_post_meta( $id, '_gasf_photo_taken', true ),
+			// Read-only. The date is editable because a human can know better
+			// than a camera about the day; the time is evidence, and its whole
+			// value is that nobody has touched it.
+			'taken_at' => function_exists( 'gasf_photo_taken_time' ) ? gasf_photo_taken_time( $id ) : '',
 		),
 	);
 }

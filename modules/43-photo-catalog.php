@@ -918,6 +918,56 @@ JS;
 		) );
 	}
 
+	/**
+	 * What time the shutter fired, as the camera's own clock read it.
+	 *
+	 * The timezone here is a trap worth spelling out, because getting it wrong
+	 * fails in exactly the situation this function exists for.
+	 *
+	 * EXIF DateTimeOriginal carries no zone — it is whatever the camera's clock
+	 * said, and nothing more. WordPress parses it with strtotime() while PHP's
+	 * default zone is UTC (wp-settings.php sets that), so
+	 * image_meta.created_timestamp is the camera's wall clock REINTERPRETED as
+	 * UTC. Format that with wp_date() and it gets shifted again into
+	 * America/New_York: a photo the camera stamped 18:21 is reported as 14:21.
+	 *
+	 * Four hours is not a rounding error when the reason for showing the time at
+	 * all is telling two World Cup games on one afternoon apart. gmdate() undoes
+	 * the reinterpretation exactly, and it is already the convention
+	 * gasf_photo_read_exif uses for the date, so the two agree by construction.
+	 *
+	 * Read from the database, never from the file: publishing scrubs EXIF out of
+	 * the image, so by the time anyone is looking at a photo in the library the
+	 * file has nothing left to read.
+	 *
+	 * @return string Localised 'g:i a', or '' when there is no capture time.
+	 */
+	function gasf_photo_taken_time( $attachment_id ) {
+		$id = (int) $attachment_id;
+		if ( ! $id ) { return ''; }
+
+		$ts = 0;
+
+		// Ours first — captured at import, before the publish step strips the
+		// file, and stored as the camera's wall clock with no zone applied.
+		$own = (string) get_post_meta( $id, '_gasf_photo_taken_at', true );
+		if ( $own ) { $ts = (int) strtotime( $own . ' UTC' ); }
+
+		// Failing that, what WordPress read from the same tag at upload. It
+		// lives in the attachment metadata, so it survives the scrub.
+		if ( ! $ts ) {
+			$md = wp_get_attachment_metadata( $id );
+			$ts = isset( $md['image_meta']['created_timestamp'] ) ? (int) $md['image_meta']['created_timestamp'] : 0;
+		}
+
+		// Same sanity window the date extraction uses. A camera with a dead
+		// clock stamps 1970, and "12:00 am" is a worse answer than no answer —
+		// it looks like information.
+		if ( $ts <= 0 || $ts < strtotime( '1990-01-01' ) || $ts > time() + DAY_IN_SECONDS ) { return ''; }
+
+		return gmdate( 'g:i a', $ts );
+	}
+
 	/* ---------------------------------------------------------------------
 	 * Storing what we learned
 	 * ------------------------------------------------------------------- */
@@ -934,6 +984,12 @@ JS;
 
 		if ( $exif['taken'] && ! get_post_meta( $attachment_id, '_gasf_photo_taken', true ) ) {
 			update_post_meta( $attachment_id, '_gasf_photo_taken', $exif['taken'] );
+		}
+		// The time was already being read and then thrown away — gasf_photo_read_exif
+		// computes it, nothing kept it. Worth keeping: it is what separates two
+		// events on the same day, and the file loses it at publish.
+		if ( ! empty( $exif['raw']['taken_at'] ) && ! get_post_meta( $attachment_id, '_gasf_photo_taken_at', true ) ) {
+			update_post_meta( $attachment_id, '_gasf_photo_taken_at', (string) $exif['raw']['taken_at'] );
 		}
 		if ( $exif['camera'] ) {
 			update_post_meta( $attachment_id, '_gasf_photo_camera', $exif['camera'] );
