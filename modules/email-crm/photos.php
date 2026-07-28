@@ -1009,9 +1009,50 @@ function gasf_crm_photo_autoprocess() {
 	}
 }
 
+/**
+ * Delete imports that were interrupted between sideload and provenance.
+ *
+ * media_handle_sideload creates the attachment and generates every size, and
+ * only THEN is _gasf_photo_source written. A run killed in that gap leaves an
+ * attachment with files on disk and no record of who sent it — invisible to
+ * every query the CRM makes, because they all filter on that meta key, and
+ * therefore never reviewed, never published and never cleaned up.
+ *
+ * Observed rather than theorised: a cron intake was interrupted mid-session and
+ * left exactly one such row.
+ *
+ * The proper fix is the photo_items claim, where a row is written BEFORE the
+ * download and an interruption leaves a retryable record rather than a ghost.
+ * Until that is wired, this sweeps at the start of every intake, which is the
+ * only moment we know no import is legitimately in flight — the lock is held.
+ */
+function gasf_crm_photo_sweep_orphans() {
+	global $wpdb;
+
+	$rows = $wpdb->get_col( $wpdb->prepare(
+		"SELECT p.post_id FROM {$wpdb->postmeta} p
+		  LEFT JOIN {$wpdb->postmeta} s
+		         ON s.post_id = p.post_id AND s.meta_key = '_gasf_photo_source'
+		  WHERE p.meta_key = '_wp_attached_file'
+		    AND p.meta_value LIKE %s
+		    AND s.post_id IS NULL",
+		$wpdb->esc_like( GASF_CRM_PHOTO_REVIEW_DIR . '/' ) . '%'
+	) );
+
+	foreach ( $rows as $id ) {
+		gasf_mec_log( 'CRM photos: removing interrupted import #' . (int) $id . ' (no provenance recorded)' );
+		wp_delete_attachment( (int) $id, true );
+	}
+	return count( $rows );
+}
+
 function gasf_crm_photo_autoprocess_run() {
 	global $wpdb;
 	$cfg = gasf_crm_cfg();
+
+	// Under the lock, so nothing legitimately mid-import can be mistaken for
+	// wreckage from a previous one.
+	gasf_crm_photo_sweep_orphans();
 
 	$photo_streams = array();
 	foreach ( gasf_crm_active_streams() as $key => $s ) {
