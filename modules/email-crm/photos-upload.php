@@ -214,11 +214,22 @@ function gasf_crm_photo_upload_one( array $f, array $in ) {
 	 * the database afterwards instead of at the green ticks.
 	 *
 	 * A success that cannot be verified is not a success worth reporting.
+	 *
+	 * Asked as "has it left the review folder, and is the file there" rather
+	 * than by reading post_status. get_post_status() reports 'publish' for an
+	 * unattached attachment whose stored status is 'inherit' — core translates
+	 * it — so a check for 'inherit' fails on a photo that published perfectly.
+	 * Which it did, on the run right after this guard was added: three good
+	 * uploads deleted by the thing meant to protect them.
+	 *
+	 * gasf_crm_photo_is_private() is the codebase's own answer to the only
+	 * question that matters here, and it reads the path rather than a status
+	 * core is entitled to reinterpret.
 	 */
 	$path = get_attached_file( $id );
-	if ( 'inherit' !== get_post_status( $id ) || ! $path || ! is_file( $path ) ) {
-		gasf_mec_log( sprintf( 'CRM upload: media #%d did not publish cleanly (status=%s, file=%s) — removed',
-			$id, get_post_status( $id ), $path ?: 'none' ) );
+	if ( gasf_crm_photo_is_private( $id ) || ! $path || ! is_file( $path ) ) {
+		gasf_mec_log( sprintf( 'CRM upload: media #%d did not publish cleanly (still private=%s, file=%s) — removed',
+			$id, gasf_crm_photo_is_private( $id ) ? 'yes' : 'no', $path ?: 'none' ) );
 		wp_delete_attachment( $id, true );
 		return new WP_Error( 'gasf_crm_pub', $name . ' could not be filed away safely, so it has not been kept. Nothing was published.', array( 'status' => 500 ) );
 	}
