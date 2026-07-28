@@ -58,6 +58,47 @@ define( 'GASF_CRM_PHOTO_INVITE_KEEP_DAYS', 90 );
 define( 'GASF_CRM_PHOTO_MAX_PEOPLE', 25 );
 define( 'GASF_CRM_PHOTO_CAPTION_MAX', 150 );
 
+/*
+ * Resource budgets for the unattended intake.
+ *
+ * There were none. Every limit here is on something an outside sender chooses
+ * and the club does not: how big a file is, how many pixels it decodes to, how
+ * much arrives at once. Without them the ceiling was whatever PHP happened to
+ * be configured with, and hitting it is a fatal mid-import — which, before the
+ * claim existed, was precisely how photos went missing.
+ *
+ * Generous rather than tight. These exist to stop a submission taking the site
+ * down, not to police what people send; anything over a limit is HELD for a
+ * volunteer, never discarded.
+ */
+define( 'GASF_CRM_PHOTO_MAX_BYTES', 64 * MB_IN_BYTES );          // one file
+define( 'GASF_CRM_PHOTO_MAX_MESSAGE_BYTES', 256 * MB_IN_BYTES ); // one message, all images
+
+/*
+ * Decoded pixels, which is the number that actually matters for memory.
+ *
+ * A JPEG's file size says almost nothing about what it costs to open: a highly
+ * compressible image a few megabytes on disk can decode to hundreds of
+ * megabytes of bitmap, and WordPress decodes every photo several times over to
+ * generate its sizes. 120 MP is far beyond any real camera — a 100 MP medium
+ * format back is 11648x8736 — so a file over it is a decompression bomb or a
+ * mistake, and either way not something to hand to an image library unattended.
+ */
+define( 'GASF_CRM_PHOTO_MAX_PIXELS', 120000000 );
+
+/** Refuse to start an import that could leave the disk with less than this. */
+define( 'GASF_CRM_PHOTO_MIN_FREE_BYTES', 512 * MB_IN_BYTES );
+
+/**
+ * How long one intake run may keep STARTING new photos.
+ *
+ * Not a kill switch — whatever is in flight finishes, because abandoning a
+ * download halfway is the thing all this machinery exists to avoid. It simply
+ * stops taking on more, so a run ends by choice rather than by the web server
+ * cutting it off at an arbitrary point.
+ */
+define( 'GASF_CRM_PHOTO_TIME_BUDGET', 120 );
+
 /**
  * Most images one email may bring in by itself.
  *
@@ -588,6 +629,28 @@ function gasf_crm_photo_approve( array $thread, $graph_message_id, $graph_attach
 	$name = sanitize_file_name( (string) ( $meta['name'] ?? 'photo.jpg' ) );
 	if ( '' === pathinfo( $name, PATHINFO_EXTENSION ) ) { $name .= '.jpg'; }
 
+	// Budget checks BEFORE a byte is fetched, using the size Graph already told
+	// us. Downloading 200 MB and then deciding against it costs the bandwidth,
+	// the disk and the time anyway.
+	$size = (int) ( $meta['size'] ?? 0 );
+	if ( $size > GASF_CRM_PHOTO_MAX_BYTES ) {
+		return new WP_Error( 'gasf_crm_toobig', sprintf(
+			'%s is %s, over the %s limit for an unattended import.',
+			$name, size_format( $size ), size_format( GASF_CRM_PHOTO_MAX_BYTES )
+		) );
+	}
+
+	// Room for the original AND everything WordPress generates from it. Three
+	// times is a working estimate, not a measurement — the point is to refuse
+	// while refusing is still possible, rather than discover it halfway through
+	// writing a thumbnail and leave a half-built set behind.
+	$free = @disk_free_space( dirname( untrailingslashit( ABSPATH ) ) ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+	if ( $free && ( $free - ( $size * 3 ) ) < GASF_CRM_PHOTO_MIN_FREE_BYTES ) {
+		return new WP_Error( 'gasf_crm_disk', sprintf(
+			'Not enough disk space to take in %s safely — %s free.', $name, size_format( $free )
+		) );
+	}
+
 	$tmp = wp_tempnam( $name );
 	if ( ! $tmp ) { return new WP_Error( 'gasf_crm_tmp', 'The server could not make room to fetch that photo.' ); }
 
@@ -595,6 +658,35 @@ function gasf_crm_photo_approve( array $thread, $graph_message_id, $graph_attach
 	if ( is_wp_error( $ok ) ) {
 		@unlink( $tmp ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
 		return $ok;
+	}
+
+	/*
+	 * What it costs to OPEN, which the file size does not tell you.
+	 *
+	 * getimagesize reads the header only — no decode — so this is the last point
+	 * at which the question can be asked cheaply. WordPress is about to decode
+	 * the image several times over to generate its sizes, and a few megabytes of
+	 * highly compressible pixels can expand to hundreds of megabytes of bitmap.
+	 * That is a fatal error inside wp_generate_attachment_metadata, i.e. an
+	 * import that dies holding a claim.
+	 *
+	 * Also serves as the "is this really an image" check: a file whose header
+	 * will not parse has no business being handed to an image library.
+	 */
+	$dim = @getimagesize( $tmp ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+	if ( ! $dim || empty( $dim[0] ) || empty( $dim[1] ) ) {
+		@unlink( $tmp ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+		return new WP_Error( 'gasf_crm_notimage', $name . ' does not read as an image, so it has not been taken in.' );
+	}
+	$pixels = (int) $dim[0] * (int) $dim[1];
+	if ( $pixels > GASF_CRM_PHOTO_MAX_PIXELS ) {
+		@unlink( $tmp ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+		return new WP_Error( 'gasf_crm_toobig', sprintf(
+			'%s is %d×%d (%s megapixels), past the %s MP limit for an unattended import.',
+			$name, (int) $dim[0], (int) $dim[1],
+			number_format_i18n( $pixels / 1000000, 1 ),
+			number_format_i18n( GASF_CRM_PHOTO_MAX_PIXELS / 1000000 )
+		) );
 	}
 
 	require_once ABSPATH . 'wp-admin/includes/media.php';
@@ -1972,8 +2064,20 @@ function gasf_crm_photo_autoprocess_run() {
 		array_merge( $photo_streams, array( $now, $now ) )
 	), ARRAY_A );
 
-	$taken = 0;
+	$taken    = 0;
+	$deadline = time() + GASF_CRM_PHOTO_TIME_BUDGET;
+
 	foreach ( $rows as $row ) {
+		// Stop TAKING ON messages once the budget is spent; never interrupt one
+		// already under way. A submission left mid-flight is recoverable now, but
+		// recovering costs a wasted download and a lease timeout, and the whole
+		// point of a budget is to end the run tidily rather than have the web
+		// server end it somewhere arbitrary.
+		if ( time() >= $deadline ) {
+			gasf_mec_log( 'CRM photos: intake stopped at its ' . GASF_CRM_PHOTO_TIME_BUDGET . 's budget with messages still queued — they wait for the next run' );
+			break;
+		}
+
 		$thread = gasf_crm_get_thread( (int) $row['thread_id'] );
 		if ( ! $thread ) { continue; }
 
@@ -2011,27 +2115,49 @@ function gasf_crm_photo_autoprocess_run() {
 
 		$all = gasf_crm_graph_attachments( $row['graph_message_id'], (string) $thread['stream'] );
 		if ( is_wp_error( $all ) ) {
-			// Graph being unreachable is the ordinary transient case: back off and
-			// come round again rather than burning the submission.
-			gasf_crm_photo_submission_finish( $sub['id'], $owner, 'retry', $all->get_error_message(), gasf_crm_photo_backoff( $sub ) );
+			// A list too long to page through is a property of the message, not a
+			// passing condition: retrying would fail identically forever and burn
+			// a slot each time. Held for a volunteer. Everything else — Graph
+			// unreachable, a throttle — is the ordinary transient case.
+			$fatal = ( 'gasf_crm_toomany' === $all->get_error_code() );
+			gasf_crm_photo_submission_finish(
+				$sub['id'], $owner, $fatal ? 'held' : 'retry',
+				$all->get_error_message(), $fatal ? 0 : gasf_crm_photo_backoff( $sub )
+			);
 			gasf_mec_log( 'CRM photos: could not list attachments on message ' . (int) $row['id'] . ' — ' . $all->get_error_message() );
+			if ( $fatal ) { gasf_crm_log_event( (int) $thread['id'], 'photo_held', $all->get_error_message() ); }
 			continue;
 		}
 
-		// Too many to take unattended. Held, not failed — the photos are fine,
-		// there are simply more than an unattended job should pull in one go, and
-		// a volunteer keeps them by hand from the thread.
+		// Too many, or too large, to take unattended. Held, not failed — the
+		// photos are fine, there are simply more of them than an unattended job
+		// should pull in one go, and a volunteer keeps them by hand.
+		//
+		// Counted across the WHOLE list, which is only now actually the whole
+		// list: this check reading one page of attachments was how a large
+		// submission passed the limit and lost its tail.
 		$images = 0;
+		$bytes  = 0;
 		foreach ( (array) $all as $a ) {
-			if ( 0 === strpos( strtolower( (string) ( $a['contentType'] ?? '' ) ), 'image/' ) ) { $images++; }
+			if ( 0 === strpos( strtolower( (string) ( $a['contentType'] ?? '' ) ), 'image/' ) ) {
+				$images++;
+				$bytes += (int) ( $a['size'] ?? 0 );
+			}
 		}
+
+		$over = '';
 		if ( $images > GASF_CRM_PHOTO_MAX_PER_MESSAGE ) {
-			gasf_crm_photo_submission_finish( $sub['id'], $owner, 'held', $images . ' images, over the ' . GASF_CRM_PHOTO_MAX_PER_MESSAGE . ' limit' );
+			$over = $images . ' images, over the ' . GASF_CRM_PHOTO_MAX_PER_MESSAGE . ' limit';
+		} elseif ( $bytes > GASF_CRM_PHOTO_MAX_MESSAGE_BYTES ) {
+			$over = size_format( $bytes ) . ' of images, over the ' . size_format( GASF_CRM_PHOTO_MAX_MESSAGE_BYTES ) . ' limit';
+		}
+		if ( '' !== $over ) {
+			gasf_crm_photo_submission_finish( $sub['id'], $owner, 'held', $over );
 			gasf_mec_log( sprintf(
-				'CRM photos: message %d from %s carries %d images, over the %d limit — NOT taken in automatically, needs a volunteer.',
-				(int) $row['id'], $thread['last_from_addr'], $images, GASF_CRM_PHOTO_MAX_PER_MESSAGE
+				'CRM photos: message %d from %s carries %s — NOT taken in automatically, needs a volunteer.',
+				(int) $row['id'], $thread['last_from_addr'], $over
 			) );
-			gasf_crm_log_event( (int) $thread['id'], 'photo_held', $images . ' images — too many to take in automatically' );
+			gasf_crm_log_event( (int) $thread['id'], 'photo_held', $over . ' — too much to take in automatically' );
 			continue;
 		}
 

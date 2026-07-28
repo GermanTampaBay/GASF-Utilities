@@ -487,15 +487,45 @@ function gasf_crm_graph_send( $to, $subject, $text, $mailbox = '' ) {
  * that have no bytes to download: an email forwarded AS an attachment
  * (itemAttachment) and a OneDrive/SharePoint link (referenceAttachment).
  */
-function gasf_crm_graph_attachments( $graph_message_id, $mailbox = '' ) {
-	$res = gasf_crm_graph( 'GET', gasf_crm_mailbox_path( $mailbox ) . '/messages/' . rawurlencode( $graph_message_id )
-		. '/attachments?$select=id,name,contentType,size,isInline' );
-	if ( is_wp_error( $res ) ) { return $res; }
+function gasf_crm_graph_attachments( $graph_message_id, $mailbox = '', $max_pages = 20 ) {
+	$url = gasf_crm_mailbox_path( $mailbox ) . '/messages/' . rawurlencode( $graph_message_id )
+		. '/attachments?$select=id,name,contentType,size,isInline&$top=50';
 
-	return array_values( array_filter(
-		(array) ( $res['value'] ?? array() ),
-		static function ( $a ) { return empty( $a['isInline'] ); }
-	) );
+	/*
+	 * Followed to the end, not read one page deep.
+	 *
+	 * Graph paginates this like everything else, and a single page was being
+	 * treated as the whole list. For the photo intake that is not a partial
+	 * result, it is a wrong one: the "more images than we take unattended" check
+	 * counts what it was given, so a message carrying more attachments than fit
+	 * in a page would UNDER-count, pass the limit, import the first page and be
+	 * marked complete — with the rest silently gone and nothing to say so.
+	 *
+	 * A truncated list is refused rather than returned. Everything downstream
+	 * treats this array as complete, and there is no honest way to return
+	 * something that merely looks like it.
+	 */
+	$out   = array();
+	$pages = 0;
+	while ( $url && $pages < $max_pages ) {
+		$res = gasf_crm_graph( 'GET', $url );
+		if ( is_wp_error( $res ) ) { return $res; }
+		foreach ( (array) ( $res['value'] ?? array() ) as $a ) {
+			if ( empty( $a['isInline'] ) ) { $out[] = $a; }
+		}
+		$url = $res['@odata.nextLink'] ?? null;
+		$pages++;
+	}
+
+	if ( $url ) {
+		gasf_mec_log( 'CRM: attachment list for a message exceeded ' . $max_pages . ' pages — refusing a partial list' );
+		return new WP_Error(
+			'gasf_crm_toomany',
+			'That message carries more attachments than can be listed in one go, so it needs a volunteer rather than the automatic intake.'
+		);
+	}
+
+	return array_values( $out );
 }
 
 /**
