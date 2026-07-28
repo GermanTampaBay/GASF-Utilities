@@ -113,11 +113,30 @@ function gasf_crm_photo_upload_one( array $f, array $in ) {
 	 * boundary means a file is never readable with its GPS still in it, not even
 	 * for the second between writing and stripping.
 	 */
-	$to_review = function ( $dirs ) {
-		$root            = gasf_crm_photo_private_root();
-		$dirs['path']    = $root;
-		$dirs['basedir'] = $root;
-		$dirs['subdir']  = '';
+	$review = gasf_crm_photo_private_root();
+
+	/*
+	 * basedir moves too, not just path — and subdir has to carry the review
+	 * folder's name.
+	 *
+	 * WordPress derives _wp_attached_file by stripping basedir off the absolute
+	 * path, and gasf_crm_photo_is_private() decides purely on whether that
+	 * relative path starts with the review folder. Point basedir AT the review
+	 * folder instead of at its parent and the file is recorded as a bare
+	 * filename: publish then sees a photo it thinks is already public, returns
+	 * true without moving anything, and leaves an attachment marked private
+	 * whose recorded path points at a file that is not there.
+	 *
+	 * Which is exactly what it did the first time this was written. The upload
+	 * reported success three times over and produced three broken photos.
+	 */
+	$to_review = function ( $dirs ) use ( $review ) {
+		$dirs['basedir'] = dirname( $review );
+		$dirs['path']    = $review;
+		$dirs['subdir']  = '/' . GASF_CRM_PHOTO_REVIEW_DIR;
+		// No public URL exists for any of this. Pointed at the site root rather
+		// than a plausible-looking uploads path, so anything reaching for it
+		// fails obviously instead of 404ing like a broken image.
 		$dirs['baseurl'] = home_url();
 		$dirs['url']     = home_url();
 		return $dirs;
@@ -177,6 +196,31 @@ function gasf_crm_photo_upload_one( array $f, array $in ) {
 	if ( is_wp_error( $pub ) ) {
 		wp_delete_attachment( $id, true );
 		return $pub;
+	}
+
+	/*
+	 * And then check it actually happened, rather than believing the return.
+	 *
+	 * publish() opens with "if this photo is not private, there is nothing to
+	 * do — return true". That is correct for its original caller, which only
+	 * ever hands it a photo from the review queue. For this one it is a trap: if
+	 * the upload lands anywhere publish does not recognise as private, it
+	 * cheerfully reports success having moved nothing, and the photo ends up
+	 * marked private, unscrubbed, pointing at a file that is not there — while
+	 * the person watching sees "added".
+	 *
+	 * This is not hypothetical. It happened on the first run of this function,
+	 * three times, and the only reason it was caught is that somebody looked at
+	 * the database afterwards instead of at the green ticks.
+	 *
+	 * A success that cannot be verified is not a success worth reporting.
+	 */
+	$path = get_attached_file( $id );
+	if ( 'inherit' !== get_post_status( $id ) || ! $path || ! is_file( $path ) ) {
+		gasf_mec_log( sprintf( 'CRM upload: media #%d did not publish cleanly (status=%s, file=%s) — removed',
+			$id, get_post_status( $id ), $path ?: 'none' ) );
+		wp_delete_attachment( $id, true );
+		return new WP_Error( 'gasf_crm_pub', $name . ' could not be filed away safely, so it has not been kept. Nothing was published.', array( 'status' => 500 ) );
 	}
 
 	/*
