@@ -560,10 +560,20 @@ function gasf_crm_photo_is_private( $attachment_id ) {
  * which is the same answer gasf_crm_photo_scrub gives when a strip does not take.
  * -------------------------------------------------------------------------- */
 
-/** Byte signatures for "this file says where it was". */
+/**
+ * Byte signatures for "this file says where it was".
+ *
+ * The atom name is built with chr(0xA9) rather than written as an escape or as
+ * the character itself. Written either of those ways it turned into UTF-8 —
+ * two bytes, c2 a9 — and stopped matching the single byte the file actually
+ * contains. Nothing complained: the scan simply found nothing, the blanking had
+ * nothing to do, and the verification that follows it passed because there was
+ * no longer anything to find. A guarantee that silently tests nothing is worse
+ * than no guarantee, so the bytes are stated as bytes.
+ */
 function gasf_crm_video_markers() {
 	return array(
-		"©xyz"                      => 'a GPS atom',
+		chr( 0xA9 ) . 'xyz'            => 'a GPS atom',
 		'loci'                         => 'a 3GPP location box',
 		'GPSCoordinates'               => 'GPS coordinates in XMP',
 		'com.apple.quicktime.location' => 'a QuickTime location tag',
@@ -635,7 +645,7 @@ function gasf_crm_video_scrub( $path ) {
 	}
 
 	$at = 0;
-	while ( false !== ( $t = strpos( $buf, "©xyz", $at ) ) ) {
+	while ( false !== ( $t = strpos( $buf, chr( 0xA9 ) . 'xyz', $at ) ) ) {
 		$at = $t + 4;
 
 		// Bounded before it is trusted. A coincidental run of bytes that happens
