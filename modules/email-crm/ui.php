@@ -346,7 +346,17 @@ textarea{width:100%;min-height:150px;padding:10px;border:1px solid var(--gasf-bo
 .pf>span{display:block;font-size:11px;color:var(--gasf-muted);margin-bottom:2px}
 .pf input,.pf select{width:100%;padding:6px 8px;border:1px solid var(--gasf-border);border-radius:4px;font:inherit;font-size:13px;background:var(--gasf-surface);color:var(--gasf-text)}
 .pf .p-placeother{margin-top:5px}
-.p-people .p-person+.p-person{margin-top:5px}
+.p-people .pwrap{display:block;position:relative}
+.p-people .pwrap+.pwrap{margin-top:5px}
+/* The suggestion list. Absolutely positioned so it overlays whatever is below
+   rather than shoving the form around as you type. */
+.psug{position:absolute;top:100%;left:0;right:0;z-index:40;background:var(--gasf-surface);
+	border:1px solid var(--gasf-border);border-top:0;border-radius:0 0 4px 4px;
+	box-shadow:0 6px 18px rgba(0,0,0,.16);max-height:230px;overflow:auto}
+.psugi{display:flex;justify-content:space-between;gap:10px;width:100%;text-align:left;background:none;
+	border:0;padding:7px 9px;font:inherit;font-size:13px;color:var(--gasf-text);cursor:pointer}
+.psugi.on,.psugi:hover{background:var(--s-tint,#eee)}
+.psugn{color:var(--gasf-muted);font-size:11px;flex:0 0 auto}
 .addp{background:none;border:0;padding:2px 0;margin:4px 0 0;font:inherit;font-size:12px;color:var(--s-accent);cursor:pointer}
 .addp:hover{text-decoration:underline}
 .prow{display:flex;gap:8px;flex-wrap:wrap}
@@ -1364,7 +1374,108 @@ function gasf_crm_render_inbox() {
 	}
 
 	function personBox(v){
-		return '<input type="text" class="p-person" maxlength="80" value="' + esc(v || '') + '" placeholder="Name" autocomplete="off">';
+		return '<span class="pwrap"><input type="text" class="p-person" maxlength="80" value="' + esc(v || '') +
+			'" placeholder="Name" autocomplete="off" spellcheck="false"></span>';
+	}
+
+	/* ============ name suggestions ============
+	 *
+	 * Everyone already named in a photo, matched as you type. The point is not
+	 * convenience: a club archive is only searchable if the same person is
+	 * spelled the same way every time, and "Hans Müller", "Hans Mueller" and
+	 * "Hans Muller" are three people as far as a taxonomy is concerned.
+	 * Suggesting the existing spelling is what keeps them one.
+	 */
+	var PEOPLE = null, peopleLoading = null;
+
+	function loadPeople(force){
+		if (PEOPLE && !force) { return Promise.resolve(PEOPLE); }
+		if (peopleLoading && !force) { return peopleLoading; }
+		peopleLoading = api('/photos/people').then(function(r){
+			PEOPLE = (r.people || []).map(function(p){
+				return { value: p.value, label: p.label, n: p.n,
+				         a: pnorm(p.label, true), b: pnorm(p.label, false) };
+			});
+			peopleLoading = null;
+			return PEOPLE;
+		}).catch(function(){ PEOPLE = []; peopleLoading = null; return PEOPLE; });
+		return peopleLoading;
+	}
+
+	/* Two normalised forms per name, because German has two conventions and
+	 * people use both. expand=true gives the spelled-out form (Müller→mueller),
+	 * matching somebody who types "Mueller"; expand=false strips the diacritic
+	 * (Müller→muller), matching somebody who types "Muller" — or who cannot
+	 * produce an umlaut on their keyboard at all, which is most people. */
+	function pnorm(s, expand){
+		s = (s || '').toLowerCase();
+		if (expand) {
+			s = s.replace(/ä/g,'ae').replace(/ö/g,'oe').replace(/ü/g,'ue').replace(/ß/g,'ss');
+		}
+		if (s.normalize) { s = s.normalize('NFD').replace(/[̀-ͯ]/g, ''); }
+		return s.replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+	}
+
+	// Levenshtein, capped — beyond the threshold the exact distance is of no
+	// interest, and bailing early keeps this cheap enough to run on every
+	// keystroke against every name.
+	function pdist(a, b, max){
+		if (Math.abs(a.length - b.length) > max) { return max + 1; }
+		var prev = [], cur = [], i, j;
+		for (j = 0; j <= b.length; j++) { prev[j] = j; }
+		for (i = 1; i <= a.length; i++) {
+			cur[0] = i;
+			var best = cur[0];
+			for (j = 1; j <= b.length; j++) {
+				cur[j] = Math.min(prev[j] + 1, cur[j-1] + 1, prev[j-1] + (a[i-1] === b[j-1] ? 0 : 1));
+				if (cur[j] < best) { best = cur[j]; }
+			}
+			if (best > max) { return max + 1; }
+			prev = cur.slice();
+		}
+		return prev[b.length];
+	}
+
+	/* Ranked, best first. The order is deliberate: what somebody has typed the
+	 * beginning of is far more likely to be what they mean than something it is
+	 * merely close to, so every exact-ish match outranks every fuzzy one. */
+	function peopleMatch(q, taken){
+		if (!PEOPLE || !q) { return []; }
+		var qa = pnorm(q, true), qb = pnorm(q, false);
+		if (!qa) { return []; }
+
+		var max = qa.length <= 4 ? 1 : 2;   // one typo in a short name, two in a long one
+		var out = [];
+
+		PEOPLE.forEach(function(p){
+			if (taken && taken.indexOf(p.value) !== -1) { return; } // already on this photo
+			var score = null;
+
+			if (p.a === qa || p.b === qb) { score = 0; }
+			else if (p.a.indexOf(qa) === 0 || p.b.indexOf(qb) === 0) { score = 1; }
+			else {
+				// Any WORD starting with what was typed — "mül" finds "Hans Müller".
+				var words = p.a.split(' ').concat(p.b.split(' '));
+				for (var i = 0; i < words.length; i++) {
+					if (words[i].indexOf(qa) === 0 || words[i].indexOf(qb) === 0) { score = 2; break; }
+				}
+				if (score === null && (p.a.indexOf(qa) !== -1 || p.b.indexOf(qb) !== -1)) { score = 3; }
+				if (score === null) {
+					var d = Math.min(pdist(qa, p.a, max), pdist(qb, p.b, max));
+					// Whole-name distance, or against any single word, so a
+					// mistyped surname still finds the full name.
+					if (d > max) {
+						p.a.split(' ').forEach(function(w){ d = Math.min(d, pdist(qa, w, max)); });
+					}
+					if (d <= max) { score = 4 + d; }
+				}
+			}
+
+			if (score !== null) { out.push({ p: p, s: score }); }
+		});
+
+		out.sort(function(x, y){ return x.s - y.s || y.p.n - x.p.n || x.p.label.localeCompare(y.p.label); });
+		return out.slice(0, 8).map(function(o){ return o.p; });
 	}
 
 	// Every non-empty box, in the order they appear. Trimmed and de-duplicated,
@@ -1387,10 +1498,102 @@ function gasf_crm_render_inbox() {
 				var box = b.previousElementSibling;
 				if (!box || !box.classList.contains('p-people')) { return; }
 				box.insertAdjacentHTML('beforeend', personBox(''));
-				box.lastElementChild.focus();
+				var input = box.lastElementChild.querySelector('.p-person');
+				if (input) { input.focus(); }
 			};
 		});
+		loadPeople();
 	}
+
+	/* The suggestion list.
+	 *
+	 * Delegated from the document rather than bound per input, because name
+	 * boxes are created by "+ Add another person" long after any wiring ran —
+	 * and a suggestion list that works on the first box and not the third is
+	 * worse than none, because you stop trusting it.
+	 */
+	(function(){
+		var open = null, items = [], sel = -1;
+
+		function close(){
+			if (open) { open.remove(); open = null; items = []; sel = -1; }
+		}
+
+		function paint(input){
+			var q = input.value.trim();
+			// Names already on THIS photo are dropped from the list — offering
+			// somebody who is visibly in the boxes above is just noise.
+			var taken = [];
+			var wrap = input.closest('.p-people');
+			if (wrap) {
+				Array.prototype.forEach.call(wrap.querySelectorAll('.p-person'), function(o){
+					if (o !== input && o.value.trim()) { taken.push(o.value.trim()); }
+				});
+			}
+
+			items = peopleMatch(q, taken);
+			close();
+			if (!items.length) { return; }
+
+			var box = document.createElement('div');
+			box.className = 'psug';
+			box.innerHTML = items.map(function(p, i){
+				return '<button type="button" class="psugi' + (i === 0 ? ' on' : '') + '" data-i="' + i + '">' +
+					esc(p.label) + '<span class="psugn">' + p.n + '</span></button>';
+			}).join('');
+			input.parentNode.appendChild(box);
+			open = box; sel = 0;
+
+			box.addEventListener('mousedown', function(ev){
+				// mousedown, not click: blur fires first on click and would close
+				// the list out from under the pointer.
+				var b = ev.target.closest('.psugi');
+				if (!b) { return; }
+				ev.preventDefault();
+				choose(input, items[parseInt(b.dataset.i, 10)]);
+			});
+		}
+
+		function choose(input, p){
+			if (!p) { return; }
+			input.value = p.value;   // the RAW term, so it matches what is stored
+			close();
+			input.dispatchEvent(new Event('change', { bubbles: true }));
+		}
+
+		function move(d){
+			if (!open || !items.length) { return; }
+			sel = (sel + d + items.length) % items.length;
+			Array.prototype.forEach.call(open.querySelectorAll('.psugi'), function(b, i){
+				b.classList.toggle('on', i === sel);
+			});
+		}
+
+		document.addEventListener('input', function(ev){
+			if (!ev.target.classList || !ev.target.classList.contains('p-person')) { return; }
+			loadPeople().then(function(){ paint(ev.target); });
+		});
+
+		document.addEventListener('keydown', function(ev){
+			if (!ev.target.classList || !ev.target.classList.contains('p-person')) { return; }
+			if (!open) {
+				// Down on an empty-but-focused box offers the most-photographed
+				// people, which is a reasonable place to start.
+				if (ev.key === 'ArrowDown') { loadPeople().then(function(){ paint(ev.target); }); ev.preventDefault(); }
+				return;
+			}
+			if (ev.key === 'ArrowDown') { move(1); ev.preventDefault(); }
+			else if (ev.key === 'ArrowUp') { move(-1); ev.preventDefault(); }
+			else if (ev.key === 'Enter' || ev.key === 'Tab') {
+				if (sel >= 0) { choose(ev.target, items[sel]); if (ev.key === 'Enter') { ev.preventDefault(); } }
+			}
+			else if (ev.key === 'Escape') { close(); ev.stopPropagation(); }
+		}, true);
+
+		document.addEventListener('focusout', function(ev){
+			if (ev.target.classList && ev.target.classList.contains('p-person')) { setTimeout(close, 120); }
+		});
+	}());
 
 	// The labelling form: identical whether the sender filled it in or nobody
 	// did. A volunteer working from scratch needs exactly the fields a
@@ -1570,7 +1773,7 @@ function gasf_crm_render_inbox() {
 					event_id: parseInt(v('.p-evid'), 10) || 0,
 					taken: v('.p-taken'), caption: v('.p-caption'),
 					revision: v('.p-rev')
-				})}).then(function(){ open(id); })
+				})}).then(function(){ loadPeople(true); open(id); })
 				  .catch(function(e){ ok.disabled = false; msg.textContent = e.message; });
 			};
 		});
@@ -1959,7 +2162,7 @@ function gasf_crm_render_inbox() {
 					event_id: parseInt(v('.p-evid'), 10) || 0,
 					taken: v('.p-taken'), caption: v('.p-caption'),
 					revision: v('.p-rev')
-				})}).then(function(){ loadPhotos(); openPhoto(id); })
+				})}).then(function(){ loadPeople(true); loadPhotos(); openPhoto(id); })
 				  .catch(function(e){ ok.disabled = false; msg.textContent = e.message; });
 			};
 		}
@@ -2294,6 +2497,10 @@ function gasf_crm_render_inbox() {
 				// Reloading the page of results keeps the filter bar honest too —
 				// a photo just retagged may no longer match what is on screen.
 				if (lgrid._photos) { lgrid._photos[card.id] = card; }
+				// A name typed here is a name the NEXT photo should suggest.
+				// Without this the second photo of the same person is spelled
+				// from memory, which is exactly what the suggestions prevent.
+				loadPeople(true);
 				lbOpen(card.id);
 				loadLib();
 			}).catch(function(e){

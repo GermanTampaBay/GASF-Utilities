@@ -575,6 +575,42 @@ add_action( 'rest_api_init', function () {
 		},
 	) );
 
+	/*
+	 * Everyone the club has named in a photo, for the name boxes to suggest.
+	 *
+	 * The whole list rather than a per-keystroke search. It is a few hundred
+	 * names at most — smaller than one thumbnail — and having it in the browser
+	 * means suggestions appear as fast as somebody types, which a round trip per
+	 * character does not, and typo-tolerant matching that a SQL LIKE cannot do
+	 * at all.
+	 *
+	 * Counts come along so the people who appear in the most photos sort first.
+	 * In a club archive that is almost always who you are looking for.
+	 */
+	register_rest_route( 'gasf/v1', '/crm/photos/people', array(
+		'methods'             => 'GET',
+		'permission_callback' => $lib_guard,
+		'callback'            => function () {
+			$terms = get_terms( array( 'taxonomy' => 'gasf_photo_person', 'hide_empty' => false ) );
+			if ( is_wp_error( $terms ) ) { return array( 'people' => array() ); }
+
+			$out = array();
+			foreach ( $terms as $t ) {
+				$out[] = array(
+					// Raw for writing back, decoded for reading. Same distinction
+					// the place picker needs, and for the same reason: a name
+					// holding &amp; must round-trip to the term it came from.
+					'value' => $t->name,
+					'label' => function_exists( 'gasf_photo_label' ) ? gasf_photo_label( $t->name ) : $t->name,
+					'n'     => (int) $t->count,
+				);
+			}
+			usort( $out, function ( $a, $b ) { return $b['n'] - $a['n'] ?: strnatcasecmp( $a['label'], $b['label'] ); } );
+
+			return array( 'people' => $out );
+		},
+	) );
+
 	register_rest_route( 'gasf/v1', '/crm/photos/edit', array(
 		'methods'             => 'POST',
 		'permission_callback' => $lib_guard,
