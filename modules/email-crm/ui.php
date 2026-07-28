@@ -545,7 +545,7 @@ header.bar a{font-family:var(--slug);font-size:11px;letter-spacing:.08em;text-tr
 /* Field labels are typed, on a dotted rule, exactly as on the form the member
    filled in. Kept small: this is a dense tool and the labels are scaffolding,
    not content. */
-.pf>span,.lf>span,.fwd label{
+.pf>span,.lf>span:not(.pwrap),.fwd label{
 	font:700 10px/1.4 var(--slug);text-transform:uppercase;letter-spacing:.13em;
 	color:var(--gasf-muted);
 }
@@ -1240,7 +1240,7 @@ function gasf_crm_render_inbox() {
 <div class="wrap" id="uploadview" hidden data-stream="photos">
 	<div class="card pad libhead">
 		<h2 style="margin:0 0 4px">Add photos</h2>
-		<p class="muted" style="margin:0">Drag a whole event in at once. Fill in the day, the occasion and the place below and every photo in the batch gets them &mdash; then tag who is in them afterwards, in the photo library.</p>
+		<p class="muted" style="margin:0">Drag a whole event in at once. Name the event below and the date fills itself in from the club calendar; every photo in the batch gets the day, the event and the place &mdash; then tag who is in them afterwards, in the photo library.</p>
 	</div>
 
 	<div class="card pad">
