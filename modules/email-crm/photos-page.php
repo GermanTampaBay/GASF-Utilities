@@ -400,90 +400,333 @@ function gasf_crm_photo_page( $state, $invite = null, $notice = '' ) {
 
 function gasf_crm_photo_styles() {
 	?>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Courier+Prime:wght@400;700&amp;family=Fraunces:opsz,wght@9..144,400..700&amp;family=Newsreader:ital,opsz,wght@0,6..72,400..600;1,6..72,400&amp;display=swap">
 <style>
+/* ============================================================================
+   The tagging page — "the archive card"
+   ----------------------------------------------------------------------------
+   This page asks somebody to caption a photograph so it is still legible to
+   the club in twenty years. That is archival work, so it is dressed as archival
+   work: warm paper, a print on a mount, typewritten field labels, a ruled form.
+   The intent is that the task feels worth the minute it takes, rather than
+   feeling like a web form that wants something.
+
+   Three registers, each doing one job:
+     Fraunces      headings and the plate number  — warmth, a little wonk
+     Newsreader    everything you read or type    — an editorial screen serif
+     Courier Prime labels, slugs, the button      — the typed accession card
+
+   Everything degrades to a local serif stack if the webfonts do not arrive;
+   nothing here depends on them loading.
+   ============================================================================ */
 *,*::before,*::after{box-sizing:border-box}
-:root{--gasf-accent:#b8860b;--ink:#8a6508;--text:#1a1a1a;--muted:#6b6b6b;--border:#c9c4ba;--chip:#f3efe6;--page:#f7f5f0;--r:8px}
-body{margin:0;background:var(--page);color:var(--text);font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
-.wrap{max-width:720px;margin:0 auto;padding:0 16px}
-header.bar{background:#1a1a1a;color:#fff;padding:14px 0;border-bottom:3px solid var(--gasf-accent)}
-header.bar h1{margin:0;font-size:16px;font-weight:600}
-.main{padding:20px 16px 48px}
-.card{background:#fff;border:1px solid var(--border);border-radius:var(--r);margin:0 0 16px;overflow:hidden}
-.pad{padding:18px 20px}
-.intro h2{margin:0 0 8px;font-size:20px}
-.intro p{margin:0 0 10px}
-h3{margin:0 0 14px;font-size:15px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
-.f{display:block;margin:0 0 18px}
-.f>span{display:block;font-weight:600;font-size:15px;margin-bottom:5px}
-.f em{display:block;font-style:normal;font-size:13px;color:var(--muted);margin-top:5px}
+
+:root{
+	--paper:#ece3d1; --paper-2:#e3d8c1; --card:#faf6ec; --field:#fffdf6;
+	--ink:#241d15;   --ink-2:#665845;   --rule:#c9b997;  --rule-2:#e0d5bd;
+	--stamp:#8f3123; --gold:#9a7419;    --gasf-accent:#9a7419;
+	--stamp-wash:rgba(143,49,35,.06); --stamp-ring:rgba(143,49,35,.13);
+	--gold-wash:rgba(154,116,25,.10);  --shadow:rgba(36,29,21,.5);
+	--print:#fffdf6;
+	--r:2px;
+	--display:"Fraunces","Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+	--body:"Newsreader","Iowan Old Style",Georgia,"Times New Roman",serif;
+	--slug:"Courier Prime","Courier New",Courier,monospace;
+}
+
+/* Lamplight. Somebody photographing an evening event is on a phone that has
+   already gone dark; a page this pale would be a slap. Same paper, turned
+   down — not a different design. */
+@media (prefers-color-scheme:dark){
+	:root{
+		--paper:#14100c; --paper-2:#0e0b08; --card:#1d1811; --field:#241e16;
+		--ink:#ece2ce;   --ink-2:#a2937c;   --rule:#4a3f30; --rule-2:#332b21;
+		--stamp:#d46c50; --gold:#cda63f;    --gasf-accent:#cda63f;
+		--stamp-wash:rgba(212,108,80,.10); --stamp-ring:rgba(212,108,80,.20);
+		--gold-wash:rgba(205,166,63,.10);  --shadow:rgba(0,0,0,.75);
+		--print:#e8e0d0;
+	}
+}
+
+body{
+	margin:0; background:var(--paper); color:var(--ink);
+	font:400 17px/1.62 var(--body);
+	-webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+}
+
+/* Paper tooth over the whole sheet. pointer-events:none so it never eats a
+   tap; the suggestion list sits above it on z-index. */
+body::after{
+	content:''; position:fixed; inset:0; z-index:1; pointer-events:none;
+	opacity:.4; mix-blend-mode:multiply;
+	background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='.42'/%3E%3C/svg%3E");
+}
+@media (prefers-color-scheme:dark){ body::after{mix-blend-mode:screen;opacity:.16} }
+
+.wrap{max-width:760px;margin:0 auto;padding:0 20px}
+
+/* ---- masthead: a letterpress double rule, not a navigation bar ---- */
+header.bar{
+	background:var(--paper-2); border-bottom:1px solid var(--rule);
+	padding:30px 0 22px; position:relative;
+}
+header.bar::after{
+	content:''; position:absolute; left:0; right:0; bottom:4px;
+	height:1px; background:var(--rule); opacity:.5;
+}
+header.bar h1{
+	margin:0;
+	font:600 clamp(1.5rem,4.8vw,2.15rem)/1.08 var(--display);
+	font-variation-settings:'SOFT' 34,'WONK' 1;
+	letter-spacing:-.018em;
+}
+
+.main{padding:30px 20px 64px}
+
+/* ---- cards: sheets laid on the board ---- */
+.card{
+	background:var(--card); border:1px solid var(--rule); border-radius:var(--r);
+	margin:0 0 22px; overflow:hidden;
+	box-shadow:0 1px 0 rgba(36,29,21,.04), 0 14px 30px -22px var(--shadow);
+}
+.pad{padding:24px 26px}
+
+/* One orchestrated arrival, then stillness. nth-of-type is approximate here —
+   the exact index does not matter, the stagger does. */
+@media (prefers-reduced-motion:no-preference){
+	.card{animation:rise .5s cubic-bezier(.2,.7,.3,1) backwards}
+	.card:nth-of-type(1){animation-delay:.04s}
+	.card:nth-of-type(2){animation-delay:.11s}
+	.card:nth-of-type(3){animation-delay:.18s}
+	.card:nth-of-type(4){animation-delay:.25s}
+	.card:nth-of-type(5){animation-delay:.32s}
+	.card:nth-of-type(n+6){animation-delay:.38s}
+}
+@keyframes rise{from{opacity:0;transform:translateY(10px)}}
+
+h2{
+	margin:0 0 13px;
+	font:600 clamp(1.35rem,4.2vw,1.85rem)/1.16 var(--display);
+	font-variation-settings:'SOFT' 34,'WONK' 1;
+	letter-spacing:-.016em;
+}
+/* Section slugs, ruled off the way a printed form heads a block of fields. */
+h3{
+	margin:0 0 17px;
+	font:700 .72rem/1.3 var(--slug);
+	text-transform:uppercase; letter-spacing:.2em; color:var(--ink-2);
+	display:flex; align-items:center; gap:13px;
+}
+h3::after{content:'';flex:1;height:1px;background:var(--rule-2)}
+
+.intro{border-top:3px solid var(--stamp)}
+.intro p{margin:0 0 12px}
+.intro p:last-child{margin-bottom:0}
+.muted{color:var(--ink-2);font-size:.95rem}
+
+/* ---- fields: a ruled paper form ---- */
+.f{display:block;margin:0 0 22px}
+.f:last-child{margin-bottom:0}
+.f>span{
+	display:block; margin:0 0 9px; padding-bottom:6px;
+	font:700 .7rem/1.4 var(--slug);
+	text-transform:uppercase; letter-spacing:.16em; color:var(--ink-2);
+	border-bottom:1px dotted var(--rule);
+}
+.f em{
+	display:block; margin-top:7px;
+	font:italic 400 .92rem/1.5 var(--body); color:var(--ink-2);
+}
+
 input[type=text],input[type=date],select,textarea{
-	width:100%;padding:11px 12px;border:1px solid var(--border);border-radius:6px;
-	font:inherit;font-size:16px;background:#fff;color:var(--text)} /* 16px: anything smaller makes iOS zoom on focus */
-textarea{resize:vertical}
-input:focus,select:focus,textarea:focus{outline:2px solid var(--gasf-accent);outline-offset:1px;border-color:var(--gasf-accent)}
-.people .pwrap{display:block;position:relative;margin-bottom:8px}
+	width:100%; padding:12px 13px;
+	font:400 16px/1.5 var(--body);   /* 16px: anything smaller makes iOS zoom on focus */
+	color:var(--ink); background:var(--field);
+	border:1px solid var(--rule-2); border-bottom:2px solid var(--rule);
+	border-radius:var(--r);
+	transition:border-color .16s,background-color .16s,box-shadow .16s;
+}
+textarea{resize:vertical;min-height:76px}
+input::placeholder,textarea::placeholder{color:var(--ink-2);opacity:.6;font-style:italic}
+input:focus,select:focus,textarea:focus{
+	outline:none; background:var(--card);
+	border-color:var(--rule); border-bottom-color:var(--stamp);
+	box-shadow:0 0 0 3px var(--stamp-ring);
+}
+select{
+	appearance:none; padding-right:36px;
+	background-repeat:no-repeat; background-position:right 13px center; background-size:12px;
+	background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'><path d='M1 1l5 5 5-5' fill='none' stroke='%23665845' stroke-width='1.6'/></svg>");
+}
+/* The arrow is baked into a data URI, so it cannot read a custom property —
+   it gets restated rather than recoloured. */
+@media (prefers-color-scheme:dark){
+	select{background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'><path d='M1 1l5 5 5-5' fill='none' stroke='%23a2937c' stroke-width='1.6'/></svg>")}
+}
+
+.hint{
+	margin:0 0 12px; padding:10px 13px;
+	font-size:.94rem; color:var(--ink-2);
+	background:var(--gold-wash); border-left:2px solid var(--gold);
+	border-radius:0 var(--r) var(--r) 0;
+}
+.hint strong{color:var(--ink);font-weight:600}
+
+/* ---- the photograph, mounted ---- */
+.tagform{counter-reset:photo}
+/* overflow must stay visible here or the sticky mount cannot escape the card. */
+.photo{display:flex;align-items:flex-start;overflow:visible;counter-increment:photo}
+/* The mount follows you down the form. You are being asked who is in the
+   picture; the picture scrolling away at the first question is the one thing
+   this layout must not do. */
+.photo .thumb{
+	flex:0 0 218px; position:sticky; top:12px; display:block; text-decoration:none;
+	background:var(--paper-2); border-bottom:1px solid var(--rule);
+	padding:20px 18px 34px;
+}
+.photo .thumb img{
+	display:block; width:100%; aspect-ratio:4/3; max-height:250px;
+	object-fit:cover; border:5px solid var(--print);
+	box-shadow:0 2px 5px rgba(36,29,21,.22),0 16px 28px -16px var(--shadow);
+	transition:box-shadow .2s,transform .2s;
+}
+/* The caption slip sits on the mount, not across the picture — covering a face
+   to say "tap to enlarge" defeats the one question this page is asking. */
+.photo .thumb .zoom{
+	position:absolute; left:14px; right:14px; bottom:13px; text-align:center;
+	font:700 .6rem/1.4 var(--slug);
+	text-transform:uppercase; letter-spacing:.14em; color:var(--ink-2);
+	transition:color .2s;
+}
+.photo .thumb:hover img{transform:translateY(-2px);box-shadow:0 4px 8px rgba(36,29,21,.24),0 22px 34px -16px var(--shadow)}
+.photo .thumb:hover .zoom{color:var(--stamp)}
+
+/* The divider lives on the fields, not the mount: the mount is only as tall as
+   the print, and the rule should run the full height of the card. */
+.photo .fields{
+	flex:1 1 auto; min-width:0; position:relative;
+	align-self:stretch; border-left:1px solid var(--rule);
+}
+/* The plate number, set as an archive would set it. Pure CSS counter, so it
+   needs nothing from the markup and cannot disagree with the heading. */
+.photo .fields::before{
+	content:counter(photo,decimal-leading-zero);
+	position:absolute; top:10px; right:20px; z-index:0; pointer-events:none;
+	font:700 3.6rem/1 var(--display);
+	font-variation-settings:'SOFT' 40,'WONK' 1;
+	letter-spacing:-.045em; color:var(--rule-2);
+}
+.photo .fields h3{position:relative;z-index:1;padding-right:60px}
+
+/* ---- occasion: tick-boxes on a form, not chips ---- */
+.evlist{display:flex;flex-direction:column;gap:6px;margin:8px 0}
+.evopt{
+	display:block; width:100%; position:relative; text-align:left;
+	padding:11px 13px 11px 40px;
+	font:400 .98rem/1.45 var(--body); color:var(--ink);
+	background:var(--field); border:1px solid var(--rule-2); border-radius:var(--r);
+	cursor:pointer; transition:border-color .15s,background-color .15s;
+}
+.evopt::before{
+	content:''; position:absolute; left:14px; top:50%; transform:translateY(-50%);
+	width:15px; height:15px; background:var(--card); border:1px solid var(--rule);
+	transition:background-color .15s,border-color .15s,box-shadow .15s;
+}
+.evopt em{font:italic 400 .88rem/1 var(--body);color:var(--ink-2)}
+.evopt:hover{border-color:var(--rule);background:var(--card)}
+.evopt.on{border-color:var(--stamp);background:var(--stamp-wash);font-weight:600}
+.evopt.on::before{background:var(--stamp);border-color:var(--stamp);box-shadow:inset 0 0 0 2px var(--card)}
+.evopt.evfree{border-style:dashed;color:var(--ink-2);font-style:italic}
+.f-evsearch{margin:8px 0}
+
+/* ---- people ---- */
+.people .pwrap{display:block;position:relative;margin-bottom:9px}
 .people input{width:100%;margin:0}
+.addp{
+	padding:9px 15px;
+	font:700 .68rem/1 var(--slug); text-transform:uppercase; letter-spacing:.14em;
+	color:var(--ink-2); background:none;
+	border:1px dashed var(--rule); border-radius:var(--r);
+	cursor:pointer; transition:color .15s,border-color .15s;
+}
+.addp:hover{color:var(--stamp);border-color:var(--stamp);border-style:solid}
+
 /* Suggestions. Sized for a thumb, because this form is mostly used on a phone
    by somebody standing up. */
-.psug{position:absolute;top:100%;left:0;right:0;z-index:40;background:#fff;border:1px solid var(--border);
-	border-top:0;border-radius:0 0 6px 6px;box-shadow:0 8px 22px rgba(0,0,0,.16);max-height:240px;overflow:auto}
-.psugi{display:flex;justify-content:space-between;gap:10px;width:100%;text-align:left;background:none;border:0;
-	padding:12px 12px;font:inherit;font-size:16px;color:var(--ink);cursor:pointer;min-height:44px;align-items:center}
-.psugi.on,.psugi:hover{background:var(--chip)}
-.psugn{color:var(--muted);font-size:12px;flex:0 0 auto}
-.hint{font-size:14px;color:var(--muted);margin:0 0 10px;background:var(--chip);border-radius:6px;padding:9px 11px}
-.places{margin:0 0 10px}
-/* Rows, not a dropdown: a phone renders a <select> as a modal wheel, which
-   hides the hierarchy that is the whole point of this control. */
-.pl{display:flex;align-items:center;gap:10px;padding:11px 12px;border:1px solid var(--border);
-	border-radius:6px;margin:0 0 6px;cursor:pointer;background:#fff}
-.pl:has(input:checked){border-color:var(--gasf-accent);background:var(--chip);box-shadow:inset 0 0 0 1px var(--gasf-accent)}
-.pl input{width:auto;flex:none;margin:0}
-.pl span{font-weight:600;font-size:15px}
-.pl em{font-style:normal;font-size:13px;color:var(--muted)}
-.pl.d1{margin-left:22px}
-.pl.d2{margin-left:44px}
-.evlist{display:flex;flex-direction:column;gap:5px;margin:6px 0}
-.evopt{text-align:left;border:1px solid var(--border);background:#fff;border-radius:6px;
-	padding:10px 12px;font:inherit;font-size:15px;cursor:pointer;color:var(--text)}
-.evopt em{font-style:normal;color:var(--muted);font-size:13px}
-.evopt:hover{background:var(--chip)}
-.evopt.on{border-color:var(--gasf-accent);background:var(--chip);box-shadow:inset 0 0 0 1px var(--gasf-accent);font-weight:600}
-.evopt.evfree{border-style:dashed;color:var(--muted)}
-.evnote{margin-top:2px}
-.f-evsearch{margin:6px 0}
-select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'><path d='M1 1l5 5 5-5' fill='none' stroke='%236b6b6b' stroke-width='2'/></svg>");
-	background-repeat:no-repeat;background-position:right 12px center;background-size:12px;padding-right:34px}
-/* Tap target for the full-size view — the answer to "who is in it" is rarely
-   visible in a thumbnail. */
-.photo .thumb{position:relative;display:block;text-decoration:none}
-.photo .thumb .zoom{position:absolute;left:0;right:0;bottom:0;background:rgba(0,0,0,.55);color:#fff;
-	font-size:12px;text-align:center;padding:5px 4px}
-.photo .thumb:hover .zoom{background:rgba(0,0,0,.72)}
-/* :has() is unsupported on older Android browsers, where the radio dot alone
-   still shows the selection — degraded, never broken. */
-.addp{background:none;border:1px dashed var(--border);color:var(--ink);border-radius:6px;padding:8px 14px;font:inherit;font-size:14px;cursor:pointer}
-.addp:hover{background:var(--chip)}
-.photo{display:flex;gap:0;align-items:flex-start}
-.photo .thumb{flex:0 0 190px;background:var(--chip);align-self:stretch;display:flex;align-items:center;justify-content:center}
-.photo .thumb img{width:100%;height:100%;max-height:260px;object-fit:cover;display:block}
-.photo .fields{flex:1 1 auto;min-width:0}
-@media(max-width:620px){
-	.photo{display:block}
-	.photo .thumb{width:100%;flex:none}
-	.photo .thumb img{max-height:220px}
+.psug{
+	position:absolute; top:calc(100% + 3px); left:0; right:0; z-index:40;
+	background:var(--card); border:1px solid var(--rule); border-radius:var(--r);
+	box-shadow:0 18px 36px -14px var(--shadow);
+	max-height:250px; overflow:auto;
 }
-.btn{background:var(--ink);color:#fff;border:0;border-radius:6px;padding:14px 22px;font:inherit;font-size:16px;font-weight:600;cursor:pointer;width:100%}
-.btn:hover{filter:brightness(.9)}
-.submit .muted{margin:12px 0 0}
-/* Permission. Given room rather than shrunk — a box somebody has to tick is
-   the last place to make the type small. */
-.consent h3{margin:0 0 10px;font-size:17px}
-.cbox{display:flex;gap:12px;align-items:flex-start;line-height:1.5;cursor:pointer}
-.cbox input{width:24px;height:24px;flex:0 0 auto;margin-top:2px;accent-color:var(--gasf-accent,#c8a13a)}
-.muted{color:var(--muted);font-size:14px}
-.note{background:#fdf8e7;border-left:4px solid #dba617;border-radius:6px;padding:12px 14px;margin:0 0 16px;font-size:14px}
-.foot{text-align:center;color:var(--muted);font-size:13px;margin:26px 0 0}
+@media (prefers-reduced-motion:no-preference){ .psug{animation:slip .14s ease-out} }
+@keyframes slip{from{opacity:0;transform:translateY(-4px)}}
+.psugi{
+	display:flex; justify-content:space-between; align-items:center; gap:12px;
+	width:100%; min-height:46px; padding:13px 14px; text-align:left;
+	font:400 1rem/1.3 var(--body); color:var(--ink);
+	background:none; border:0; border-bottom:1px solid var(--rule-2);
+	cursor:pointer;
+}
+.psugi:last-child{border-bottom:0}
+.psugi.on,.psugi:hover{background:var(--stamp-wash);color:var(--stamp)}
+.psugn{
+	flex:0 0 auto;
+	font:700 .64rem/1 var(--slug); letter-spacing:.1em; color:var(--ink-2);
+}
+
+/* ---- permission ---- */
+/* Given room rather than shrunk — a box somebody has to tick is the last place
+   to make the type small. */
+.consent{border-left:3px solid var(--stamp)}
+.consent h3{color:var(--stamp)}
+.consent h3::after{background:var(--stamp-ring)}
+.cbox{
+	display:flex; gap:14px; align-items:flex-start; padding:15px;
+	line-height:1.55; cursor:pointer;
+	background:var(--field); border:1px solid var(--rule-2); border-radius:var(--r);
+	transition:border-color .15s;
+}
+.cbox:hover{border-color:var(--rule)}
+.cbox input{width:23px;height:23px;flex:0 0 auto;margin:2px 0 0;accent-color:var(--stamp)}
+
+.btn{
+	display:block; width:100%; padding:17px 24px;
+	font:700 .8rem/1 var(--slug); text-transform:uppercase; letter-spacing:.2em;
+	color:var(--card); background:var(--ink);
+	border:0; border-radius:var(--r); cursor:pointer;
+	box-shadow:0 10px 22px -12px var(--shadow);
+	transition:background-color .18s,transform .08s,box-shadow .18s;
+}
+.btn:hover{background:var(--stamp)}
+.btn:active{transform:translateY(1px);box-shadow:0 5px 12px -9px var(--shadow)}
+.submit .muted{margin:14px 0 0}
+
+.note{
+	margin:0 0 22px; padding:14px 16px; font-size:.98rem;
+	background:var(--gold-wash); border:1px solid var(--rule);
+	border-left:3px solid var(--gold); border-radius:var(--r);
+}
+
+.foot{
+	margin:36px 0 0; padding-top:22px; text-align:center;
+	font:400 .68rem/1.5 var(--slug); text-transform:uppercase; letter-spacing:.22em;
+	color:var(--ink-2); border-top:1px solid var(--rule);
+}
+
+@media(max-width:640px){
+	.pad{padding:20px 18px}
+	.photo{display:block}
+	/* No sticky on a phone: a pinned mount would eat a third of the screen the
+	   keyboard has not already taken. */
+	.photo .thumb{position:relative;top:auto;width:100%;flex:none;padding:18px 18px 32px}
+	.photo .thumb img{aspect-ratio:16/10;max-height:230px}
+	.photo .fields{border-left:0}
+	.photo .fields::before{top:8px;right:16px;font-size:2.8rem}
+	.photo .fields h3{padding-right:52px}
+}
 </style>
 	<?php
 }
