@@ -2677,9 +2677,7 @@ function gasf_crm_render_inbox() {
 				};
 				row.querySelector('.pdel').onclick = function(){
 					var nm = v('.pname');
-					if (!confirm('Remove the place “' + nm + '”?
-
-Photos tagged with it keep everything else and simply lose this place. Anything nested inside it moves up a level rather than being deleted.')) { return; }
+					if (!confirm('Remove the place “' + nm + '”?\n\nPhotos tagged with it keep everything else and simply lose this place. Anything nested inside it moves up a level rather than being deleted.')) { return; }
 					place('delete', { term: id });
 				};
 			});
@@ -3008,9 +3006,7 @@ Photos tagged with it keep everything else and simply lose this place. Anything 
 		edit.querySelector('.c-refuse').onclick = function(){ send('refuse'); };
 		var clr = edit.querySelector('.c-clear');
 		if (clr) { clr.onclick = function(){
-			if (confirm('Remove the permission record for this photo?
-
-It goes back to “not on record”.')) { send('clear'); }
+			if (confirm('Remove the permission record for this photo?\n\nIt goes back to “not on record”.')) { send('clear'); }
 		}; }
 		edit.querySelector('.c-cancel').onclick = function(){ lbOpen(p.id, null, p); };
 	}
