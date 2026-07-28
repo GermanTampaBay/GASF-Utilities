@@ -211,6 +211,31 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 		// covers the ones already there, and is safe to re-run.
 		global $wpdb;
 		$wpdb->query( "UPDATE " . gasf_crm_table( 'threads' ) . " SET stream = 'general' WHERE stream = '' OR stream IS NULL" ); // phpcs:ignore
+		$wpdb->query( "UPDATE " . gasf_crm_table( 'contacts' ) . " SET stream = 'general' WHERE stream = '' OR stream IS NULL" ); // phpcs:ignore
+
+		/*
+		 * Retire the old global unique keys.
+		 *
+		 * dbDelta adds indexes and never removes them, so the single-column
+		 * UNIQUE(conversation_id) and UNIQUE(email) survive alongside their
+		 * stream-scoped replacements — and being the stricter of the two, they
+		 * are the ones that would still be enforced. The same conversation
+		 * arriving at two mailboxes, or the same person writing to both, would
+		 * keep failing to insert.
+		 *
+		 * Dropped by name and only when present, so this is safe to re-run and
+		 * harmless on a fresh install that never had them.
+		 */
+		foreach ( array(
+			gasf_crm_table( 'threads' )  => 'conversation_id',
+			gasf_crm_table( 'contacts' ) => 'email',
+		) as $table => $index ) {
+			$has = $wpdb->get_var( $wpdb->prepare( "SHOW INDEX FROM {$table} WHERE Key_name = %s", $index ) ); // phpcs:ignore
+			if ( $has ) {
+				$wpdb->query( "ALTER TABLE {$table} DROP INDEX `{$index}`" ); // phpcs:ignore
+				gasf_mec_log( 'CRM: dropped legacy global unique index ' . $index . ' on ' . $table );
+			}
+		}
 
 		flush_rewrite_rules( false );
 		update_option( 'gasf_crm_schema', GASF_CRM_SCHEMA, false );

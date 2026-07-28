@@ -71,6 +71,80 @@ define( 'GASF_CRM_PHOTO_MAX_PER_MESSAGE', 30 );
 define( 'GASF_CRM_PHOTO_REVIEW_DIR', 'gasf-photo-review' );
 
 /**
+ * The private root — OUTSIDE the web server's document root entirely.
+ *
+ * This used to be a folder inside uploads protected by .htaccess. That works
+ * only for as long as Apache reads .htaccess: a move to nginx, a hosting
+ * migration, or a control-panel setting flipping AllowOverride would remove the
+ * protection silently, leaving unreviewed photos publicly served with nothing
+ * anywhere reporting the change.
+ *
+ * A directory the web server has no path to cannot be served by
+ * misconfiguration. The .htaccess is still written as a second line of defence,
+ * but nothing depends on it now.
+ *
+ * ABSPATH's parent is the account home here, above public_html.
+ */
+function gasf_crm_photo_private_root() {
+	// Named for the marker deliberately. During sideload the upload_dir filter
+	// below reports this directory's PARENT as basedir, so WordPress's own
+	// _wp_relative_upload_path() reduces the absolute path to
+	// "gasf-photo-review/name.jpg" — the same prefix everything else tests for.
+	// Without that alignment the path stays absolute and no marker check works.
+	$root = dirname( untrailingslashit( ABSPATH ) ) . '/' . GASF_CRM_PHOTO_REVIEW_DIR;
+	return (string) apply_filters( 'gasf_crm_photo_private_root', $root );
+}
+
+/**
+ * Is this attachment's file in the private root?
+ *
+ * Decided from the stored relative path rather than from the filesystem, so it
+ * stays correct while a file is mid-move and needs no disk access to answer.
+ */
+function gasf_crm_photo_private_rel( $attachment_id ) {
+	$rel = (string) get_post_meta( (int) $attachment_id, '_wp_attached_file', true );
+	return ( 0 === strpos( $rel, GASF_CRM_PHOTO_REVIEW_DIR . '/' ) ) ? $rel : '';
+}
+
+/*
+ * WordPress resolves _wp_attached_file against the uploads basedir, which is
+ * the wrong place for anything we have put outside the webroot. These three
+ * filters keep core able to find, size and delete those files without moving
+ * them back somewhere servable.
+ */
+add_filter( 'get_attached_file', function ( $file, $id ) {
+	$rel = gasf_crm_photo_private_rel( $id );
+	return $rel ? gasf_crm_photo_private_root() . '/' . basename( $rel ) : $file;
+}, 10, 2 );
+
+add_filter( 'wp_get_attachment_url', function ( $url, $id ) {
+	// A private file has no public URL. Returning the uploads path anyway would
+	// hand out a 404 that looks like a broken image rather than a boundary.
+	return gasf_crm_photo_private_rel( $id ) ? '' : $url;
+}, 10, 2 );
+
+add_action( 'delete_attachment', function ( $id ) {
+	$rel = gasf_crm_photo_private_rel( $id );
+	if ( ! $rel ) { return; }
+
+	// Deleted here because core will look under uploads and find nothing —
+	// leaving the actual bytes behind, which for unreviewed submissions is the
+	// one outcome that must not happen quietly.
+	$root = gasf_crm_photo_private_root();
+	$meta = (array) wp_get_attachment_metadata( $id );
+
+	$names = array( basename( $rel ) );
+	if ( ! empty( $meta['original_image'] ) ) { $names[] = $meta['original_image']; }
+	foreach ( (array) ( $meta['sizes'] ?? array() ) as $s ) {
+		if ( ! empty( $s['file'] ) ) { $names[] = $s['file']; }
+	}
+	foreach ( array_unique( $names ) as $n ) {
+		$p = $root . '/' . basename( $n );
+		if ( is_file( $p ) ) { @unlink( $p ); } // phpcs:ignore WordPress.PHP.NoSilencedErrors
+	}
+} );
+
+/**
  * The review directory, created with its refusal in place.
  *
  * The .htaccess is written BEFORE the directory is used, never after, so there
@@ -81,12 +155,15 @@ define( 'GASF_CRM_PHOTO_REVIEW_DIR', 'gasf-photo-review' );
  * @return string|WP_Error absolute path
  */
 function gasf_crm_photo_review_dir() {
-	$up   = wp_upload_dir();
-	$path = trailingslashit( $up['basedir'] ) . GASF_CRM_PHOTO_REVIEW_DIR;
+	$path = gasf_crm_photo_private_root();
 
 	if ( ! is_dir( $path ) && ! wp_mkdir_p( $path ) ) {
 		return new WP_Error( 'gasf_crm_dir', 'Could not create the private review folder.' );
 	}
+
+	// Belt and braces only. The directory is above the document root, so the
+	// web server has no path to it at all — but a future move that puts it back
+	// under public_html should not silently lose the protection too.
 
 	$ht = $path . '/.htaccess';
 	if ( ! file_exists( $ht ) ) {
@@ -129,7 +206,7 @@ function gasf_crm_photo_publish( $attachment_id ) {
 	if ( ! wp_mkdir_p( $up['path'] ) ) { return new WP_Error( 'gasf_crm_pub', 'Could not prepare the uploads folder.' ); }
 
 	$rel  = (string) get_post_meta( $id, '_wp_attached_file', true );
-	$from = trailingslashit( dirname( trailingslashit( wp_upload_dir()['basedir'] ) . $rel ) );
+	$from = trailingslashit( gasf_crm_photo_private_root() );
 	$meta = (array) wp_get_attachment_metadata( $id );
 
 	$names = array( basename( $rel ) );
@@ -178,6 +255,7 @@ function gasf_crm_photo_unpublish( $attachment_id ) {
 	$rel  = (string) get_post_meta( $id, '_wp_attached_file', true );
 	if ( '' === $rel ) { return new WP_Error( 'gasf_crm_unpub', 'No file on that attachment.' ); }
 
+	// Coming FROM public uploads, where the relative path is still meaningful.
 	$base = trailingslashit( wp_upload_dir()['basedir'] );
 	$from = trailingslashit( dirname( $base . $rel ) );
 	$meta = (array) wp_get_attachment_metadata( $id );
@@ -308,10 +386,19 @@ function gasf_crm_photo_approve( array $thread, $graph_message_id, $graph_attach
 	$public = wp_upload_dir();
 	if ( empty( $public['error'] ) ) { $name = wp_unique_filename( $public['path'], $name ); }
 
+	// basedir moves too, not just path. WordPress derives _wp_attached_file by
+	// stripping basedir from the absolute path, and a file outside the real
+	// basedir would otherwise be recorded as an absolute path that no marker
+	// check recognises.
 	$to_review = function ( $dirs ) use ( $review ) {
-		$dirs['path']   = $review;
-		$dirs['subdir'] = '/' . GASF_CRM_PHOTO_REVIEW_DIR;
-		$dirs['url']    = $dirs['baseurl'] . $dirs['subdir'];
+		$dirs['basedir'] = dirname( $review );
+		$dirs['path']    = $review;
+		$dirs['subdir']  = '/' . GASF_CRM_PHOTO_REVIEW_DIR;
+		// No public URL exists for any of this. Pointed at the site root rather
+		// than left as a plausible-looking uploads path, so anything that does
+		// reach for it fails obviously instead of 404ing like a broken image.
+		$dirs['baseurl'] = home_url();
+		$dirs['url']     = home_url();
 		return $dirs;
 	};
 
@@ -619,7 +706,12 @@ function gasf_crm_photo_send_file( $attachment_id, $size ) {
 	if ( 'full' !== $size ) {
 		$img = image_get_intermediate_size( $id, $size );
 		if ( $img && ! empty( $img['path'] ) ) {
-			$file = trailingslashit( wp_upload_dir()['basedir'] ) . $img['path'];
+			// Sizes live beside the original. For a private attachment that is
+			// the private root, not uploads, which is what image_get_intermediate_size
+			// assumes when it builds its relative path.
+			$file = gasf_crm_photo_private_rel( $id )
+				? gasf_crm_photo_private_root() . '/' . basename( $img['path'] )
+				: trailingslashit( wp_upload_dir()['basedir'] ) . $img['path'];
 		}
 	}
 	if ( ! $file || ! file_exists( $file ) ) { status_header( 404 ); exit; }

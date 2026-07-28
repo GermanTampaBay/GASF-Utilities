@@ -40,7 +40,7 @@ function gasf_crm_install_tables() {
 		last_status_change_at DATETIME NULL,
 		notified_at DATETIME NULL,
 		PRIMARY KEY  (id),
-		UNIQUE KEY conversation_id (conversation_id),
+		UNIQUE KEY conv_stream (stream, conversation_id),
 		KEY status_last (status, last_message_at),
 		KEY stream_status (stream, status, last_message_at)
 	) {$charset};" );
@@ -68,8 +68,14 @@ function gasf_crm_install_tables() {
 	// gasf_crm_touch_contact takes any non-blank display name from the From
 	// header. (Kept out of the SQL as a PHP comment — dbDelta parses this
 	// statement line by line and reads a `--` line as a column definition.)
+	// Scoped by stream, like everything else that carries a person's details.
+	// A single global address book means the photo team and the general team
+	// share one list, so "who has written to us" leaks across a boundary the
+	// rest of the system is careful about — and the two mailboxes genuinely do
+	// have different correspondents.
 	dbDelta( "CREATE TABLE " . gasf_crm_table( 'contacts' ) . " (
 		id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+		stream VARCHAR(32) NOT NULL DEFAULT 'general',
 		email VARCHAR(191) NOT NULL,
 		name VARCHAR(191) NULL,
 		name_locked TINYINT(1) NOT NULL DEFAULT 0,
@@ -79,7 +85,7 @@ function gasf_crm_install_tables() {
 		last_seen DATETIME NULL,
 		last_subject TEXT NULL,
 		PRIMARY KEY  (id),
-		UNIQUE KEY email (email),
+		UNIQUE KEY stream_email (stream, email),
 		KEY last_seen (last_seen)
 	) {$charset};" );
 
@@ -108,6 +114,87 @@ function gasf_crm_install_tables() {
 		KEY created_at (created_at),
 		KEY who (user_id, created_at),
 		KEY action_time (action, created_at)
+	) {$charset};" );
+
+	/*
+	 * Photo submissions — one row per message that brought photos in.
+	 *
+	 * State was previously inferred: a boolean on the message, the presence of
+	 * postmeta, and which directory a file happened to sit in. That works until
+	 * something half-finishes, and then nothing can say whether a submission was
+	 * complete, retryable or abandoned — which is exactly what happened when a
+	 * killed run left two photos permanently unreachable.
+	 *
+	 * The sender fields are copies, not lookups. Who sent a submission is a fact
+	 * about the moment it arrived and must not change when somebody else replies
+	 * to the same thread.
+	 *
+	 * revision drives compare-and-swap so two workers cannot both advance a
+	 * submission; next_attempt_at and attempt_count let a failure back off
+	 * instead of occupying every batch forever.
+	 */
+	dbDelta( "CREATE TABLE " . gasf_crm_table( 'photo_submissions' ) . " (
+		id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+		thread_id BIGINT UNSIGNED NOT NULL,
+		stream VARCHAR(32) NOT NULL,
+		graph_message_id VARCHAR(191) NOT NULL,
+		sender_email VARCHAR(191) NOT NULL,
+		sender_name VARCHAR(191) NULL,
+		subject TEXT NULL,
+		state VARCHAR(24) NOT NULL DEFAULT 'pending',
+		revision INT UNSIGNED NOT NULL DEFAULT 0,
+		attempt_count INT UNSIGNED NOT NULL DEFAULT 0,
+		next_attempt_at DATETIME NULL,
+		fail_reason VARCHAR(191) NULL,
+		lease_owner VARCHAR(32) NULL,
+		lease_until DATETIME NULL,
+		created_at DATETIME NOT NULL,
+		updated_at DATETIME NOT NULL,
+		PRIMARY KEY  (id),
+		UNIQUE KEY stream_message (stream, graph_message_id),
+		KEY due (state, next_attempt_at)
+	) {$charset};" );
+
+	/*
+	 * One row per attachment. wp_attachment_id stays 0 until approval — nothing
+	 * unreviewed exists in the Media Library at all now, so there is no window
+	 * in which a public post object points at an unexamined image.
+	 *
+	 * private_path is absolute and outside the webroot. The unique key is what
+	 * makes import idempotent: a retry cannot produce a second copy however many
+	 * workers race, which no amount of check-then-act achieved.
+	 */
+	dbDelta( "CREATE TABLE " . gasf_crm_table( 'photo_items' ) . " (
+		id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+		submission_id BIGINT UNSIGNED NOT NULL,
+		graph_attachment_id VARCHAR(191) NOT NULL,
+		wp_attachment_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+		state VARCHAR(24) NOT NULL DEFAULT 'pending_import',
+		revision INT UNSIGNED NOT NULL DEFAULT 0,
+		private_path TEXT NULL,
+		thumb_path TEXT NULL,
+		filename VARCHAR(191) NULL,
+		mime VARCHAR(64) NULL,
+		bytes BIGINT UNSIGNED NOT NULL DEFAULT 0,
+		exif_json LONGTEXT NULL,
+		pending_json LONGTEXT NULL,
+		created_at DATETIME NOT NULL,
+		updated_at DATETIME NOT NULL,
+		PRIMARY KEY  (id),
+		UNIQUE KEY sub_attachment (submission_id, graph_attachment_id),
+		KEY state (state),
+		KEY wp_attachment (wp_attachment_id)
+	) {$charset};" );
+
+	// Which items an invitation covers. A join table rather than JSON in a
+	// column, so membership is queryable and a token cannot be widened by
+	// editing a blob — and so the wildcard LIKE scan that used to answer
+	// \"which invite covers this photo\" can go.
+	dbDelta( "CREATE TABLE " . gasf_crm_table( 'photo_invite_items' ) . " (
+		invite_id BIGINT UNSIGNED NOT NULL,
+		photo_item_id BIGINT UNSIGNED NOT NULL,
+		PRIMARY KEY  (invite_id, photo_item_id),
+		KEY item (photo_item_id)
 	) {$charset};" );
 
 	// Photo tagging invitations.
@@ -360,16 +447,19 @@ function gasf_crm_log_event( $thread_id, $action, $detail = '', $user_id = null 
  * — "who do we forward things to" versus "who contacts the club" — so they are
  * counted separately rather than merged into one total.
  */
-function gasf_crm_touch_contact( $email, $name = '', $direction = 'in', $subject = '' ) {
+function gasf_crm_touch_contact( $email, $name = '', $direction = 'in', $subject = '', $stream = 'general' ) {
 	global $wpdb;
 
-	$email = sanitize_email( (string) $email );
+	$email  = sanitize_email( (string) $email );
+	$stream = sanitize_key( (string) $stream ) ?: 'general';
 	if ( ! is_email( $email ) ) { return false; }
 
-	// Never file the club's own mailbox. It sits on one end of every single
-	// message, so it would top the address book while being the one entry
-	// nobody would ever want to pick.
-	if ( 0 === strcasecmp( $email, (string) gasf_crm_cfg()['mailbox'] ) ) { return false; }
+	// Never file any of the club's own mailboxes. Each sits on one end of every
+	// message in its stream, so they would top the address book while being the
+	// entries nobody would ever want to pick.
+	foreach ( gasf_crm_streams() as $s ) {
+		if ( '' !== $s['mailbox'] && 0 === strcasecmp( $email, (string) $s['mailbox'] ) ) { return false; }
+	}
 
 	$t   = gasf_crm_table( 'contacts' );
 	$now = current_time( 'mysql', true );
@@ -378,14 +468,14 @@ function gasf_crm_touch_contact( $email, $name = '', $direction = 'in', $subject
 	// One statement, so two volunteers sending at the same moment cannot race a
 	// read-then-write into a lost count or a duplicate-key error.
 	$wpdb->query( $wpdb->prepare(
-		"INSERT INTO {$t} (email, name, {$col}, first_seen, last_seen, last_subject)
-		 VALUES (%s, %s, 1, %s, %s, %s)
+		"INSERT INTO {$t} (stream, email, name, {$col}, first_seen, last_seen, last_subject)
+		 VALUES (%s, %s, %s, 1, %s, %s, %s)
 		 ON DUPLICATE KEY UPDATE
 		   {$col} = {$col} + 1,
 		   last_seen = VALUES(last_seen),
 		   last_subject = VALUES(last_subject),
 		   name = IF(name_locked = 1, name, COALESCE(NULLIF(VALUES(name), ''), name))",
-		$email, $name, $now, $now, $subject
+		$stream, $email, $name, $now, $now, $subject
 	) );
 	return true;
 }
@@ -462,21 +552,38 @@ function gasf_crm_delete_contact( $id ) {
  * Address book, most recently used first — which is the order that makes an
  * autocomplete useful, since the address you want is usually one you used lately.
  */
-function gasf_crm_contacts( $search = '', $limit = 200 ) {
+/**
+ * @param array|null $streams Restrict to these streams. NULL means every
+ *                            stream, which only the admin screen should pass —
+ *                            a volunteer's autocomplete must not reveal who
+ *                            writes to a mailbox they cannot read.
+ */
+function gasf_crm_contacts( $search = '', $limit = 200, $streams = null ) {
 	global $wpdb;
 	$t = gasf_crm_table( 'contacts' );
 
-	if ( '' !== $search ) {
-		$like = '%' . $wpdb->esc_like( $search ) . '%';
-		return $wpdb->get_results( $wpdb->prepare(
-			"SELECT * FROM {$t} WHERE email LIKE %s OR name LIKE %s ORDER BY last_seen DESC LIMIT %d",
-			$like, $like, (int) $limit
-		), ARRAY_A );
+	$where = array();
+	$args  = array();
+
+	if ( is_array( $streams ) ) {
+		if ( ! $streams ) { return array(); } // no streams means nothing, never everything
+		$where[] = 'stream IN (' . implode( ',', array_fill( 0, count( $streams ), '%s' ) ) . ')';
+		$args    = array_merge( $args, array_map( 'strval', $streams ) );
 	}
 
-	return $wpdb->get_results( $wpdb->prepare(
-		"SELECT * FROM {$t} ORDER BY last_seen DESC LIMIT %d", (int) $limit
-	), ARRAY_A );
+	if ( '' !== $search ) {
+		$like    = '%' . $wpdb->esc_like( $search ) . '%';
+		$where[] = '(email LIKE %s OR name LIKE %s)';
+		$args[]  = $like;
+		$args[]  = $like;
+	}
+
+	$sql    = "SELECT * FROM {$t}";
+	if ( $where ) { $sql .= ' WHERE ' . implode( ' AND ', $where ); }
+	$sql   .= ' ORDER BY last_seen DESC LIMIT %d';
+	$args[] = (int) $limit;
+
+	return $wpdb->get_results( $wpdb->prepare( $sql, $args ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL
 }
 
 function gasf_crm_thread_events( $thread_id ) {

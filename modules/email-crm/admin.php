@@ -540,7 +540,9 @@ function gasf_crm_admin_tab() {
 
 	<h3>Address book</h3>
 	<?php
-	$contacts = gasf_crm_contacts( '', 50 );
+	// null = every stream. This screen is administrators only, and the whole
+	// point of it is seeing the club's correspondence as one picture.
+	$contacts = gasf_crm_contacts( '', 50, null );
 	if ( ! $contacts ) {
 		echo '<p class="description">Empty. It fills itself in as mail is received, replied to and forwarded — there is nothing to maintain by hand.</p>';
 	} else {

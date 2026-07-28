@@ -277,7 +277,14 @@ add_action( 'rest_api_init', function () {
 		'methods'             => 'GET',
 		'permission_callback' => $guard,
 		'callback'            => function ( WP_REST_Request $req ) {
-			$rows = gasf_crm_contacts( sanitize_text_field( (string) $req->get_param( 'q' ) ), 200 );
+			// Scoped to what this volunteer may read. The forward box suggesting
+			// an address only ever seen in a mailbox they have no access to
+			// would leak who writes to it, one autocomplete at a time.
+			$rows = gasf_crm_contacts(
+				sanitize_text_field( (string) $req->get_param( 'q' ) ),
+				200,
+				gasf_crm_user_streams()
+			);
 			return array_map( function ( $c ) {
 				return array(
 					'email' => (string) $c['email'],
@@ -418,7 +425,7 @@ function gasf_crm_rest_forward( WP_REST_Request $req ) {
 	}
 
 	foreach ( $to as $addr ) {
-		gasf_crm_touch_contact( $addr, '', 'out', (string) $thread['subject'] );
+		gasf_crm_touch_contact( $addr, '', 'out', (string) $thread['subject'], (string) $thread['stream'] );
 	}
 
 	// Record our own copy, as the reply path does. Three things depend on it:
@@ -581,7 +588,7 @@ function gasf_crm_rest_reply( WP_REST_Request $req ) {
 		'sent_by_user_id'  => $user_id,
 	) );
 
-	gasf_crm_touch_contact( $thread['last_from_addr'], $thread['last_from_name'], 'out', (string) $thread['subject'] );
+	gasf_crm_touch_contact( $thread['last_from_addr'], $thread['last_from_name'], 'out', (string) $thread['subject'], (string) $thread['stream'] );
 	gasf_crm_set_status( $thread_id, 'addressed' );
 	gasf_crm_log_event( $thread_id, 'replied', 'Replied to ' . $thread['last_from_addr'] );
 	gasf_mec_log( 'CRM: thread ' . $thread_id . ' answered by user ' . $user_id );

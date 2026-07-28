@@ -293,7 +293,7 @@ function gasf_crm_ingest( array $m, $direction, $stream = 'general' ) {
 	// re-reads the same messages every run, and counting those would inflate the
 	// address book with phantom traffic.
 	if ( $inserted && 'in' === $direction && $from_addr ) {
-		gasf_crm_touch_contact( $from_addr, $from_name, 'in', (string) ( $m['subject'] ?? '' ) );
+		gasf_crm_touch_contact( $from_addr, $from_name, 'in', (string) ( $m['subject'] ?? '' ), $stream );
 	}
 
 	return array(
