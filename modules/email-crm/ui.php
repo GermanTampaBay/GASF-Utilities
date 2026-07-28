@@ -589,6 +589,10 @@ input:focus,select:focus,textarea:focus,.edbody:focus{
 	font-family:var(--slug);letter-spacing:.03em;
 }
 .msg .addr code,.msg .hd,.frombox code,.copy{font-family:var(--slug)}
+/* ...but a person's name is not recorded data, it is a person. The typed
+   register is for the timestamp and the address beside it, never for the
+   human who sent the message. */
+.msg .hd b{font-family:var(--body);font-size:14px;letter-spacing:0}
 .streamtag,.badge,.firsttime{border-radius:2px;font-weight:700;letter-spacing:.06em}
 
 /* The reading pane's own edge, and the notes, keep their meanings and take the
