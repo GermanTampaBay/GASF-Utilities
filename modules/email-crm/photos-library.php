@@ -836,6 +836,131 @@ add_action( 'rest_api_init', function () {
 		},
 	) );
 
+	/*
+	 * Places, managed from HERE rather than from wp-admin.
+	 *
+	 * The taxonomy screen at Media → Places exists and works, and not one photo
+	 * volunteer can open it: they hold a CRM stream, not a WordPress role, so
+	 * manage_categories is false for every one of them. Sending them there is
+	 * sending them to a permission error.
+	 *
+	 * Same rule as everywhere else in this module — a photo volunteer is not a
+	 * WordPress administrator, and the vocabulary they tag with has to be theirs
+	 * to maintain.
+	 */
+	register_rest_route( 'gasf/v1', '/crm/photos/places', array(
+		'methods'             => 'GET',
+		'permission_callback' => $lib_guard,
+		'callback'            => function () {
+			if ( ! function_exists( 'gasf_photo_place_tree' ) ) { return array( 'places' => array() ); }
+			$out = array();
+			foreach ( gasf_photo_place_tree( 0 ) as $r ) {
+				$t = $r['term'];
+				$out[] = array(
+					'id'     => (int) $t->term_id,
+					'name'   => $t->name,
+					'label'  => function_exists( 'gasf_photo_label' ) ? gasf_photo_label( $t->name ) : $t->name,
+					'parent' => (int) $t->parent,
+					'depth'  => (int) $r['depth'],
+					'photos' => (int) $t->count,
+					'lat'    => (string) get_term_meta( $t->term_id, 'gasf_lat', true ),
+					'lon'    => (string) get_term_meta( $t->term_id, 'gasf_lon', true ),
+					'radius' => (string) get_term_meta( $t->term_id, 'gasf_radius', true ),
+					'home'   => function_exists( 'gasf_photo_home_place' ) && (int) gasf_photo_home_place() === (int) $t->term_id,
+				);
+			}
+			return array( 'places' => $out, 'defaultRadius' => defined( 'GASF_PHOTO_DEFAULT_RADIUS_M' ) ? GASF_PHOTO_DEFAULT_RADIUS_M : 150 );
+		},
+	) );
+
+	register_rest_route( 'gasf/v1', '/crm/photos/place', array(
+		'methods'             => 'POST',
+		'permission_callback' => $lib_guard,
+		'callback'            => function ( WP_REST_Request $req ) {
+			if ( ! gasf_crm_photos_available() ) {
+				return new WP_Error( 'gasf_crm_nocatalog', 'The Photo Catalogue module is switched off.', array( 'status' => 503 ) );
+			}
+
+			$action = (string) $req->get_param( 'action' );
+			$tid    = (int) $req->get_param( 'term' );
+			$term   = $tid ? get_term( $tid, 'gasf_photo_place' ) : null;
+			$name   = trim( sanitize_text_field( (string) $req->get_param( 'name' ) ) );
+			$parent = (int) $req->get_param( 'parent' );
+
+			if ( 'add' === $action ) {
+				if ( '' === $name ) { return new WP_Error( 'gasf_crm_bad', 'A name is needed.', array( 'status' => 400 ) ); }
+				$r = wp_insert_term( $name, 'gasf_photo_place', array( 'parent' => $parent ) );
+				if ( is_wp_error( $r ) ) {
+					return new WP_Error( 'gasf_crm_bad',
+						'term_exists' === $r->get_error_code() ? 'There is already a place with that name.' : $r->get_error_message(),
+						array( 'status' => 409 ) );
+				}
+				$term = get_term( $r['term_id'], 'gasf_photo_place' );
+				gasf_mec_log( sprintf( 'Photo places: added "%s"%s — user %d', $name,
+					$parent ? ' under ' . get_term( $parent, 'gasf_photo_place' )->name : '', get_current_user_id() ) );
+				return array( 'ok' => true, 'term' => (int) $term->term_id, 'name' => $term->name );
+			}
+
+			if ( ! $term || is_wp_error( $term ) ) {
+				return new WP_Error( 'gasf_crm_404', 'No such place.', array( 'status' => 404 ) );
+			}
+
+			if ( 'save' === $action ) {
+				// A place cannot be moved inside itself. WordPress guards this
+				// but silently drops the parent, which reads as "the move did
+				// nothing" and invites a second try.
+				if ( $parent && ( $parent === (int) $term->term_id
+					|| in_array( (int) $term->term_id, array_map( 'intval', (array) get_ancestors( $parent, 'gasf_photo_place', 'taxonomy' ) ), true ) ) ) {
+					return new WP_Error( 'gasf_crm_bad', 'A place cannot sit inside itself.', array( 'status' => 400 ) );
+				}
+
+				$up = array( 'parent' => $parent );
+				if ( '' !== $name && $name !== $term->name ) {
+					$up['name'] = $name;
+					$up['slug'] = sanitize_title( gasf_photo_translit( $name ) );
+				}
+				$r = wp_update_term( (int) $term->term_id, 'gasf_photo_place', $up );
+				if ( is_wp_error( $r ) ) { return new WP_Error( 'gasf_crm_bad', $r->get_error_message(), array( 'status' => 409 ) ); }
+
+				/*
+				 * Coordinates are optional and usually WRONG on a room. Consumer
+				 * GPS is 20–50 m out and far worse under a roof, so a fence
+				 * around the Bierstube would catch the Main Hall as well. The
+				 * building carries the coordinates; the room is chosen by a
+				 * person. Blank clears them, which is how a mistake is undone.
+				 */
+				foreach ( array( 'gasf_lat' => 'lat', 'gasf_lon' => 'lon', 'gasf_radius' => 'radius' ) as $meta => $field ) {
+					$v = trim( (string) $req->get_param( $field ) );
+					if ( '' === $v ) { delete_term_meta( (int) $term->term_id, $meta ); continue; }
+					update_term_meta( (int) $term->term_id, $meta, 'gasf_radius' === $meta ? (int) $v : (float) $v );
+				}
+
+				gasf_mec_log( sprintf( 'Photo places: saved "%s" — user %d', $name ?: $term->name, get_current_user_id() ) );
+				$term = get_term( (int) $term->term_id, 'gasf_photo_place' );
+				return array( 'ok' => true, 'term' => (int) $term->term_id, 'name' => $term->name );
+			}
+
+			if ( 'delete' === $action ) {
+				// Children are lifted to this place's own parent, not deleted
+				// with it: losing the Bierhaus because somebody tidied away the
+				// Biergarten is a surprise nobody asked for.
+				$kids = get_terms( array( 'taxonomy' => 'gasf_photo_place', 'hide_empty' => false, 'parent' => (int) $term->term_id ) );
+				$kids = is_wp_error( $kids ) ? array() : $kids;
+				foreach ( $kids as $k ) {
+					wp_update_term( (int) $k->term_id, 'gasf_photo_place', array( 'parent' => (int) $term->parent ) );
+				}
+				$n = (int) $term->count;
+				$nm = $term->name;
+				wp_delete_term( (int) $term->term_id, 'gasf_photo_place' );
+				gasf_mec_log( sprintf( 'Photo places: deleted "%s" (was on %d photo(s); %d child place(s) moved up) — user %d',
+					$nm, $n, count( $kids ), get_current_user_id() ) );
+				return array( 'ok' => true, 'deleted' => $nm, 'photos' => $n, 'moved' => count( $kids ) );
+			}
+
+			return new WP_Error( 'gasf_crm_bad', 'Unknown action.', array( 'status' => 400 ) );
+		},
+	) );
+
 	register_rest_route( 'gasf/v1', '/crm/photos/consent', array(
 		'methods'             => 'POST',
 		'permission_callback' => $lib_guard,

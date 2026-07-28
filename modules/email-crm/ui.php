@@ -376,6 +376,20 @@ textarea{width:100%;min-height:150px;padding:10px;border:1px solid var(--gasf-bo
 .nrow .nct{color:var(--gasf-muted);font-size:11px;flex:0 0 auto}
 .nrow button{font-size:12px;padding:4px 8px}
 .nmsg{font-size:12px;margin:6px 0 0}
+/* Places. The indent IS the information — it is what says the Bierhaus is
+   inside the Biergarten — so it survives on a phone rather than collapsing. */
+.prow2{display:flex;gap:6px;align-items:center;flex-wrap:wrap;border:1px solid var(--gasf-border);
+	border-radius:4px;padding:6px 8px;margin-bottom:6px}
+.prow2 input[type=text]{flex:1 1 150px;min-width:0}
+.prow2 input,.prow2 select{padding:5px 7px;border:1px solid var(--gasf-border);border-radius:4px;
+	font:inherit;font-size:13px;background:var(--gasf-surface);color:var(--gasf-text)}
+.prow2 .pgeo2{width:96px}
+.prow2 .prad{width:74px}
+.prow2 .pct{color:var(--gasf-muted);font-size:11px}
+.prow2 button{font-size:12px;padding:4px 8px}
+.prow2 .pdel{color:#b02d2e}
+.pnew{border-top:1px solid var(--gasf-border);margin-top:12px;padding-top:12px}
+.phome{background:var(--s-tint);font-size:10px;padding:1px 5px;border-radius:3px;font-weight:600}
 .addp{background:none;border:0;padding:2px 0;margin:4px 0 0;font:inherit;font-size:12px;color:var(--s-accent);cursor:pointer}
 .addp:hover{text-decoration:underline}
 .prow{display:flex;gap:8px;flex-wrap:wrap}
@@ -867,6 +881,7 @@ function gasf_crm_render_inbox() {
 			<label class="lf"><span>Year</span><select id="lyear"><option value="">Any</option></select></label>
 			<button class="btn sec" id="lclear" type="button">Clear</button>
 			<button class="btn sec" id="lnames" type="button">Fix names</button>
+			<button class="btn sec" id="lplaces" type="button">Places</button>
 		</div>
 	</div>
 
@@ -885,6 +900,30 @@ function gasf_crm_render_inbox() {
 		<h3 style="margin:0 0 4px">Names in the collection</h3>
 		<p class="muted" style="margin:0 0 10px">Correct a spelling and it changes on every photo at once. If the same person is in here twice, merge them &mdash; both sets of photos are kept.</p>
 		<div id="lnameslist" class="nameslist"><span class="muted">Loading&hellip;</span></div>
+	</div>
+
+	<?php
+	/*
+	 * Places live here, not in wp-admin.
+	 *
+	 * Media → Places works, and no photo volunteer can open it — they hold a CRM
+	 * stream, not a WordPress role. The people who tag the photos have to be able
+	 * to maintain the vocabulary they tag with.
+	 */
+	?>
+	<div class="card pad lplacespanel" id="lplacespanel" hidden>
+		<h3 style="margin:0 0 4px">Places</h3>
+		<p class="muted" style="margin:0 0 10px">Where photos were taken. Places nest &mdash; the Bierhaus sits inside the Biergarten, which sits inside the Society &mdash; and filtering by the outer one finds everything within it.</p>
+		<div id="lplaceslist"><span class="muted">Loading&hellip;</span></div>
+		<div class="pnew">
+			<strong>Add a place</strong>
+			<div class="prow" style="margin-top:6px">
+				<label class="pf"><span>Name</span><input type="text" id="pnewname" maxlength="120" placeholder="Bierhaus"></label>
+				<label class="pf"><span>Inside</span><select id="pnewparent"></select></label>
+				<button class="btn" id="pnewgo" type="button">Add</button>
+			</div>
+			<span class="p-msg muted" id="pnewmsg"></span>
+		</div>
 	</div>
 
 	<div class="card pad libbar" id="libbar" hidden>
@@ -2629,6 +2668,108 @@ function gasf_crm_render_inbox() {
 				};
 			});
 		});
+	}
+
+	/* ===================== places =====================
+	 *
+	 * Add, rename, re-nest, geofence, remove. The indent carries the meaning —
+	 * it is what says the Bierhaus is inside the Biergarten — so it is drawn
+	 * rather than implied by ordering alone.
+	 */
+	var lplacesBtn = document.getElementById('lplaces');
+	if (lplacesBtn) {
+		lplacesBtn.onclick = function(){
+			var panel = document.getElementById('lplacespanel');
+			panel.hidden = !panel.hidden;
+			if (!panel.hidden) { paintPlaces(); }
+		};
+	}
+
+	function paintPlaces(){
+		var box = document.getElementById('lplaceslist');
+		return api('/photos/places').then(function(r){
+			var list = r.places || [];
+
+			// "Inside" options, offered everywhere a parent is chosen.
+			var opts = function(sel, skip){
+				return '<option value="0">— top level —</option>' + list.map(function(p){
+					if (skip && (p.id === skip.id || skip.desc.indexOf(p.id) !== -1)) { return ''; }
+					return '<option value="' + p.id + '"' + (sel === p.id ? ' selected' : '') + '>' +
+						'    '.repeat(p.depth) + esc(p.label) + '</option>';
+				}).join('');
+			};
+			// Descendants, so a place is never offered as its own container.
+			var descOf = function(id){
+				var out = [], stack = [id];
+				while (stack.length) {
+					var cur = stack.pop();
+					list.forEach(function(p){ if (p.parent === cur) { out.push(p.id); stack.push(p.id); } });
+				}
+				return out;
+			};
+
+			box.innerHTML = list.map(function(p){
+				var skip = { id: p.id, desc: descOf(p.id) };
+				return '<div class="prow2" data-id="' + p.id + '" style="margin-left:' + (p.depth * 18) + 'px">' +
+					'<input type="text" class="pname" value="' + esc(p.label) + '" aria-label="Place name">' +
+					'<select class="pparent" aria-label="Inside">' + opts(p.parent, skip) + '</select>' +
+					'<input type="text" class="pgeo2 plat" value="' + esc(p.lat) + '" placeholder="lat" aria-label="Latitude">' +
+					'<input type="text" class="pgeo2 plon" value="' + esc(p.lon) + '" placeholder="lon" aria-label="Longitude">' +
+					'<input type="number" class="prad" value="' + esc(p.radius) + '" placeholder="' + r.defaultRadius + '" aria-label="Radius in metres">' +
+					'<span class="pct">' + p.photos + ' photo' + (p.photos === 1 ? '' : 's') + '</span>' +
+					(p.home ? '<span class="phome">home</span>' : '') +
+					'<button class="btn sec psave" type="button">Save</button>' +
+					'<button class="btn sec pdel" type="button">Remove</button>' +
+					'</div>';
+			}).join('');
+
+			document.getElementById('pnewparent').innerHTML = opts(0, null);
+
+			Array.prototype.forEach.call(box.querySelectorAll('.prow2'), function(row){
+				var id = parseInt(row.dataset.id, 10);
+				var v  = function(sel){ return row.querySelector(sel).value.trim(); };
+
+				row.querySelector('.psave').onclick = function(){
+					place('save', { term: id, name: v('.pname'), parent: parseInt(v('.pparent'), 10) || 0,
+					                lat: v('.plat'), lon: v('.plon'), radius: v('.prad') });
+				};
+				row.querySelector('.pdel').onclick = function(){
+					var nm = v('.pname');
+					if (!confirm('Remove the place “' + nm + '”?
+
+Photos tagged with it keep everything else and simply lose this place. Anything nested inside it moves up a level rather than being deleted.')) { return; }
+					place('delete', { term: id });
+				};
+			});
+		}).catch(function(e){ box.innerHTML = '<span class="note err">' + esc(e.message) + '</span>'; });
+	}
+
+	var pnewgo = document.getElementById('pnewgo');
+	if (pnewgo) {
+		pnewgo.onclick = function(){
+			var nm = document.getElementById('pnewname').value.trim();
+			if (!nm) { document.getElementById('pnewmsg').textContent = 'A name is needed.'; return; }
+			place('add', { name: nm, parent: parseInt(document.getElementById('pnewparent').value, 10) || 0 });
+		};
+	}
+
+	function place(action, args){
+		var msg = document.getElementById('pnewmsg');
+		msg.textContent = '';
+		args.action = action;
+		return api('/photos/place', { method:'POST', body: JSON.stringify(args) })
+			.then(function(r){
+				if (action === 'add') { document.getElementById('pnewname').value = ''; }
+				if (r.deleted) {
+					msg.textContent = 'Removed “' + r.deleted + '”' +
+						(r.photos ? ' — ' + r.photos + ' photo(s) lost that tag' : '') +
+						(r.moved ? ', ' + r.moved + ' moved up a level' : '') + '.';
+				}
+				paintPlaces();
+				// The pickers and the filter bar both read this vocabulary.
+				loadLib();
+			})
+			.catch(function(e){ msg.textContent = e.message; });
 	}
 
 	function person(action, name, into){
