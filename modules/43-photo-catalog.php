@@ -754,11 +754,16 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 
 		$terms = array();
 		foreach ( array( 'person' => 'gasf_photo_person', 'place' => 'gasf_photo_place', 'event' => 'gasf_photo_event' ) as $k => $tax ) {
-			$t = wp_get_object_terms( $id, $tax, array( 'fields' => 'names' ) );
+			// get_the_terms, so a caller that primed the term cache for a whole
+			// page — the library grid does — gets array lookups rather than three
+			// more queries per photo. wp_get_object_terms would ignore that cache
+			// and go to the database first.
+			$o = get_the_terms( $id, $tax );
+			$t = ( ! $o || is_wp_error( $o ) ) ? array() : wp_list_pluck( $o, 'name' );
 			// Decoded here because everything downstream of this is display:
 			// panels, the CRM cards, filenames. The taxonomy keeps the stored
 			// form, which is what writes still match against.
-			$terms[ $k ] = is_wp_error( $t ) ? array() : array_map( 'gasf_photo_label', $t );
+			$terms[ $k ] = array_map( 'gasf_photo_label', $t );
 		}
 
 		$guess = (int) get_post_meta( $id, '_gasf_photo_place_guess', true );
