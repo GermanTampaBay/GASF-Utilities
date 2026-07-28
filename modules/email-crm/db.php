@@ -125,6 +125,8 @@ function gasf_crm_install_tables() {
 		id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
 		token_hash CHAR(64) NOT NULL,
 		thread_id BIGINT UNSIGNED NOT NULL,
+		stream VARCHAR(32) NOT NULL DEFAULT '',
+		graph_message_id TEXT NULL,
 		email VARCHAR(191) NOT NULL,
 		name VARCHAR(191) NULL,
 		attachment_ids TEXT NOT NULL,

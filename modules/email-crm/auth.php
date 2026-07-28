@@ -340,6 +340,20 @@ function gasf_crm_find_or_create_user( $provider, array $claims ) {
 	update_user_meta( $user_id, 'gasf_crm_avatar', gasf_crm_avatar_url( $provider, $claims ) );
 	update_user_meta( $user_id, 'gasf_crm_status', 'pending' );
 
+	// Zero streams, recorded as a DECISION rather than left blank.
+	//
+	// gasf_crm_user_streams() reads an empty grant with no streams_set flag as a
+	// pre-streams account and hands it the general inbox, so accounts made
+	// before streams existed keep working. A brand-new account is not that — and
+	// without this it would inherit the club's general mail the moment somebody
+	// approved it. Approval says "this is a real person"; it does not say "and
+	// they may read everything".
+	//
+	// Written at creation, so no window exists in which approving grants more
+	// than the approver chose.
+	update_user_meta( $user_id, 'gasf_crm_streams', array() );
+	update_user_meta( $user_id, 'gasf_crm_streams_set', 1 );
+
 	gasf_mec_log( 'CRM auth: new pending account ' . $login . ' (' . $email . ') via ' . $provider );
 	gasf_crm_auth_log( 'account', 'ok', array(
 		'user_id'  => (int) $user_id,

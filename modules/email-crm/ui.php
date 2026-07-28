@@ -1244,7 +1244,10 @@ function gasf_crm_render_inbox() {
 			s += '<p class="pgeo">Camera put this at <strong>' + esc(p.guess) + '</strong>' +
 				(p.alts && p.alts.length ? ' (also inside ' + esc(p.alts.join(', ')) + ')' : '') + '.</p>';
 		}
-		return s + '<div class="actions"><button class="btn p-ok">Add these tags</button>' +
+		// The revision the volunteer is actually looking at, sent back with the
+		// decision so a stale screen is refused rather than obeyed.
+		return s + '<input type="hidden" class="p-rev" value="' + esc(p.revision != null ? p.revision : '') + '">' +
+			'<div class="actions"><button class="btn p-ok">Add these tags</button>' +
 			'<span class="p-msg muted"></span></div>';
 	}
 
@@ -1380,7 +1383,8 @@ function gasf_crm_render_inbox() {
 					// Set only when the occasion was picked from the calendar, so
 					// a hand-typed name never claims to be a specific event.
 					event_id: parseInt(v('.p-evid'), 10) || 0,
-					taken: v('.p-taken'), caption: v('.p-caption')
+					taken: v('.p-taken'), caption: v('.p-caption'),
+					revision: v('.p-rev')
 				})}).then(function(){ open(id); })
 				  .catch(function(e){ ok.disabled = false; msg.textContent = e.message; });
 			};
@@ -1759,7 +1763,8 @@ function gasf_crm_render_inbox() {
 					people: v('.p-people').split(',').map(function(s){ return s.trim(); }).filter(Boolean),
 					place: placeValue(ppane), event: v('.p-event'),
 					event_id: parseInt(v('.p-evid'), 10) || 0,
-					taken: v('.p-taken'), caption: v('.p-caption')
+					taken: v('.p-taken'), caption: v('.p-caption'),
+					revision: v('.p-rev')
 				})}).then(function(){ loadPhotos(); openPhoto(id); })
 				  .catch(function(e){ ok.disabled = false; msg.textContent = e.message; });
 			};

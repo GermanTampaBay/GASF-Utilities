@@ -213,6 +213,44 @@ function gasf_crm_photo_unpublish( $attachment_id ) {
  * ================================================================== */
 
 /**
+ * Who sent a given message — read from THAT message, never from the thread.
+ *
+ * thread.last_from_* is whoever wrote most recently, which on a live thread is
+ * routinely somebody else: a second person joining in, a bounce, or the club's
+ * own reply. Binding a photo's provenance or an invitation to it means the
+ * record can name the wrong person and the "tell us about your photos" link can
+ * be emailed to somebody who never sent any.
+ *
+ * @return array{email:string,name:string}|WP_Error
+ */
+function gasf_crm_photo_message_sender( $graph_message_id ) {
+	global $wpdb;
+
+	$row = $wpdb->get_row( $wpdb->prepare(
+		'SELECT from_addr, from_name, direction FROM ' . gasf_crm_table( 'messages' ) . '
+		  WHERE graph_message_id = %s LIMIT 1',
+		(string) $graph_message_id
+	), ARRAY_A );
+
+	if ( ! $row ) {
+		return new WP_Error( 'gasf_crm_nosender', 'No record of the message these photos came on.' );
+	}
+	// Outbound would mean addressing the club's own reply, which is never right.
+	if ( 'in' !== $row['direction'] ) {
+		return new WP_Error( 'gasf_crm_nosender', 'That message was sent by the club, not to it.' );
+	}
+
+	$email = sanitize_email( (string) $row['from_addr'] );
+	if ( ! is_email( $email ) ) {
+		// Refused rather than falling back to the thread. A wrong address here
+		// emails a stranger about photos they did not send.
+		return new WP_Error( 'gasf_crm_nosender', 'That message has no usable sender address.' );
+	}
+
+	return array( 'email' => $email, 'name' => sanitize_text_field( (string) $row['from_name'] ) );
+}
+
+/**
  * Copy one inbound image into the Media Library.
  *
  * The file is fetched to a temp path and sideloaded, rather than written into
@@ -224,6 +262,13 @@ function gasf_crm_photo_unpublish( $attachment_id ) {
  */
 function gasf_crm_photo_approve( array $thread, $graph_message_id, $graph_attachment_id ) {
 	$stream = (string) $thread['stream'];
+
+	// Resolved before anything is downloaded. A photo whose sender cannot be
+	// established is not taken in at all — an unattributable image in the club's
+	// collection is worse than a missing one, because nobody can later say
+	// whether there was permission to use it.
+	$sender = gasf_crm_photo_message_sender( $graph_message_id );
+	if ( is_wp_error( $sender ) ) { return $sender; }
 
 	$meta = gasf_crm_graph_attachment_meta( $graph_message_id, $graph_attachment_id, $stream );
 	if ( is_wp_error( $meta ) ) { return $meta; }
@@ -279,18 +324,22 @@ function gasf_crm_photo_approve( array $thread, $graph_message_id, $graph_attach
 		return $id;
 	}
 
-	// Provenance. Recorded because the question that gets asked about a club
-	// photo two years later is not "what is it" but "where did this come from
-	// and may we use it" — and by then the thread may be long since answered.
+	// Provenance, bound to the message these bytes actually arrived on.
+	//
+	// The question asked about a club photo two years later is not "what is it"
+	// but "who gave us this and may we use it", so the answer must not drift
+	// when somebody else replies to the same thread. Written once and never
+	// rewritten afterwards.
 	update_post_meta( $id, '_gasf_photo_source', array(
 		'thread'      => (int) $thread['id'],
 		'stream'      => $stream,
-		'email'       => (string) $thread['last_from_addr'],
-		'name'        => (string) $thread['last_from_name'],
+		'email'       => $sender['email'],
+		'name'        => $sender['name'],
 		'subject'     => (string) $thread['subject'],
 		'approved_by' => get_current_user_id(),
 		'approved_at' => current_time( 'mysql', true ),
 		'graph_msg'   => (string) $graph_message_id,
+		'graph_att'   => (string) $graph_attachment_id,
 	) );
 
 	// One exact key per Graph attachment, so "have we already got this?" is an
@@ -298,6 +347,12 @@ function gasf_crm_photo_approve( array $thread, $graph_message_id, $graph_attach
 	// the automatic intake happily made a second copy of a photo a volunteer
 	// had already kept by hand.
 	update_post_meta( $id, '_gasf_photo_key', gasf_crm_photo_key( $graph_message_id, $graph_attachment_id ) );
+
+	// Seeded at zero so the row exists before anybody can decide about it.
+	// update_post_meta's compare-and-swap only compares when a row is there —
+	// with none, it adds and ignores the expected value, so two simultaneous
+	// first approvals would both succeed. Writing it here removes that case.
+	update_post_meta( $id, '_gasf_photo_rev', 0 );
 
 	gasf_crm_log_event( (int) $thread['id'], 'photo_approved', $name . ' → media #' . $id );
 
@@ -350,13 +405,27 @@ function gasf_crm_photo_invite_url( $token ) {
  *
  * @return array{id:int,token:string,url:string}|WP_Error
  */
-function gasf_crm_photo_invite_create( $thread_id, $email, $name, array $attachment_ids ) {
+function gasf_crm_photo_invite_create( $thread_id, $email, $name, array $attachment_ids, $stream = '', $graph_message_id = '' ) {
 	global $wpdb;
 
 	$email = sanitize_email( $email );
 	$ids   = array_values( array_unique( array_map( 'intval', $attachment_ids ) ) );
 	if ( ! is_email( $email ) ) { return new WP_Error( 'gasf_crm_bademail', 'That submitter has no usable email address.' ); }
 	if ( ! $ids ) { return new WP_Error( 'gasf_crm_nophotos', 'There are no approved photos on this thread to ask about.' ); }
+
+	// Every photo in one invitation must have come from the same person on the
+	// same message. Otherwise a thread carrying two people's photos would send
+	// one of them a link showing the other's, which is the same disclosure the
+	// stream boundary exists to prevent.
+	foreach ( $ids as $aid ) {
+		$src = get_post_meta( $aid, '_gasf_photo_source', true );
+		if ( ! is_array( $src ) || 0 !== strcasecmp( (string) ( $src['email'] ?? '' ), $email ) ) {
+			return new WP_Error(
+				'gasf_crm_mixed',
+				'Those photos did not all come from the same sender, so no link has been created.'
+			);
+		}
+	}
 
 	// 32 bytes from the CSPRNG. Long enough that guessing is not a strategy,
 	// and hex so it survives every mail client's idea of a clickable URL.
@@ -365,6 +434,11 @@ function gasf_crm_photo_invite_create( $thread_id, $email, $name, array $attachm
 	$ok = $wpdb->insert( gasf_crm_table( 'photo_invites' ), array(
 		'token_hash'     => hash( 'sha256', $token ),
 		'thread_id'      => (int) $thread_id,
+		// Recorded immutably: which mailbox and which message this link was
+		// issued for, so an invitation can always be traced to its origin
+		// without re-deriving it from a thread that has since moved on.
+		'stream'         => substr( (string) $stream, 0, 32 ),
+		'graph_message_id' => (string) $graph_message_id,
 		'email'          => $email,
 		'name'           => sanitize_text_field( (string) $name ),
 		'attachment_ids' => wp_json_encode( $ids ),
@@ -405,6 +479,46 @@ function gasf_crm_photo_invite_by_token( $token ) {
 	// caller supplied it, and the database still holds only the hash.
 	$row['token'] = $token;
 	return $row;
+}
+
+/**
+ * Spend an invitation, atomically.
+ *
+ * The database decides, not the caller. A single UPDATE with the conditions in
+ * its WHERE clause means exactly one request can win however many arrive at
+ * once: the row moves from unsubmitted to submitted or it does not, and the
+ * affected-row count says which happened. Checking first and writing second —
+ * what this used to do — leaves a window between the two in which a second
+ * submission passes the same check.
+ *
+ * Winning also invalidates the siblings. A reminder mints a second live link
+ * for the same photos, and once somebody has answered, the other link must stop
+ * working rather than allow a second, different set of answers later.
+ *
+ * @return bool true if THIS caller consumed it
+ */
+function gasf_crm_photo_invite_consume( $invite ) {
+	global $wpdb;
+
+	$t   = gasf_crm_table( 'photo_invites' );
+	$now = current_time( 'mysql', true );
+
+	$won = (int) $wpdb->query( $wpdb->prepare(
+		"UPDATE {$t} SET submitted_at = %s
+		  WHERE id = %d AND submitted_at IS NULL AND expires_at > %s",
+		$now, (int) $invite['id'], $now
+	) );
+	if ( 1 !== $won ) { return false; }
+
+	// Siblings: same thread, same message, still open. Closed with the same
+	// timestamp so the history reads as one event rather than several.
+	$wpdb->query( $wpdb->prepare(
+		"UPDATE {$t} SET submitted_at = %s
+		  WHERE id <> %d AND thread_id = %d AND submitted_at IS NULL",
+		$now, (int) $invite['id'], (int) $invite['thread_id']
+	) );
+
+	return true;
 }
 
 /** Send the "tell us about these" email, from the mailbox they wrote to. */
@@ -610,6 +724,16 @@ function gasf_crm_photo_save_pending( array $invite ) {
 		return;
 	}
 
+	// Spend the token BEFORE writing anything. Losing this race means somebody
+	// else already answered — most often the same person double-tapping, or
+	// refreshing the page they just submitted — and the honest response is to
+	// thank them, because they did tell us. It is not an error to report at
+	// them; it is simply already done.
+	if ( ! gasf_crm_photo_invite_consume( $invite ) ) {
+		gasf_crm_photo_page( 'thanks', $invite );
+		return;
+	}
+
 	// Everything is per photo now. Six photos emailed together are often one
 	// afternoon, but "often" is not "always" — and recording six different days
 	// as whatever the first one was is worse than recording nothing, because it
@@ -670,14 +794,6 @@ function gasf_crm_photo_save_pending( array $invite ) {
 			'at'       => current_time( 'mysql', true ),
 		) );
 	}
-
-	global $wpdb;
-	$wpdb->update(
-		gasf_crm_table( 'photo_invites' ),
-		array( 'submitted_at' => current_time( 'mysql', true ) ),
-		array( 'id' => (int) $invite['id'] ),
-		array( '%s' ), array( '%d' )
-	);
 
 	gasf_crm_log_event( (int) $invite['thread_id'], 'photo_tagged', $invite['email'] . ' described ' . count( $invite['ids'] ) . ' photo(s)' );
 	gasf_crm_photo_notify_review( $invite, count( $invite['ids'] ) );
@@ -813,7 +929,7 @@ function gasf_crm_photo_autoprocess_run() {
 
 	$in = implode( ',', array_fill( 0, count( $photo_streams ), '%s' ) );
 	$rows = $wpdb->get_results( $wpdb->prepare(
-		'SELECT m.id, m.graph_message_id, m.thread_id
+		'SELECT m.id, m.graph_message_id, m.thread_id, m.from_addr, m.from_name
 		   FROM ' . gasf_crm_table( 'messages' ) . ' m
 		   JOIN ' . gasf_crm_table( 'threads' ) . ' t ON t.id = m.thread_id
 		  WHERE m.direction = \'in\' AND m.has_attachments = 1 AND m.photos_done = 0
@@ -896,11 +1012,21 @@ function gasf_crm_photo_autoprocess_run() {
 		) );
 		if ( $live ) { continue; }
 
+		// Addressed to whoever sent THIS message, not to whoever wrote last.
+		$to_addr = sanitize_email( (string) $row['from_addr'] );
+		$to_name = sanitize_text_field( (string) $row['from_name'] );
+		if ( ! is_email( $to_addr ) ) {
+			gasf_mec_log( 'CRM photos: message ' . (int) $row['id'] . ' has no usable sender — photos kept, no link sent.' );
+			continue;
+		}
+
 		$inv = gasf_crm_photo_invite_create(
 			(int) $thread['id'],
-			(string) $thread['last_from_addr'],
-			(string) $thread['last_from_name'],
-			$kept
+			$to_addr,
+			$to_name,
+			$kept,
+			(string) $thread['stream'],
+			(string) $row['graph_message_id']
 		);
 		if ( is_wp_error( $inv ) ) {
 			gasf_mec_log( 'CRM photos: took in ' . count( $kept ) . ' photo(s) from thread ' . (int) $thread['id']
@@ -910,8 +1036,8 @@ function gasf_crm_photo_autoprocess_run() {
 
 		gasf_crm_photo_invite_send( array(
 			'thread_id' => (int) $thread['id'],
-			'email'     => (string) $thread['last_from_addr'],
-			'name'      => (string) $thread['last_from_name'],
+			'email'     => $to_addr,
+			'name'      => $to_name,
 		), $inv['token'], (string) $thread['stream'] );
 	}
 
@@ -965,7 +1091,13 @@ function gasf_crm_photo_chase() {
 		} ) );
 		if ( ! $ids ) { continue; }
 
-		$fresh = gasf_crm_photo_invite_create( (int) $row['thread_id'], $row['email'], $row['name'], $ids );
+		// The reminder inherits the ORIGINAL invitation's binding — same sender,
+		// same message, same mailbox — rather than re-deriving any of it from a
+		// thread that may have moved on in the two days since.
+		$fresh = gasf_crm_photo_invite_create(
+			(int) $row['thread_id'], $row['email'], $row['name'], $ids,
+			(string) ( $row['stream'] ?? '' ), (string) ( $row['graph_message_id'] ?? '' )
+		);
 		if ( is_wp_error( $fresh ) ) {
 			gasf_mec_log( 'CRM photos: reminder for invite ' . (int) $row['id'] . ' could not be minted — ' . $fresh->get_error_message() );
 			continue;
@@ -1153,11 +1285,52 @@ function gasf_crm_photo_pending_ids() {
  * Volunteers are deliberately created with no role at all, so user_can() would
  * refuse every one of them; holding the photos stream IS the permission.
  */
+/**
+ * The photo's current revision — how many times it has been decided about.
+ *
+ * Handed to the browser with the card and sent back with the decision, so a
+ * volunteer who has been looking at a stale screen can be told rather than
+ * silently overwriting somebody.
+ */
+function gasf_crm_photo_revision( $attachment_id ) {
+	return (int) get_post_meta( (int) $attachment_id, '_gasf_photo_rev', true );
+}
+
 function gasf_crm_photo_confirm( $attachment_id, array $keep ) {
 	$id = (int) $attachment_id;
 	if ( ! $id || 'attachment' !== get_post_type( $id ) ) { return new WP_Error( 'gasf_crm_404', 'No such photo.' ); }
 	if ( ! gasf_crm_user_can_stream( 'photos' ) ) {
 		return new WP_Error( 'gasf_crm_403', 'You do not have access to photo submissions.' );
+	}
+
+	// Compare-and-swap before anything is written.
+	//
+	// update_post_meta with a previous value compiles to UPDATE ... WHERE
+	// meta_value = <expected>, so exactly one of two simultaneous approvals can
+	// move the revision forward. The loser is told, rather than having its
+	// taxonomy writes quietly land on top of the winner's — two volunteers
+	// working the queue at once is the ordinary case, not the exotic one.
+	//
+	// A caller that sends no revision is treated as accepting whatever it finds,
+	// which keeps older clients working; the UI always sends one.
+	$have = gasf_crm_photo_revision( $id );
+	if ( isset( $keep['revision'] ) && '' !== $keep['revision'] ) {
+		$want = (int) $keep['revision'];
+		if ( $want !== $have ) {
+			return new WP_Error(
+				'gasf_crm_stale',
+				'Somebody else has already dealt with this photo. Reload to see where it got to.',
+				array( 'status' => 409 )
+			);
+		}
+	}
+	if ( ! update_post_meta( $id, '_gasf_photo_rev', $have + 1, $have ) ) {
+		// Lost between the read above and here.
+		return new WP_Error(
+			'gasf_crm_stale',
+			'Somebody else was approving this at the same moment. Reload to see where it got to.',
+			array( 'status' => 409 )
+		);
 	}
 
 	$people = array();
@@ -1272,18 +1445,33 @@ add_action( 'rest_api_init', function () {
 			if ( is_wp_error( $thread ) ) { return $thread; }
 
 			$ids = gasf_crm_photo_for_thread( (int) $thread['id'] );
+			if ( ! $ids ) { return new WP_Error( 'gasf_crm_nophotos', 'No photos have been kept from this email.', array( 'status' => 400 ) ); }
+
+			// Addressed from the PHOTOS' own recorded sender, not from whoever
+			// wrote to the thread most recently. On a thread where a second
+			// person has since replied, the thread's address is theirs, and the
+			// link would show them somebody else's photos.
+			$src = get_post_meta( $ids[0], '_gasf_photo_source', true );
+			$to_addr = sanitize_email( (string) ( $src['email'] ?? '' ) );
+			$to_name = sanitize_text_field( (string) ( $src['name'] ?? '' ) );
+			if ( ! is_email( $to_addr ) ) {
+				return new WP_Error( 'gasf_crm_nosender', 'These photos have no recorded sender to ask.', array( 'status' => 409 ) );
+			}
+
 			$inv = gasf_crm_photo_invite_create(
 				(int) $thread['id'],
-				(string) $thread['last_from_addr'],
-				(string) $thread['last_from_name'],
-				$ids
+				$to_addr,
+				$to_name,
+				$ids,
+				(string) $thread['stream'],
+				(string) ( $src['graph_msg'] ?? '' )
 			);
 			if ( is_wp_error( $inv ) ) { return $inv; }
 
 			$sent = gasf_crm_photo_invite_send( array(
 				'thread_id' => (int) $thread['id'],
-				'email'     => (string) $thread['last_from_addr'],
-				'name'      => (string) $thread['last_from_name'],
+				'email'     => $to_addr,
+				'name'      => $to_name,
 			), $inv['token'], (string) $thread['stream'] );
 
 			if ( is_wp_error( $sent ) ) {
@@ -1294,7 +1482,7 @@ add_action( 'rest_api_init', function () {
 				);
 			}
 
-			return array( 'sent' => true, 'to' => (string) $thread['last_from_addr'], 'photos' => count( $ids ) );
+			return array( 'sent' => true, 'to' => $to_addr, 'photos' => count( $ids ) );
 		},
 	) );
 
@@ -1358,6 +1546,7 @@ add_action( 'rest_api_init', function () {
 				'event_id' => (int) $req->get_param( 'event_id' ),
 				'taken'    => (string) $req->get_param( 'taken' ),
 				'caption'  => (string) $req->get_param( 'caption' ),
+				'revision' => $req->get_param( 'revision' ),
 			) );
 			return is_wp_error( $ok ) ? $ok : gasf_crm_photo_card( $aid );
 		},
@@ -1434,6 +1623,7 @@ add_action( 'rest_api_init', function () {
 				'event_id' => (int) $req->get_param( 'event_id' ),
 				'taken'    => (string) $req->get_param( 'taken' ),
 				'caption'  => (string) $req->get_param( 'caption' ),
+				'revision' => $req->get_param( 'revision' ),
 			) );
 			if ( is_wp_error( $ok ) ) { return $ok; }
 
@@ -1496,6 +1686,9 @@ function gasf_crm_photo_card( $attachment_id ) {
 		'events'  => $info['events'] ?? array(),
 		'caption' => $info['caption'] ?? '',
 		'pending'   => is_array( $pending ) ? $pending : null,
+		// Sent out with the card and required back with the decision, so a
+		// volunteer acting on a stale screen is told rather than obeyed.
+		'revision'  => gasf_crm_photo_revision( $id ),
 		'confirmed' => 'confirmed' === $st['state'],
 		'title'     => get_the_title( $id ),
 		'missing'   => $missing,
