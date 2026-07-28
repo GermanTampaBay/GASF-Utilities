@@ -212,6 +212,77 @@ header.bar .hbtn:hover{background:rgba(255,255,255,.26)}
 .card{background:var(--gasf-surface);border:1px solid var(--gasf-border);border-radius:var(--gasf-radius);overflow:hidden}
 .list{max-height:78vh;overflow:auto}
 
+/* Photos are buttons now, not links to a new tab: on a phone the new tab
+   evicted this page, and returning reloaded it into the inbox with everything
+   typed gone. They must not LOOK like buttons. */
+.pthumb,.pbig{display:block;padding:0;border:0;background:none;cursor:zoom-in;width:100%}
+.pthumb:focus-visible,.pbig:focus-visible{outline:3px solid var(--s-accent);outline-offset:2px}
+.pbig img{display:block;max-width:100%;height:auto}
+
+/* ===================== phones =====================
+ *
+ * This is used standing in the Biergarten as much as at a desk, and until now
+ * one breakpoint collapsed the columns and the rest was left to chance: a
+ * five-button header wrapping into the title, a thread list capped at 78vh so
+ * it scrolled inside a page that also scrolled, tap targets built for a mouse,
+ * and 13px inputs — which iOS answers by zooming the page in on focus and
+ * never zooming back out.
+ *
+ * Everything here is inside the query; the desktop layout is untouched. */
+@media(max-width:700px){
+	.wrap{padding:0 10px}
+
+	/* Header stacks: title on one line, actions on the next, scrolling sideways
+	   if they still do not fit rather than making the page wider than the phone. */
+	header.bar{padding:10px 0}
+	header.bar .wrap{display:block}
+	header.bar h1{font-size:17px;margin:0 0 8px}
+	header.bar .wrap>div{display:flex;flex-wrap:nowrap;overflow-x:auto;gap:6px;align-items:center;
+		-webkit-overflow-scrolling:touch;scrollbar-width:none}
+	header.bar .wrap>div::-webkit-scrollbar{display:none}
+	header.bar .hbtn{flex:0 0 auto;margin-right:0}
+
+	/* A list that scrolls inside a page that also scrolls is the most confusing
+	   thing a phone can be handed. Let the page do the scrolling. */
+	.list{max-height:none;overflow:visible}
+	.layout{gap:10px;padding:10px 0}
+
+	/* 44px is the smallest thing a thumb hits reliably. On a screen whose
+	   buttons approve and delete photographs, a miss is not cosmetic. */
+	.btn,.hbtn{min-height:44px;padding:10px 14px}
+	.tabs button,.pstates button{min-height:44px}
+	.tabs{overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+	.tabs::-webkit-scrollbar{display:none}
+	.tabs button{flex:0 0 auto;white-space:nowrap}
+
+	/* 16px, or iOS zooms in on focus and leaves it there. Every input, not just
+	   the obvious ones. */
+	.pf input,.pf select,.pf textarea,.lf input,.lf select,.nrow input,.p-person,
+	input[type=text],input[type=email],input[type=search],input[type=date],select,textarea{font-size:16px}
+
+	.lgrid{grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px}
+	.pgrid{grid-template-columns:repeat(auto-fill,minmax(100px,1fr))}
+	.nameslist{grid-template-columns:1fr}
+	.nmain,.nmerge-row{flex-wrap:wrap}
+	.prow{flex-direction:column;align-items:stretch}
+	.prow .pf{flex:1 1 auto}
+	.lfrow{gap:8px}
+
+	/* Sticky bars eat a short screen. */
+	.libbar{position:static}
+
+	/* Full-bleed viewer, close button where a thumb already is. */
+	.lightbox{padding:10px}
+	.lightbox img{max-height:58vh}
+	.lbedit{width:100%;max-height:74vh;padding:12px}
+	.lbclose{top:4px;right:6px;font-size:40px;min-width:44px;min-height:44px}
+	.lbinfo{font-size:14px}
+
+	.pcard{flex-direction:column}
+	.pbig img{max-height:52vh}
+	.actions{flex-wrap:wrap}
+}
+
 /* Two rows of near-identical tabs was the main reason this page read as a wall
    of grey. They do different jobs, so they now have different shapes: the top
    row is a segmented switcher for WHICH MAILBOX, coloured per stream; the row
@@ -1017,6 +1088,7 @@ function gasf_crm_render_inbox() {
 
 	function open(id){
 		current = id;
+		remember();
 		attached = []; // attachments belong to the reply being written, not to the app
 		pane.innerHTML = '<p class="muted">Loading…</p>';
 		api('/threads/' + id).then(function(t){
@@ -1681,6 +1753,10 @@ function gasf_crm_render_inbox() {
 	// meanwhile is asking two people the same question.
 	function photoBlock(t){
 		var ph = t.photos || [];
+		// Kept where the viewer can reach them. Same reason the library keeps
+		// lgrid._photos: opening a photo should not need another round trip.
+		window._crmPhotoCards = window._crmPhotoCards || {};
+		ph.forEach(function(x){ window._crmPhotoCards[x.id] = x; });
 
 		// Nothing kept yet. If images came in, say what to do with them —
 		// otherwise the only clue is a small button beside an attachment chip,
@@ -1705,8 +1781,12 @@ function gasf_crm_render_inbox() {
 
 		var cards = ph.map(function(p){
 			var s = '<div class="pcard" data-photo="' + p.id + '">' +
-				'<a class="pthumb" href="' + esc(p.link) + '" target="_blank" rel="noopener">' +
-				(p.thumb ? '<img src="' + esc(p.thumb) + '" alt="">' : '') + '</a>' +
+				// A button, not a link to a new tab. On a phone the new tab
+				// evicted this page, and coming back reloaded it into the default
+				// view — you lost the thread you were working through and every
+				// field you had filled in. Opening in place cannot do that.
+				'<button type="button" class="pthumb" aria-label="Open this photo">' +
+				(p.thumb ? '<img src="' + esc(p.thumb) + '" alt="">' : '') + '</button>' +
 				'<div class="pbody">';
 
 			if (p.confirmed) {
@@ -2098,6 +2178,7 @@ function gasf_crm_render_inbox() {
 
 		if (which === 'photos')  { loadPhotos(); }
 		if (which === 'library') { loadLib(); }
+		remember();
 		window.scrollTo(0, 0);
 	}
 
@@ -2134,8 +2215,11 @@ function gasf_crm_render_inbox() {
 
 	function openPhoto(id){
 		pcur = id;
+		remember();
 		ppane.innerHTML = '<p class="muted">Loading…</p>';
 		api('/photos/detail?photo=' + id).then(function(p){
+			window._crmPhotoCards = window._crmPhotoCards || {};
+			window._crmPhotoCards[p.id] = p;
 			// The sender's answers if they gave any, otherwise whatever is already
 			// ON the photo. Never {} — a blank form saved over a confirmed photo
 			// erases every tag it had, and the button is labelled approve.
@@ -2146,8 +2230,8 @@ function gasf_crm_render_inbox() {
 				// them is worth anybody's time.
 				? '<div class="note err">The image file is missing from the server, though its record is still here. ' +
 				  'Nothing can be done with it — reject it, and it can be taken in again from the original email.</div>'
-				: '<a href="' + esc(p.url) + '" target="_blank" rel="noopener" class="pbig">' +
-				  '<img src="' + esc(p.full || p.thumb) + '" alt=""></a>';
+				: '<button type="button" class="pbig" aria-label="Open this photo full size">' +
+				  '<img src="' + esc(p.full || p.thumb) + '" alt=""></button>';
 
 			h += '<p class="muted" style="margin:10px 0 4px">Sent by <strong>' + esc(p.from) + '</strong>' +
 				(p.email ? ' &lt;' + esc(p.email) + '&gt;' : '') +
@@ -2237,6 +2321,59 @@ function gasf_crm_render_inbox() {
 
 	Array.prototype.forEach.call(document.querySelectorAll('header .hbtn.nav'), function(b){
 		b.onclick = function(){ showView(b.dataset.view); };
+	});
+
+	/* ===================== where you were =====================
+	 *
+	 * The whole app lived in memory, so any reload dropped you back at the
+	 * inbox with nothing open. That is not an edge case on a phone: switching
+	 * to the camera, taking a call, or leaving the tab for a minute is enough
+	 * for the browser to evict the page, and you came back to a clean slate
+	 * having lost the thread you were part-way through approving.
+	 *
+	 * The current view and what is open now live in the URL fragment, so the
+	 * browser's own restore lands you back where you were — and Back does
+	 * something sensible instead of leaving the CRM entirely.
+	 */
+	var routing = false;
+
+	function remember(){
+		if (routing) { return; }
+		var h = '#mail';
+		if (!document.getElementById('photoview').hidden) { h = pcur ? '#photo/' + pcur : '#photos'; }
+		else if (!document.getElementById('libview').hidden) { h = '#library'; }
+		else if (current) { h = "#thread/" + current; }
+		if (h !== location.hash) { history.replaceState(null, '', h); }
+	}
+
+	function restore(){
+		var h = (location.hash || '').replace(/^#/, '');
+		if (!h) { return false; }
+		routing = true;
+		try {
+			var m;
+			if ((m = h.match(/^thread\/(\d+)$/))) { showView('mail');    open(parseInt(m[1], 10)); }
+			else if ((m = h.match(/^photo\/(\d+)$/))) { showView('photos'); openPhoto(parseInt(m[1], 10)); }
+			else if (h === 'photos')  { showView('photos'); }
+			else if (h === 'library') { showView('library'); }
+			else { routing = false; return false; }
+		} finally { routing = false; }
+		return true;
+	}
+
+	window.addEventListener('hashchange', function(){ if (!routing) { restore(); } });
+
+	/* Photos on the REVIEW screens open in the same viewer as the library.
+	   Delegated, because those cards are rebuilt every time a thread is opened
+	   or the queue reloads, and re-binding after each render is the kind of
+	   thing that works until the day somebody adds a third render path. */
+	document.addEventListener('click', function(ev){
+		var btn = ev.target.closest ? ev.target.closest('.pthumb, .pbig') : null;
+		if (!btn) { return; }
+		var card = btn.closest('.pcard');
+		var id   = card ? parseInt(card.dataset.photo, 10) : (pcur || 0);
+		var p    = (window._crmPhotoCards && window._crmPhotoCards[id]) || null;
+		if (p) { lbOpen(id, null, p); }
 	});
 
 	/* ======================= the photo library =======================
@@ -2555,8 +2692,11 @@ function gasf_crm_render_inbox() {
 	   full-screen overlay with only a small × is a trap on a phone. */
 	var lbReturn = null;   // where focus came from, so it can go back
 
-	function lbOpen(id, fromCard){
-		var p = lgrid._photos ? lgrid._photos[id] : null;
+	function lbOpen(id, fromCard, card){
+		// card wins when given: the review screens hold their own photo objects
+		// and are not backed by the library grid at all. One viewer for both,
+		// rather than a second lightbox that drifts.
+		var p = card || (lgrid && lgrid._photos ? lgrid._photos[id] : null);
 		if (!p) { return; }
 		var box = document.getElementById('lbox');
 		document.getElementById('lbimg').src = p.full || p.url;
@@ -2588,7 +2728,11 @@ function gasf_crm_render_inbox() {
 		// Anything the backfill guessed is worth saying so, because a machine's
 		// guess is exactly the thing a volunteer should feel free to overrule.
 		if (p.auto) { bits.push('<em class="muted">Tagged automatically from the camera data — please correct anything that looks wrong.</em>'); }
-		bits.push('<button class="btn" id="lbeditbtn" type="button" style="margin-top:8px">Edit details</button>');
+		// Editing from here only makes sense for a library photo; a submission
+		// still in review is edited on its own form, with approve/reject beside
+		// it, and offering a second route to a different form would be two ways
+		// to do the same thing that behave differently.
+		if (p.saved) { bits.push('<button class="btn" id="lbeditbtn" type="button" style="margin-top:8px">Edit details</button>'); }
 
 		if (fromCard) { lbReturn = fromCard.querySelector('.lopen'); }
 
@@ -2801,6 +2945,11 @@ function gasf_crm_render_inbox() {
 	loadList();
 	loadContacts();
 	setInterval(loadList, 60000);
+
+	// Last, so the lists exist to be restored into. A reload — or a phone
+	// evicting the tab while you took a call — lands you back on the thread or
+	// photo you were working on rather than at the top of the inbox.
+	restore();
 })();
 </script>
 	<?php
