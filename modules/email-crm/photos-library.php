@@ -46,10 +46,17 @@ define( 'GASF_CRM_LIB_ZIP_TTL', 30 * MINUTE_IN_SECONDS );
 /**
  * Every catalogued photo, newest first.
  *
- * Two ways in, deliberately:
+ * Three ways in, deliberately:
  *   - approved through the submission workflow (_gasf_photo_confirmed), or
  *   - carrying any catalogue term, which is how a volunteer adds a photo that
- *     never came through the mailbox — a scan, a committee member's camera roll.
+ *     never came through the mailbox — a scan, a committee member's camera roll,
+ *   - or catalogued by the EXIF backfill (_gasf_photo_autotag).
+ *
+ * That third route exists because the first version required a TERM, and a
+ * photo the backfill could date but not place — no GPS, and several club events
+ * that day — got none. Sixty-one real club photos were dated and then invisible:
+ * a Valentine's dinner, a February camera roll, portraits. A known date is
+ * cataloguing; the library is where catalogued photos live.
  *
  * Merged in PHP rather than expressed as one query because WP_Query cannot OR a
  * meta_query against a tax_query. At this size that is not worth a custom join:
@@ -71,7 +78,11 @@ function gasf_crm_photo_library_ids( array $f = array() ) {
 	);
 
 	$ids = get_posts( $common + array(
-		'meta_query' => array( array( 'key' => '_gasf_photo_confirmed', 'compare' => 'EXISTS' ) ),
+		'meta_query' => array(
+			'relation' => 'OR',
+			array( 'key' => '_gasf_photo_confirmed', 'compare' => 'EXISTS' ),
+			array( 'key' => '_gasf_photo_autotag',   'compare' => 'EXISTS' ),
+		),
 	) );
 
 	$tagged = get_posts( $common + array(
