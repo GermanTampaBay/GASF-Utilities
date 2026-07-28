@@ -1304,6 +1304,11 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 			$rec = get_post_meta( $id, '_gasf_photo_autotag', true );
 			if ( ! is_array( $rec ) ) { continue; }
 
+			// A volunteer has been over this one since. Undoing the job must not
+			// undo them, so it is left entirely alone — receipt included, since
+			// that receipt is also what keeps a date-only photo in the library.
+			if ( ! empty( $rec['edited'] ) ) { continue; }
+
 			foreach ( array( 'place' => 'gasf_photo_place', 'event' => 'gasf_photo_event' ) as $k => $tax ) {
 				if ( empty( $rec[ $k ] ) ) { continue; }
 				$now = wp_get_object_terms( $id, $tax, array( 'fields' => 'names' ) );

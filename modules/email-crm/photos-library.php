@@ -206,6 +206,27 @@ function gasf_crm_photo_library_card( $attachment_id ) {
 		// Who gave it to the club. Shown because using a photo in marketing is
 		// exactly when somebody needs to know whom to credit, or ask.
 		'from'    => is_array( $src ) ? (string) ( $src['name'] ?: $src['email'] ) : '',
+
+		/*
+		 * Everything the editing form needs, in the shape it already reads.
+		 *
+		 * 'saved' carries RAW term names, not the decoded labels above: the
+		 * picker's options are raw and writes match on them, so handing it
+		 * "Welton Brewing Co & Oyster Bar" where the term holds &amp; would
+		 * match nothing and mint a duplicate that looks identical on screen.
+		 */
+		'revision' => gasf_crm_photo_revision( $id ),
+		'guess'    => ( ! empty( $info['place_guess'] ) && ! is_wp_error( $info['place_guess'] ) ) ? $info['place_guess']->name : '',
+		'alts'     => ! empty( $info['place_alts'] ) ? wp_list_pluck( $info['place_alts'], 'name' ) : array(),
+		'auto'     => (bool) get_post_meta( $id, '_gasf_photo_autotag', true ),
+		'saved'    => array(
+			'people'   => array_map( 'strval', (array) wp_get_object_terms( $id, 'gasf_photo_person', array( 'fields' => 'names' ) ) ),
+			'place'    => (string) ( wp_get_object_terms( $id, 'gasf_photo_place', array( 'fields' => 'names' ) )[0] ?? '' ),
+			'event'    => (string) ( wp_get_object_terms( $id, 'gasf_photo_event', array( 'fields' => 'names' ) )[0] ?? '' ),
+			'event_id' => (int) get_post_meta( $id, '_gasf_photo_event_id', true ),
+			'caption'  => (string) get_post_field( 'post_excerpt', $id ),
+			'taken'    => (string) get_post_meta( $id, '_gasf_photo_taken', true ),
+		),
 	);
 }
 
@@ -244,6 +265,116 @@ function gasf_crm_photo_library_facets( array $ids ) {
 	$out['years'] = array_values( $out['years'] );
 
 	return $out;
+}
+
+/* =====================================================================
+ * Editing a catalogued photo
+ * ================================================================== */
+
+/**
+ * How much a volunteer may write about a photo.
+ *
+ * Longer than the 150 the public form allows. That cap exists to keep a
+ * stranger's form to one screen on a phone; a volunteer writing up who is in a
+ * 1974 Fasching picture is doing the archive's actual work and should not be
+ * cut off mid-sentence.
+ */
+define( 'GASF_CRM_LIB_NOTE_MAX', 600 );
+
+/**
+ * Save changes to a photo already in the collection.
+ *
+ * Deliberately NOT gasf_crm_photo_confirm(). That approves a submission — it
+ * publishes the file, stamps _gasf_photo_confirmed and moves the workflow on.
+ * A library photo is already public and most of these never went through the
+ * workflow at all, so running approval over them would record a decision nobody
+ * made. Correcting a caption is not approving anything.
+ *
+ * What it shares with approval is the compare-and-swap, and for the same
+ * reason: two volunteers tidying the collection on a Sunday afternoon is the
+ * ordinary case, and the second one's save silently overwriting the first is
+ * how people stop trusting the tool.
+ *
+ * @return array|WP_Error the refreshed card
+ */
+function gasf_crm_photo_library_save( $attachment_id, array $in ) {
+	$id = (int) $attachment_id;
+	if ( ! $id || 'attachment' !== get_post_type( $id ) ) {
+		return new WP_Error( 'gasf_crm_404', 'No such photo.', array( 'status' => 404 ) );
+	}
+	if ( ! gasf_crm_user_can_stream( 'photos' ) ) {
+		return new WP_Error( 'gasf_crm_403', 'You do not have access to the photo library.', array( 'status' => 403 ) );
+	}
+	if ( ! gasf_crm_photos_available() ) {
+		return new WP_Error( 'gasf_crm_nocatalog', 'The Photo Catalogue module is switched off, so there is nowhere to record this.', array( 'status' => 503 ) );
+	}
+
+	$have = gasf_crm_photo_revision( $id );
+	$want = $in['revision'] ?? null;
+	if ( null !== $want && '' !== $want && (int) $want !== $have ) {
+		return new WP_Error( 'gasf_crm_stale', 'Somebody else has edited this photo since you opened it. Reload to see their version.', array( 'status' => 409 ) );
+	}
+	if ( ! update_post_meta( $id, '_gasf_photo_rev', $have + 1, $have ) ) {
+		return new WP_Error( 'gasf_crm_stale', 'Somebody else was editing this at the same moment. Reload to see where it got to.', array( 'status' => 409 ) );
+	}
+
+	$people = array();
+	foreach ( (array) ( $in['people'] ?? array() ) as $p ) {
+		$p = trim( sanitize_text_field( $p ) );
+		if ( '' !== $p ) { $people[] = $p; }
+	}
+	$people = array_slice( array_values( array_unique( $people ) ), 0, GASF_CRM_PHOTO_MAX_PEOPLE );
+	wp_set_object_terms( $id, $people, 'gasf_photo_person', false );
+
+	// Emptying a field is a real answer — "this is not at a place we know" has
+	// to be expressible, or a wrong tag can never be removed, only replaced.
+	foreach ( array( 'place' => 'gasf_photo_place', 'event' => 'gasf_photo_event' ) as $k => $tax ) {
+		$v = trim( sanitize_text_field( (string) ( $in[ $k ] ?? '' ) ) );
+		wp_set_object_terms( $id, '' === $v ? array() : array( $v ), $tax, false );
+	}
+
+	$eid = (int) ( $in['event_id'] ?? 0 );
+	if ( $eid && gasf_photo_has_calendar() && defined( 'GASF_EVENTS_CPT' ) && GASF_EVENTS_CPT === get_post_type( $eid ) ) {
+		update_post_meta( $id, '_gasf_photo_event_id', $eid );
+	} else {
+		delete_post_meta( $id, '_gasf_photo_event_id' );
+	}
+
+	$taken = gasf_crm_photo_clean_date( $in['taken'] ?? '' );
+	if ( $taken ) {
+		update_post_meta( $id, '_gasf_photo_taken', $taken );
+	} else {
+		delete_post_meta( $id, '_gasf_photo_taken' );
+	}
+
+	$note = trim( sanitize_textarea_field( (string) ( $in['caption'] ?? '' ) ) );
+	if ( mb_strlen( $note ) > GASF_CRM_LIB_NOTE_MAX ) { $note = mb_substr( $note, 0, GASF_CRM_LIB_NOTE_MAX ); }
+	wp_update_post( array( 'ID' => $id, 'post_excerpt' => $note ) );
+
+	// Title and alt follow the tags. The FILENAME deliberately does not: the
+	// file may already be linked from a page or sitting in somebody's downloads,
+	// and renaming it would break both. The catalogued name is applied at
+	// download time instead, which is where it actually matters.
+	if ( function_exists( 'gasf_photo_apply_names' ) ) { gasf_photo_apply_names( $id ); }
+
+	/*
+	 * A human has now had their say, so the backfill's claim on this photo ends.
+	 *
+	 * The receipt stays — it is what keeps a date-only photo in the library —
+	 * but it is marked edited, and the undo skips those. Otherwise running
+	 * --undo after a tidy-up session would strip a volunteer's work on the
+	 * grounds that a machine put something similar there first.
+	 */
+	$rec = get_post_meta( $id, '_gasf_photo_autotag', true );
+	if ( is_array( $rec ) ) {
+		$rec['edited']    = current_time( 'mysql', true );
+		$rec['edited_by'] = get_current_user_id();
+		update_post_meta( $id, '_gasf_photo_autotag', $rec );
+	}
+
+	gasf_crm_log_event( 0, 'photo_edited', 'media #' . $id . ' retagged in the library by user ' . get_current_user_id() );
+
+	return gasf_crm_photo_library_card( $id );
 }
 
 /* =====================================================================
@@ -427,6 +558,22 @@ add_action( 'rest_api_init', function () {
 				'ids'     => array_map( 'intval', $matching ),
 				'zipmax'  => GASF_CRM_LIB_ZIP_MAX_FILES,
 			);
+		},
+	) );
+
+	register_rest_route( 'gasf/v1', '/crm/photos/edit', array(
+		'methods'             => 'POST',
+		'permission_callback' => $lib_guard,
+		'callback'            => function ( WP_REST_Request $req ) {
+			return gasf_crm_photo_library_save( (int) $req->get_param( 'photo' ), array(
+				'people'   => (array) $req->get_param( 'people' ),
+				'place'    => (string) $req->get_param( 'place' ),
+				'event'    => (string) $req->get_param( 'event' ),
+				'event_id' => (int) $req->get_param( 'event_id' ),
+				'taken'    => (string) $req->get_param( 'taken' ),
+				'caption'  => (string) $req->get_param( 'caption' ),
+				'revision' => $req->get_param( 'revision' ),
+			) );
 		},
 	) );
 

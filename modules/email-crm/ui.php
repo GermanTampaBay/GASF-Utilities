@@ -394,6 +394,15 @@ header.bar .hbtn.nav.on{background:#fff;color:var(--gasf-ink,#1d1d1b);border-col
 .lbinfo{color:#fff;font-size:13px;text-align:center;max-width:760px;line-height:1.5}
 .lbinfo a{color:#fff}
 .lbclose{position:absolute;top:14px;right:18px;background:none;border:0;color:#fff;font-size:34px;line-height:1;cursor:pointer}
+/* The editor sits on a light card inside the dark overlay — the form controls
+   are styled for a pane, and white-on-black inputs would be unreadable. */
+.lbedit{background:var(--gasf-surface);color:var(--gasf-text);border-radius:6px;padding:14px;
+	width:min(640px,100%);max-height:86vh;overflow:auto;text-align:left}
+.lbedit .pf>span{color:var(--gasf-muted)}
+.lbedit textarea.p-caption{width:100%;padding:6px 8px;border:1px solid var(--gasf-border);border-radius:4px;
+	font:inherit;font-size:13px;background:var(--gasf-surface);color:var(--gasf-text);resize:vertical}
+.lbedit h3{margin:0 0 10px;font-size:15px}
+.lightbox.editing img{max-height:34vh}
 @media(max-width:640px){.lf input,.lf select,.lf input[type=search]{min-width:0;width:100%}.lf{flex:1 1 100%}}
 
 .pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px;padding:10px}
@@ -772,6 +781,8 @@ function gasf_crm_render_inbox() {
 	<button class="lbclose" id="lbclose" type="button" aria-label="Close">&times;</button>
 	<img id="lbimg" src="" alt="">
 	<div class="lbinfo" id="lbinfo"></div>
+	<?php // The editor, on a light card — the same form the rest of the app uses. ?>
+	<div class="lbedit" id="lbedit" data-stream="photos" hidden></div>
 </div>
 <?php endif; ?>
 
@@ -1377,10 +1388,18 @@ function gasf_crm_render_inbox() {
 	// The labelling form: identical whether the sender filled it in or nobody
 	// did. A volunteer working from scratch needs exactly the fields a
 	// volunteer checking somebody's answers needs, so there is one of them.
-	function photoForm(p, q){
+	// opts.big is the library's editor: a volunteer writing up who is in a 1974
+	// Fasching picture is doing the archive's real work, and the 150-character
+	// single line exists to keep a STRANGER's form to one screen on a phone.
+	function photoForm(p, q, opts){
+		opts = opts || {};
+		var note = opts.big
+			? '<textarea class="p-caption" rows="3" maxlength="600">' + esc(q.caption||'') + '</textarea>'
+			: '<input type="text" class="p-caption" maxlength="150" value="' + esc(q.caption||'') + '">';
+
 		var s = '<div class="pf"><span>Who is in it</span>' + peopleField(q.people || []) + '</div>' +
-			'<label class="pf"><span>What is happening</span>' +
-			'<input type="text" class="p-caption" maxlength="150" value="' + esc(q.caption||'') + '"></label>' +
+			'<label class="pf"><span>' + (opts.big ? 'Notes — what is happening, anything worth remembering' : 'What is happening') + '</span>' +
+			note + '</label>' +
 			'<div class="prow">' +
 			'<label class="pf"><span>Where</span>' + placeSelect(q.place || p.guess || '') + '</label>' +
 			'<label class="pf"><span>Occasion</span><input type="text" class="p-event" value="' + esc(q.event||'') + '"></label>' +
@@ -1406,7 +1425,8 @@ function gasf_crm_render_inbox() {
 		// The revision the volunteer is actually looking at, sent back with the
 		// decision so a stale screen is refused rather than obeyed.
 		return s + '<input type="hidden" class="p-rev" value="' + esc(p.revision != null ? p.revision : '') + '">' +
-			'<div class="actions"><button class="btn p-ok">Add these tags</button>' +
+			'<div class="actions"><button class="btn p-ok">' + esc(opts.okLabel || 'Add these tags') + '</button>' +
+			(opts.big ? '<button class="btn sec p-cancel" type="button">Cancel</button>' : '') +
 			'<span class="p-msg muted"></span></div>';
 	}
 
@@ -2194,17 +2214,95 @@ function gasf_crm_render_inbox() {
 		if (p.dlname) {
 			bits.push('<a href="' + esc(p.url) + '" download="' + esc(p.dlname) + '">Download ' + esc(p.dlname) + '</a>');
 		}
+		// Anything the backfill guessed is worth saying so, because a machine's
+		// guess is exactly the thing a volunteer should feel free to overrule.
+		if (p.auto) { bits.push('<em class="muted">Tagged automatically from the camera data — please correct anything that looks wrong.</em>'); }
+		bits.push('<button class="btn" id="lbeditbtn" type="button" style="margin-top:8px">Edit details</button>');
+
 		document.getElementById('lbinfo').innerHTML = bits.join('<br>');
+		document.getElementById('lbinfo').hidden = false;
+		document.getElementById('lbedit').hidden = true;
+		box.classList.remove('editing');
+
+		var eb = document.getElementById('lbeditbtn');
+		if (eb) { eb.onclick = function(){ lbEdit(p); }; }
+
 		box.hidden = false;
 	}
-	function lbClose(){ var b = document.getElementById('lbox'); if (b) { b.hidden = true; document.getElementById('lbimg').src = ''; } }
+
+	/* The editor: the same form used everywhere else, on a light card. Its
+	   pickers are wired by the same three functions the review screen uses, so
+	   place hierarchy, calendar search and "+ Add another person" all behave
+	   identically — a volunteer should not have to learn this twice. */
+	function lbEdit(p){
+		var box  = document.getElementById('lbox');
+		var edit = document.getElementById('lbedit');
+
+		edit.dataset.photo = p.id; // so Escape knows which photo to step back to
+		edit.innerHTML = '<h3>' + esc(p.title || 'This photo') + '</h3>' +
+			photoForm(p, p.saved || {}, { big: true, okLabel: 'Save' });
+		document.getElementById('lbinfo').hidden = true;
+		edit.hidden = false;
+		box.classList.add('editing');
+
+		wireEventPickers(edit);
+		wirePlaceSelects(edit);
+		wirePeople(edit);
+
+		var cancel = edit.querySelector('.p-cancel');
+		if (cancel) { cancel.onclick = function(){ lbOpen(p.id); }; }
+
+		var ok = edit.querySelector('.p-ok');
+		ok.onclick = function(){
+			var msg = edit.querySelector('.p-msg');
+			var v = function(sel){ var el = edit.querySelector(sel); return el ? el.value : ''; };
+			ok.disabled = true; msg.textContent = 'Saving…';
+
+			api('/photos/edit', { method:'POST', body: JSON.stringify({
+				photo: p.id,
+				people: peopleValues(edit),
+				place: placeValue(edit), event: v('.p-event'),
+				event_id: parseInt(v('.p-evid'), 10) || 0,
+				taken: v('.p-taken'), caption: v('.p-caption'),
+				revision: v('.p-rev')
+			})}).then(function(card){
+				// The grid behind the overlay is now stale in exactly one cell.
+				// Reloading the page of results keeps the filter bar honest too —
+				// a photo just retagged may no longer match what is on screen.
+				if (lgrid._photos) { lgrid._photos[card.id] = card; }
+				lbOpen(card.id);
+				loadLib();
+			}).catch(function(e){
+				ok.disabled = false;
+				msg.textContent = e.message;
+			});
+		};
+	}
+
+	function lbClose(){
+		var b = document.getElementById('lbox');
+		if (b) {
+			b.hidden = true;
+			b.classList.remove('editing');
+			document.getElementById('lbimg').src = '';
+		}
+	}
 	var lbox = document.getElementById('lbox');
 	if (lbox) {
 		lbox.addEventListener('click', function(ev){
 			if (ev.target === lbox || ev.target.id === 'lbclose') { lbClose(); }
 		});
 		document.addEventListener('keydown', function(ev){
-			if (ev.key === 'Escape' && !lbox.hidden) { lbClose(); }
+			if (ev.key !== 'Escape' || lbox.hidden) { return; }
+			// While editing, Escape steps back to the details rather than closing.
+			// Reaching for it out of habit and losing a paragraph you just typed
+			// about a 1974 photograph is not a fair trade.
+			if (lbox.classList.contains('editing')) {
+				var open = document.getElementById('lbedit');
+				var id   = open && open.dataset ? parseInt(open.dataset.photo, 10) : 0;
+				if (id) { lbOpen(id); return; }
+			}
+			lbClose();
 		});
 	}
 
