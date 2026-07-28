@@ -98,6 +98,72 @@ function gasf_crm_photos_available() {
 	return true;
 }
 
+/* =====================================================================
+ * Permission to use a submitted photo
+ *
+ * Somebody emailing photos to a club is plainly happy for the club to HAVE
+ * them. That is not the same as agreeing they can appear on a poster, in a
+ * newsletter or on Facebook, and until now nothing anywhere asked — the photos
+ * went into the collection and the question was simply never put.
+ *
+ * It has to be asked at the one moment the submitter is actually present and
+ * paying attention: the tagging form. Afterwards means emailing a stranger to
+ * ask a favour about a photo they have stopped thinking about, which in
+ * practice means never asking.
+ *
+ * The WORDING is versioned and stored with each grant. "Did they agree?" is
+ * only half the question a year from now; the other half is "to what?", and
+ * this text will be revised. A yes recorded against wording nobody kept is
+ * not much better than no record at all.
+ *
+ * NOT LEGAL ADVICE. This is a plain-language grant written to be understood by
+ * somebody on a phone, not a lawyer's licence. Have it reviewed before it
+ * matters.
+ * ================================================================== */
+define( 'GASF_CRM_PHOTO_CONSENT_VERSION', '2026-07-1' );
+
+function gasf_crm_photo_consent_text() {
+	$org = gasf_crm_cfg()['signature_org'];
+	return sprintf(
+		'I took these photos or have the right to share them, and I give the %s permission to use them — on its website and social media, in newsletters, posters and other publicity, and in its archive. I understand my name will not be published alongside them unless I am asked first.',
+		$org
+	);
+}
+
+/**
+ * Where a photo stands on permission to publish it.
+ *
+ * @return array{state:string,label:string,at:string,by:string,text:string}
+ */
+function gasf_crm_photo_consent_state( $attachment_id ) {
+	$id  = (int) $attachment_id;
+	$rec = get_post_meta( $id, '_gasf_photo_consent', true );
+
+	if ( is_array( $rec ) && ! empty( $rec['granted'] ) ) {
+		return array(
+			'state' => 'granted',
+			'label' => 'Cleared for use',
+			'at'    => (string) ( $rec['at'] ?? '' ),
+			'by'    => (string) ( $rec['name'] ?: ( $rec['by'] ?? '' ) ),
+			'text'  => (string) ( $rec['text'] ?? '' ),
+		);
+	}
+
+	// No submitter, so nobody to have asked: this is the club's own picture,
+	// already published on its own site. Different question entirely.
+	if ( ! get_post_meta( $id, '_gasf_photo_source', true ) ) {
+		return array( 'state' => 'club', 'label' => "The club's own photo", 'at' => '', 'by' => '', 'text' => '' );
+	}
+
+	return array(
+		'state' => 'unknown',
+		'label' => 'Permission not on record',
+		'at'    => '',
+		'by'    => (string) ( ( get_post_meta( $id, '_gasf_photo_source', true )['name'] ?? '' ) ?: '' ),
+		'text'  => '',
+	);
+}
+
 /** Caps on what one submitter can type, so a form post cannot become a flood. */
 define( 'GASF_CRM_PHOTO_MAX_PEOPLE', 25 );
 define( 'GASF_CRM_PHOTO_CAPTION_MAX', 150 );
@@ -1096,6 +1162,7 @@ function gasf_crm_photo_invite_send( array $invite, $token, $stream = 'photos' )
 		"Thank you for the %s you sent us — %s now in the club's photo collection.\n\n" .
 		"Could you tell us a little about them? Who is in them, roughly when they were taken, and where. It takes a minute and it is what makes the photos findable years from now, instead of being an unlabelled pile.\n\n" .
 		"%s\n\n" .
+		"The form also asks one thing we have to ask: your permission to use the photos in the newsletter, on the website and in club publicity. There is a box to tick, and the full wording is on the page — no permission, no problem, the photos simply stay in the archive rather than being published.\n\n" .
 		"The link works for the next %d days and is just for you — please do not forward it.\n\n" .
 		"If you would rather not, that is completely fine. The photos are safe either way and you can ignore this.\n\n" .
 		"With thanks,\n%s",
@@ -1308,6 +1375,23 @@ function gasf_crm_photo_save_pending( array $invite ) {
 		return;
 	}
 
+	/*
+	 * Permission first, and BEFORE the token is spent.
+	 *
+	 * Checked ahead of consumption on purpose: an unticked box is the one
+	 * failure here that the person can fix, so it has to leave them holding a
+	 * working link and everything they typed. Spending the token first would
+	 * answer "you forgot to tick the box" with a page saying the link is used.
+	 *
+	 * The browser enforces this too, via required — this is the half that
+	 * matters, because a required attribute is a suggestion to anything that is
+	 * not a browser.
+	 */
+	if ( empty( $_POST['gasf_consent'] ) ) {
+		gasf_crm_photo_page( 'form', $invite, 'Please tick the box giving us permission to use the photos — we cannot accept them for the newsletter or website without it. Everything you typed is still here.' );
+		return;
+	}
+
 	// Spend the token BEFORE writing anything. Losing this race means somebody
 	// else already answered — most often the same person double-tapping, or
 	// refreshing the page they just submitted — and the honest response is to
@@ -1317,6 +1401,25 @@ function gasf_crm_photo_save_pending( array $invite ) {
 		gasf_crm_photo_page( 'thanks', $invite );
 		return;
 	}
+
+	/*
+	 * The grant, recorded on each photo rather than on the invitation.
+	 *
+	 * Invitations are pruned ninety days after they are spent; a photo is kept
+	 * forever, and it is the photo somebody will be holding in five years asking
+	 * whether it can go on a poster. Stored with the exact wording agreed to,
+	 * so that question has an answer that does not depend on what this file
+	 * happens to say by then.
+	 */
+	$consent = array(
+		'granted' => true,
+		'at'      => current_time( 'mysql', true ),
+		'by'      => (string) $invite['email'],
+		'name'    => (string) $invite['name'],
+		'ip'      => gasf_crm_client_ip(),
+		'version' => GASF_CRM_PHOTO_CONSENT_VERSION,
+		'text'    => gasf_crm_photo_consent_text(),
+	);
 
 	// Everything is per photo now. Six photos emailed together are often one
 	// afternoon, but "often" is not "always" — and recording six different days
@@ -1377,6 +1480,14 @@ function gasf_crm_photo_save_pending( array $invite ) {
 			'by'       => (string) $invite['email'],
 			'at'       => current_time( 'mysql', true ),
 		) );
+
+		// Written once and never rewritten. A grant is a thing somebody did on a
+		// date, not a field to be kept up to date — and a later edit that
+		// silently replaced it would destroy the only evidence of what was
+		// actually agreed.
+		if ( ! get_post_meta( $aid, '_gasf_photo_consent', true ) ) {
+			update_post_meta( $aid, '_gasf_photo_consent', $consent );
+		}
 
 		// The sender has answered, so this is a volunteer's to look at now rather
 		// than something still being waited on.

@@ -386,6 +386,13 @@ header.bar .hbtn.nav.on{background:#fff;color:var(--gasf-ink,#1d1d1b);border-col
 .lcard .ldl{position:absolute;top:6px;right:6px;background:rgba(0,0,0,.62);color:#fff;border-radius:4px;
 	padding:3px 7px;font-size:12px;text-decoration:none}
 .lcard .ldl:hover{background:rgba(0,0,0,.85)}
+/* A photo nobody cleared is marked on the tile itself, not only on the detail
+   view — somebody picking from the grid should not have to open each one to
+   discover which are safe to publish. */
+.lcard .lwarn{position:absolute;bottom:44px;left:6px;background:rgba(176,45,46,.92);color:#fff;
+	border-radius:3px;padding:1px 6px;font-size:11px;font-weight:600}
+.okmark{color:#8ee2a8;font-weight:600}
+.warnmark{color:#ffc9a0;font-weight:600}
 /* Full size, over everything, because "can I actually use this one" is a
    question you cannot answer from a thumbnail. */
 .lightbox{position:fixed;inset:0;background:rgba(0,0,0,.9);z-index:9999;display:flex;
@@ -2073,6 +2080,9 @@ function gasf_crm_render_inbox() {
 					(p.dlname
 						? '<a class="ldl" href="' + esc(p.url) + '" download="' + esc(p.dlname) + '" title="Download">&darr;</a>'
 						: '') +
+					(p.consent && p.consent.state === 'unknown'
+						? '<span class="lwarn" title="Sent in before we started asking for permission — check before publishing">no permission on record</span>'
+						: '') +
 					'<img class="lthumb" src="' + esc(p.thumb || p.url) + '" alt="' + esc(p.title) + '" loading="lazy">' +
 					'<div class="lmeta">' +
 						'<span class="lt">' + esc(who || p.title) + '</span>' +
@@ -2211,6 +2221,20 @@ function gasf_crm_render_inbox() {
 		if (when) { bits.push(esc(when)); }
 		if (p.w) { bits.push(p.w + '×' + p.h + ' · ' + Math.round(p.bytes / 1024) + ' KB'); }
 		if (p.from) { bits.push('Given to the club by ' + esc(p.from)); }
+
+		// Said plainly, next to the download link, because the moment somebody
+		// is about to take a photo for a poster is the moment this matters.
+		if (p.consent) {
+			if (p.consent.state === 'granted') {
+				bits.push('<span class="okmark">✓ ' + esc(p.consent.label) + '</span>' +
+					(p.consent.by ? ' — ' + esc(p.consent.by) + ' gave permission' : '') +
+					(p.consent.at ? ' on ' + esc(p.consent.at.substring(0,10)) : ''));
+			} else if (p.consent.state === 'unknown') {
+				bits.push('<span class="warnmark">⚠ ' + esc(p.consent.label) + '</span> — sent in before we started asking. Fine to keep; check with the sender before publishing it.');
+			}
+			// 'club' says nothing: a photo already on the club's own website
+			// needs no note explaining that the club may use it.
+		}
 		if (p.dlname) {
 			bits.push('<a href="' + esc(p.url) + '" download="' + esc(p.dlname) + '">Download ' + esc(p.dlname) + '</a>');
 		}

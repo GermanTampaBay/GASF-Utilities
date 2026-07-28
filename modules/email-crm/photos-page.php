@@ -346,6 +346,26 @@ function gasf_crm_photo_page( $state, $invite = null, $notice = '' ) {
 		echo '</div></div>';
 	}
 
+	/*
+	 * Permission to use the photos.
+	 *
+	 * Its own card, immediately above the button, because it is the one thing
+	 * on this page that is not optional and it should not read like small print
+	 * tucked under a heading. The full wording is shown rather than linked —
+	 * agreeing to something you have to click to read is not really agreeing.
+	 *
+	 * The person is told plainly what happens if they would rather not, because
+	 * a required box with no stated alternative reads like a trap.
+	 */
+	echo '<div class="card pad consent">';
+	echo '<h3>One last thing &mdash; may we use them?</h3>';
+	printf(
+		'<label class="cbox"><input type="checkbox" name="gasf_consent" value="1" required> <span>%s</span></label>',
+		esc_html( gasf_crm_photo_consent_text() )
+	);
+	echo '<p class="muted">We have to ask, and we cannot put a photo in the newsletter or on the website without it. If you would rather not, just close this page &mdash; the photos stay safely in the club\'s archive either way, and nothing you have typed is wasted.</p>';
+	echo '</div>';
+
 	echo '<div class="card pad submit">';
 	echo '<button class="btn" type="submit">Send this to the club</button>';
 	echo '<p class="muted">If you would rather not fill this in, you can simply close the page. The photos stay with us regardless, and nobody will chase you.</p>';
@@ -428,6 +448,11 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
 .btn{background:var(--ink);color:#fff;border:0;border-radius:6px;padding:14px 22px;font:inherit;font-size:16px;font-weight:600;cursor:pointer;width:100%}
 .btn:hover{filter:brightness(.9)}
 .submit .muted{margin:12px 0 0}
+/* Permission. Given room rather than shrunk — a box somebody has to tick is
+   the last place to make the type small. */
+.consent h3{margin:0 0 10px;font-size:17px}
+.cbox{display:flex;gap:12px;align-items:flex-start;line-height:1.5;cursor:pointer}
+.cbox input{width:24px;height:24px;flex:0 0 auto;margin-top:2px;accent-color:var(--gasf-accent,#c8a13a)}
 .muted{color:var(--muted);font-size:14px}
 .note{background:#fdf8e7;border-left:4px solid #dba617;border-radius:6px;padding:12px 14px;margin:0 0 16px;font-size:14px}
 .foot{text-align:center;color:var(--muted);font-size:13px;margin:26px 0 0}

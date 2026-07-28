@@ -215,6 +215,20 @@ function gasf_crm_photo_library_card( $attachment_id ) {
 		 * "Welton Brewing Co & Oyster Bar" where the term holds &amp; would
 		 * match nothing and mint a duplicate that looks identical on screen.
 		 */
+		/*
+		 * Whether the club may publish this one.
+		 *
+		 *   granted  the submitter ticked the box, and we kept the wording
+		 *   club     the club's own photo, already on its own website
+		 *   unknown  submitted before we started asking — usable in the archive,
+		 *            but nobody should put it on a poster without checking
+		 *
+		 * 'unknown' is deliberately its own answer rather than being folded into
+		 * either of the others. Treating a missing record as permission is how a
+		 * club ends up publishing a photo it was never given, and treating it as
+		 * refusal would quietly bury photos people were perfectly happy to share.
+		 */
+		'consent'  => gasf_crm_photo_consent_state( $id ),
 		'revision' => gasf_crm_photo_revision( $id ),
 		'guess'    => ( ! empty( $info['place_guess'] ) && ! is_wp_error( $info['place_guess'] ) ) ? $info['place_guess']->name : '',
 		'alts'     => ! empty( $info['place_alts'] ) ? wp_list_pluck( $info['place_alts'], 'name' ) : array(),
