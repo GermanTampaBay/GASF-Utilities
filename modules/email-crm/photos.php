@@ -139,12 +139,45 @@ function gasf_crm_photo_consent_state( $attachment_id ) {
 	$id  = (int) $attachment_id;
 	$rec = get_post_meta( $id, '_gasf_photo_consent', true );
 
-	if ( is_array( $rec ) && ! empty( $rec['granted'] ) ) {
+	if ( is_array( $rec ) && isset( $rec['granted'] ) ) {
+		/*
+		 * Three ways permission can be settled, and they are NOT the same fact.
+		 *
+		 *   granted   the submitter ticked the box themselves, against wording
+		 *             we kept — the strongest evidence there is.
+		 *   recorded  a volunteer wrote down what somebody told them: at the
+		 *             Biergarten, on the phone, in a reply. Real permission, and
+		 *             how a club actually works, but it rests on one person's
+		 *             account and is labelled so.
+		 *   refused   somebody said no. There was no way to record this at all,
+		 *             which is the more serious gap: a photo nobody has cleared
+		 *             merely lacks a record, whereas a photo somebody objected
+		 *             to must never quietly end up on a poster.
+		 *
+		 * Flattening these into one "cleared" would throw away the difference
+		 * exactly when it matters — which is when somebody asks why a photo of
+		 * them is in the newsletter.
+		 */
+		if ( empty( $rec['granted'] ) ) {
+			return array(
+				'state' => 'refused',
+				'label' => 'Do not publish',
+				'at'    => (string) ( $rec['at'] ?? '' ),
+				'by'    => (string) ( $rec['recorded_by_name'] ?? '' ),
+				'note'  => (string) ( $rec['note'] ?? '' ),
+				'text'  => '',
+			);
+		}
+
+		$manual = ! empty( $rec['recorded_by'] );
 		return array(
-			'state' => 'granted',
-			'label' => 'Cleared for use',
+			'state' => $manual ? 'recorded' : 'granted',
+			'label' => $manual ? 'Cleared — permission recorded by a volunteer' : 'Cleared for use',
 			'at'    => (string) ( $rec['at'] ?? '' ),
-			'by'    => (string) ( $rec['name'] ?: ( $rec['by'] ?? '' ) ),
+			'by'    => $manual
+				? (string) ( $rec['recorded_by_name'] ?? '' )
+				: (string) ( $rec['name'] ?: ( $rec['by'] ?? '' ) ),
+			'note'  => (string) ( $rec['note'] ?? '' ),
 			'text'  => (string) ( $rec['text'] ?? '' ),
 		);
 	}
@@ -163,7 +196,7 @@ function gasf_crm_photo_consent_state( $attachment_id ) {
 	 */
 	if ( get_post_meta( $id, '_gasf_photo_autotag', true )
 		&& ! get_post_meta( $id, '_gasf_photo_source', true ) ) {
-		return array( 'state' => 'club', 'label' => "The club's own photo", 'at' => '', 'by' => '', 'text' => '' );
+		return array( 'state' => 'club', 'label' => "The club's own photo", 'at' => '', 'by' => '', 'note' => '', 'text' => '' );
 	}
 
 	return array(
@@ -173,8 +206,81 @@ function gasf_crm_photo_consent_state( $attachment_id ) {
 		// Indexed defensively: a photo reaching here may have no source at all
 		// now that a missing one no longer counts as club-owned.
 		'by'    => (string) ( is_array( $src = get_post_meta( $id, '_gasf_photo_source', true ) ) ? ( $src['name'] ?? '' ) : '' ),
+		'note'  => '',
 		'text'  => '',
 	);
+}
+
+/**
+ * Write down permission that was given outside the form.
+ *
+ * Somebody says yes at the Biergarten, or on the phone, or in a plain reply
+ * that never went near the tagging link. That is real permission and there was
+ * no way to record it — so a photo the club had every right to use sat marked
+ * "not on record" forever, and the badge stopped meaning anything because
+ * everyone learned to ignore it.
+ *
+ * Deliberately NOT the same record as a submitter's own tick. It keeps who
+ * wrote it down and on what basis, and reports itself as "recorded by a
+ * volunteer" rather than borrowing the stronger claim. One person's account of
+ * a conversation is not somebody agreeing to wording in front of them, and the
+ * day that distinction matters is the day somebody objects.
+ *
+ * @param string $decision grant | refuse | clear
+ * @param string $note     how it was given — required for grant and refuse
+ * @return array|WP_Error the new state
+ */
+function gasf_crm_photo_consent_record( $attachment_id, $decision, $note ) {
+	$id = (int) $attachment_id;
+	if ( ! $id || 'attachment' !== get_post_type( $id ) ) {
+		return new WP_Error( 'gasf_crm_404', 'No such photo.', array( 'status' => 404 ) );
+	}
+	if ( ! gasf_crm_user_can_stream( 'photos' ) ) {
+		return new WP_Error( 'gasf_crm_403', 'You do not have access to photo submissions.', array( 'status' => 403 ) );
+	}
+
+	$note = trim( sanitize_text_field( (string) $note ) );
+	$user = wp_get_current_user();
+
+	if ( 'clear' === $decision ) {
+		delete_post_meta( $id, '_gasf_photo_consent' );
+		gasf_mec_log( sprintf( 'CRM photos: permission record cleared on media #%d by %s', $id, $user->display_name ) );
+		gasf_crm_log_event( 0, 'photo_consent', 'media #' . $id . ' permission record cleared' );
+		return gasf_crm_photo_consent_state( $id );
+	}
+
+	if ( ! in_array( $decision, array( 'grant', 'refuse' ), true ) ) {
+		return new WP_Error( 'gasf_crm_bad', 'Unknown decision.', array( 'status' => 400 ) );
+	}
+
+	// Required, and the reason is the whole point: "we have permission" is not a
+	// record, it is an assertion. "Erna said yes at the Biergarten on 12 July"
+	// is something a person can check, or correct, two years from now.
+	if ( '' === $note ) {
+		return new WP_Error(
+			'gasf_crm_note',
+			'Please say how permission was given — who said it and roughly when. A record nobody can check is not much of a record.',
+			array( 'status' => 400 )
+		);
+	}
+
+	update_post_meta( $id, '_gasf_photo_consent', array(
+		'granted'          => ( 'grant' === $decision ),
+		'at'               => current_time( 'mysql', true ),
+		'note'             => $note,
+		'recorded_by'      => $user->ID,
+		'recorded_by_name' => $user->display_name,
+		'version'          => GASF_CRM_PHOTO_CONSENT_VERSION,
+		// What the submitter WOULD have agreed to, kept so the scope of the
+		// permission is on the record even though they never saw this text.
+		'text'             => gasf_crm_photo_consent_text(),
+	) );
+
+	gasf_mec_log( sprintf( 'CRM photos: permission %s on media #%d by %s — %s',
+		'grant' === $decision ? 'RECORDED' : 'REFUSAL recorded', $id, $user->display_name, $note ) );
+	gasf_crm_log_event( 0, 'photo_consent', sprintf( 'media #%d marked %s', $id, 'grant' === $decision ? 'cleared for use' : 'do not publish' ) );
+
+	return gasf_crm_photo_consent_state( $id );
 }
 
 /** Caps on what one submitter can type, so a form post cannot become a flood. */

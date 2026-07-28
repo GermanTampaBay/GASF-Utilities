@@ -513,11 +513,21 @@ function gasf_crm_photo_zip_build( array $ids ) {
 
 	// Sized up before a byte is written. Discovering the limit halfway through
 	// means throwing away work AND leaving a part-built file behind.
-	$files = array();
-	$bytes = 0;
+	$files   = array();
+	$refused = array();
+	$bytes   = 0;
 	foreach ( $ids as $id ) {
 		if ( 'attachment' !== get_post_type( $id ) ) { continue; }
 		if ( gasf_crm_photo_is_private( $id ) ) { continue; } // not cleared for use
+
+		// Somebody said no. Recording that has to DO something, or it is a label
+		// rather than a decision — and a bulk download for the newsletter is
+		// exactly where an objected-to photo would otherwise slip through.
+		if ( 'refused' === gasf_crm_photo_consent_state( $id )['state'] ) {
+			$refused[] = $id;
+			continue;
+		}
+
 		$path = get_attached_file( $id );
 		if ( ! $path || ! is_file( $path ) ) { continue; }
 		$bytes  += (int) filesize( $path );
@@ -577,10 +587,19 @@ function gasf_crm_photo_zip_build( array $ids ) {
 		'by'   => get_current_user_id(),
 	), GASF_CRM_LIB_ZIP_TTL );
 
-	gasf_mec_log( sprintf( 'CRM library: built a %s zip of %d photo(s) for user %d',
-		size_format( filesize( $path ) ), count( $files ), get_current_user_id() ) );
+	gasf_mec_log( sprintf( 'CRM library: built a %s zip of %d photo(s) for user %d%s',
+		size_format( filesize( $path ) ), count( $files ), get_current_user_id(),
+		$refused ? sprintf( ' — %d left out, marked do-not-publish', count( $refused ) ) : '' ) );
 
-	return array( 'token' => $token, 'name' => $name, 'files' => count( $files ), 'bytes' => (int) filesize( $path ) );
+	return array(
+		'token'   => $token,
+		'name'    => $name,
+		'files'   => count( $files ),
+		'bytes'   => (int) filesize( $path ),
+		// Said out loud, never silently. A zip quietly missing the one photo
+		// somebody actually wanted is how people stop trusting the download.
+		'refused' => count( $refused ),
+	);
 }
 
 /**
@@ -814,6 +833,18 @@ add_action( 'rest_api_init', function () {
 			}
 
 			return new WP_Error( 'gasf_crm_bad', 'Unknown action.', array( 'status' => 400 ) );
+		},
+	) );
+
+	register_rest_route( 'gasf/v1', '/crm/photos/consent', array(
+		'methods'             => 'POST',
+		'permission_callback' => $lib_guard,
+		'callback'            => function ( WP_REST_Request $req ) {
+			return gasf_crm_photo_consent_record(
+				(int) $req->get_param( 'photo' ),
+				(string) $req->get_param( 'decision' ),
+				(string) $req->get_param( 'note' )
+			);
 		},
 	) );
 

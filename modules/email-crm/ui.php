@@ -423,6 +423,9 @@ header.bar .hbtn.nav.on{background:#fff;color:var(--gasf-ink,#1d1d1b);border-col
 .lcard .lwarn{position:absolute;bottom:44px;left:6px;background:rgba(176,45,46,.92);color:#fff;
 	border-radius:3px;padding:1px 6px;font-size:11px;font-weight:600}
 .okmark{color:#8ee2a8;font-weight:600}
+.nomark{color:#ff9c9c;font-weight:700}
+.lcard .lno{position:absolute;bottom:44px;left:6px;background:#8a1113;color:#fff;
+	border-radius:3px;padding:1px 6px;font-size:11px;font-weight:700}
 .warnmark{color:#ffc9a0;font-weight:600}
 /* Full size, over everything, because "can I actually use this one" is a
    question you cannot answer from a thumbnail. */
@@ -2496,6 +2499,9 @@ function gasf_crm_render_inbox() {
 					(p.consent && p.consent.state === 'unknown'
 						? '<span class="lwarn" title="Sent in before we started asking for permission — check before publishing">no permission on record</span>'
 						: '') +
+					(p.consent && p.consent.state === 'refused'
+						? '<span class="lno" title="Somebody asked us not to publish this. It is left out of bulk downloads.">do not publish</span>'
+						: '') +
 					'<button type="button" class="lopen" aria-label="Open ' + esc(p.title || 'photo') + '">' +
 						'<img class="lthumb" src="' + esc(p.thumb || p.url) + '" alt="' + esc(p.title) + '" loading="lazy">' +
 					'</button>' +
@@ -2704,7 +2710,8 @@ function gasf_crm_render_inbox() {
 					// Navigating to it rather than fetching: the browser's own
 					// download handles a large file far better than holding it in
 					// memory as a blob, and it names the file from the header.
-					msg.textContent = 'Ready — ' + r.files + ' photo(s), ' + Math.round(r.bytes / 1048576) + ' MB.';
+					msg.textContent = 'Ready — ' + r.files + ' photo(s), ' + Math.round(r.bytes / 1048576) + ' MB.' +
+						(r.refused ? '  ' + r.refused + ' left out — marked do not publish.' : '');
 					window.location.href = r.url;
 					lzip.disabled = false;
 					lzip.textContent = 'Download as a zip';
@@ -2741,15 +2748,33 @@ function gasf_crm_render_inbox() {
 		// Said plainly, next to the download link, because the moment somebody
 		// is about to take a photo for a poster is the moment this matters.
 		if (p.consent) {
-			if (p.consent.state === 'granted') {
-				bits.push('<span class="okmark">✓ ' + esc(p.consent.label) + '</span>' +
-					(p.consent.by ? ' — ' + esc(p.consent.by) + ' gave permission' : '') +
-					(p.consent.at ? ' on ' + esc(p.consent.at.substring(0,10)) : ''));
-			} else if (p.consent.state === 'unknown') {
-				bits.push('<span class="warnmark">⚠ ' + esc(p.consent.label) + '</span> — sent in before we started asking. Fine to keep; check with the sender before publishing it.');
+			var c = p.consent, when = c.at ? ' on ' + esc(c.at.substring(0,10)) : '';
+			if (c.state === 'granted') {
+				bits.push('<span class="okmark">✓ ' + esc(c.label) + '</span>' +
+					(c.by ? ' — ' + esc(c.by) + ' gave permission' : '') + when);
+			} else if (c.state === 'recorded') {
+				// Says who wrote it down and what they were told. The weaker
+				// evidence is labelled as weaker rather than dressed up.
+				bits.push('<span class="okmark">✓ ' + esc(c.label) + '</span>' +
+					(c.by ? ' — ' + esc(c.by) : '') + when +
+					(c.note ? '<br><em>' + esc(c.note) + '</em>' : ''));
+			} else if (c.state === 'refused') {
+				bits.push('<span class="nomark">✕ ' + esc(c.label) + '</span>' +
+					(c.by ? ' — recorded by ' + esc(c.by) : '') + when +
+					(c.note ? '<br><em>' + esc(c.note) + '</em>' : '') +
+					'<br>This photo is left out of bulk downloads.');
+			} else if (c.state === 'unknown') {
+				bits.push('<span class="warnmark">⚠ ' + esc(c.label) + '</span> — sent in before we started asking. Fine to keep; check with the sender before publishing it.');
 			}
 			// 'club' says nothing: a photo already on the club's own website
 			// needs no note explaining that the club may use it.
+
+			// Recording what somebody told you, for the times permission never
+			// went near the form — a yes at the Biergarten, or a no by phone.
+			if (p.lib) {
+				bits.push('<button class="btn sec" id="lbconsent" type="button" style="margin-top:6px">' +
+					(c.state === 'unknown' ? 'Record permission…' : 'Change permission…') + '</button>');
+			}
 		}
 		if (p.dlname) {
 			bits.push('<a href="' + esc(p.url) + '" download="' + esc(p.dlname) + '">Download ' + esc(p.dlname) + '</a>');
@@ -2780,6 +2805,9 @@ function gasf_crm_render_inbox() {
 
 		var eb = document.getElementById('lbeditbtn');
 		if (eb) { eb.onclick = function(){ lbEdit(p); }; }
+
+		var cb = document.getElementById('lbconsent');
+		if (cb) { cb.onclick = function(){ lbConsent(p); }; }
 
 		box.hidden = false;
 
@@ -2842,6 +2870,66 @@ function gasf_crm_render_inbox() {
 				msg.textContent = e.message;
 			});
 		};
+	}
+
+	/* Recording permission that never went through the form.
+	 *
+	 * Rendered in the same light card the editor uses, because it is the same
+	 * kind of act — writing down something a person told you — and it needs the
+	 * same room to type. The note is required by the server; it is asked for
+	 * plainly here rather than being sprung as an error afterwards. */
+	function lbConsent(p){
+		var box  = document.getElementById('lbox');
+		var edit = document.getElementById('lbedit');
+		var c    = p.consent || {};
+
+		edit.dataset.photo = p.id;
+		edit.innerHTML =
+			'<h3>Permission for this photo</h3>' +
+			'<p class="muted" style="margin:0 0 10px">Use this when somebody told you in person, on the phone, or in a reply &mdash; anything that never went through the tagging form.</p>' +
+			'<label class="pf"><span>How was it given? Who said it, and roughly when</span>' +
+				'<input type="text" class="c-note" maxlength="200" placeholder="Erna said yes at the Biergarten, 12 July" value="' + esc(c.note || '') + '"></label>' +
+			'<div class="actions" style="flex-wrap:wrap">' +
+				'<button class="btn c-grant" type="button">They said yes</button>' +
+				'<button class="btn warn c-refuse" type="button">They said no</button>' +
+				(c.state === 'unknown' || c.state === 'club' ? '' : '<button class="btn sec c-clear" type="button">Remove this record</button>') +
+				'<button class="btn sec c-cancel" type="button">Cancel</button>' +
+				'<span class="p-msg muted"></span>' +
+			'</div>';
+
+		document.getElementById('lbinfo').hidden = true;
+		edit.hidden = false;
+		box.classList.add('editing');
+		var note = edit.querySelector('.c-note');
+		note.focus();
+
+		var msg = edit.querySelector('.p-msg');
+		var send = function(decision){
+			if ((decision === 'grant' || decision === 'refuse') && !note.value.trim()) {
+				msg.textContent = 'Please say how permission was given.';
+				note.focus();
+				return;
+			}
+			msg.textContent = 'Saving…';
+			api('/photos/consent', { method:'POST', body: JSON.stringify({
+				photo: p.id, decision: decision, note: note.value.trim()
+			})}).then(function(state){
+				p.consent = state;
+				if (lgrid._photos && lgrid._photos[p.id]) { lgrid._photos[p.id].consent = state; }
+				lbOpen(p.id, null, p);
+				loadLib();
+			}).catch(function(e){ msg.textContent = e.message; });
+		};
+
+		edit.querySelector('.c-grant').onclick  = function(){ send('grant'); };
+		edit.querySelector('.c-refuse').onclick = function(){ send('refuse'); };
+		var clr = edit.querySelector('.c-clear');
+		if (clr) { clr.onclick = function(){
+			if (confirm('Remove the permission record for this photo?
+
+It goes back to “not on record”.')) { send('clear'); }
+		}; }
+		edit.querySelector('.c-cancel').onclick = function(){ lbOpen(p.id, null, p); };
 	}
 
 	function lbClose(){
