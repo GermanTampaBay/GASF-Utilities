@@ -338,6 +338,69 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 	 *
 	 * @return array<array{term:WP_Term,depth:int,geo:bool}>
 	 */
+	/**
+	 * The places an OUTSIDE submitter may be shown, given the photos they sent.
+	 *
+	 * The tagging page used to render the WHOLE taxonomy into an unauthenticated
+	 * page — every venue, every room, and any private address a photo had ever
+	 * been geofenced to — for anybody holding one photo link. The vocabulary is
+	 * itself the disclosure: those terms had nothing to do with the invitation's
+	 * photos, and the taxonomy is non-public and excluded from REST precisely
+	 * because it is not meant to be read from outside.
+	 *
+	 * What a submitter actually needs is the branch their own photos are in, so
+	 * they can REFINE the camera's guess — "the clubhouse" down to "the
+	 * Bierstube". So that is what they get: each candidate place, its ancestors
+	 * so the hierarchy still reads, and its descendants so refining is possible.
+	 * Everything else is what the free-text "Somewhere else…" box is for.
+	 *
+	 * A place can also be published to this picker deliberately, with the
+	 * gasf_photo_public term meta — the club's own venues are no secret and are
+	 * worth offering. Nothing is public by default, because a default that
+	 * exposes is the same bug written more slowly.
+	 *
+	 * @param int[] $candidates term ids the invitation's photos geofenced to
+	 * @param int   $first      branch to lift to the top
+	 */
+	function gasf_photo_place_tree_public( array $candidates, $first = 0 ) {
+		$allow = array();
+
+		foreach ( array_filter( array_map( 'intval', $candidates ) ) as $id ) {
+			$allow[ $id ] = true;
+			foreach ( (array) get_ancestors( $id, 'gasf_photo_place', 'taxonomy' ) as $a ) {
+				$allow[ (int) $a ] = true;
+			}
+			foreach ( (array) get_term_children( $id, 'gasf_photo_place' ) as $c ) {
+				$allow[ (int) $c ] = true;
+			}
+		}
+
+		// Explicitly published places, plus their ancestors so none is orphaned
+		// in a hierarchy whose parents were filtered out from above it.
+		$public = get_terms( array(
+			'taxonomy'   => 'gasf_photo_place',
+			'hide_empty' => false,
+			'fields'     => 'ids',
+			'meta_key'   => 'gasf_photo_public', // phpcs:ignore WordPress.DB.SlowDBQuery
+			'meta_value' => '1',                 // phpcs:ignore WordPress.DB.SlowDBQuery
+		) );
+		foreach ( ( is_wp_error( $public ) ? array() : (array) $public ) as $id ) {
+			$allow[ (int) $id ] = true;
+			foreach ( (array) get_ancestors( (int) $id, 'gasf_photo_place', 'taxonomy' ) as $a ) {
+				$allow[ (int) $a ] = true;
+			}
+		}
+
+		if ( ! $allow ) { return array(); }
+
+		return array_values( array_filter(
+			gasf_photo_place_tree( $first ),
+			function ( $row ) use ( $allow ) {
+				return isset( $allow[ (int) $row['term']->term_id ] );
+			}
+		) );
+	}
+
 	function gasf_photo_place_tree( $first = 0 ) {
 		$terms = get_terms( array( 'taxonomy' => 'gasf_photo_place', 'hide_empty' => false ) );
 		if ( is_wp_error( $terms ) || ! $terms ) { return array(); }

@@ -1822,7 +1822,14 @@ function gasf_crm_render_inbox() {
 			rej.onclick = function(){
 				if (!confirm('Delete this photo for good?\n\nIt is removed from the club\'s collection and cannot be recovered. The email it came from is not touched, so it can be taken in again if that was a mistake.')) { return; }
 				rej.disabled = true;
-				api('/photos/reject', { method:'POST', body: JSON.stringify({ photo: id }) })
+				// The revision this screen is showing. Deleting is the one action
+				// with no way back, so it refuses on a stale screen exactly as
+				// approving does.
+				var rv = ppane.querySelector('.p-rev');
+				api('/photos/reject', { method:'POST', body: JSON.stringify({
+					photo: id,
+					revision: rv ? rv.value : ''
+				}) })
 					.then(function(){
 						pcur = null;
 						ppane.innerHTML = '<p class="muted">Deleted. Pick another photo on the left.</p>';

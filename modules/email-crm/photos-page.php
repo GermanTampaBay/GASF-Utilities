@@ -160,7 +160,20 @@ function gasf_crm_photo_page( $state, $invite = null, $notice = '' ) {
 
 	// Places, with the geofenced branch lifted to the top. Built once and reused
 	// by every photo card — the vocabulary does not change between them.
-	$tree = gasf_photo_place_tree( $suggest_place );
+	//
+	// Scoped to THIS invitation's photos. Every place each of them geofenced to,
+	// not just the batch-level suggestion above, because that one is only set
+	// when they all agree — a mixed batch would otherwise be offered nothing to
+	// refine. The club's own venue comes along as the fallback so a batch with
+	// no GPS at all still has something sensible to pick.
+	$candidates = array();
+	foreach ( $ids as $id ) {
+		$g = (int) get_post_meta( $id, '_gasf_photo_place_guess', true );
+		if ( $g ) { $candidates[ $g ] = true; }
+	}
+	$candidates[ gasf_photo_home_place() ] = true;
+
+	$tree = gasf_photo_place_tree_public( array_keys( $candidates ), $suggest_place );
 
 	// Parent names travel with the list so the form can tell a REFINEMENT of the
 	// geofence ("the grounds" -> "the Bierstube") from a contradiction of it

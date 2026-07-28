@@ -39,6 +39,21 @@ define( 'GASF_CRM_PHOTO_INVITE_DAYS', 30 );
 define( 'GASF_CRM_PHOTO_REMIND_DAYS', 2 );
 define( 'GASF_CRM_PHOTO_RELEASE_DAYS', 5 );
 
+/**
+ * How long a finished invitation is kept after it stops working.
+ *
+ * Counted from expiry or from the moment it was answered, whichever applies —
+ * so it is 90 days of being useless, not 90 days from issue.
+ *
+ * There was no retention at all: every invitation ever issued stayed forever,
+ * each one a row tying a named person to an email address and a set of photos.
+ * A token hash is not a secret worth keeping once it can never be redeemed
+ * again, and the audit trail of who was asked what lives in the event log and
+ * in each photo's own provenance, which are the records actually written for
+ * that purpose.
+ */
+define( 'GASF_CRM_PHOTO_INVITE_KEEP_DAYS', 90 );
+
 /** Caps on what one submitter can type, so a form post cannot become a flood. */
 define( 'GASF_CRM_PHOTO_MAX_PEOPLE', 25 );
 define( 'GASF_CRM_PHOTO_CAPTION_MAX', 150 );
@@ -2115,7 +2130,50 @@ function gasf_crm_photo_chase() {
 	}
 
 	gasf_crm_photo_release_due();
+	gasf_crm_photo_prune_invites();
 	return $sent;
+}
+
+/**
+ * Delete invitations that have been finished for long enough, and their rows in
+ * the join table.
+ *
+ * Only ones that can never work again: answered, or past their expiry. A live
+ * invitation is never touched however old it looks, because "old" and "spent"
+ * are different things and only one of them is safe to delete.
+ *
+ * The join rows go first. Deleting the invitation first would leave orphans
+ * pointing at an id that no longer exists, and photo_invite_items is what
+ * gasf_crm_photo_state() now reads to decide whether a photo was ever asked
+ * about — an orphan there would make a photo claim an invitation nobody could
+ * look up.
+ *
+ * @return int invitations removed
+ */
+function gasf_crm_photo_prune_invites() {
+	global $wpdb;
+
+	$t   = gasf_crm_table( 'photo_invites' );
+	$l   = gasf_crm_table( 'photo_invite_items' );
+	$cut = gmdate( 'Y-m-d H:i:s', time() - ( GASF_CRM_PHOTO_INVITE_KEEP_DAYS * DAY_IN_SECONDS ) );
+
+	$ids = $wpdb->get_col( $wpdb->prepare(
+		"SELECT id FROM {$t}
+		  WHERE ( submitted_at IS NOT NULL AND submitted_at <= %s )
+		     OR ( expires_at <= %s )
+		  LIMIT 500",
+		$cut, $cut
+	) );
+	if ( ! $ids ) { return 0; }
+
+	$in = implode( ',', array_map( 'intval', $ids ) );
+	$wpdb->query( "DELETE FROM {$l} WHERE invite_id IN ({$in})" ); // phpcs:ignore WordPress.DB
+	$n = (int) $wpdb->query( "DELETE FROM {$t} WHERE id IN ({$in})" ); // phpcs:ignore WordPress.DB
+
+	if ( $n ) {
+		gasf_mec_log( 'CRM photos: pruned ' . $n . ' invitation(s) finished more than ' . GASF_CRM_PHOTO_INVITE_KEEP_DAYS . ' days ago' );
+	}
+	return $n;
 }
 
 /**
@@ -2599,14 +2657,54 @@ add_action( 'rest_api_init', function () {
 				gasf_crm_log_event( (int) $src['thread'], 'photo_rejected', 'media #' . $aid . ' removed' );
 			}
 
+			// Same compare-and-swap approval uses, for the same reason and with
+			// more at stake: deletion cannot be undone. Two volunteers working
+			// the queue at once is the ordinary case, and without this the one
+			// looking at a stale screen destroys a photo the other has just
+			// described — with no way back and nothing said.
+			$have = gasf_crm_photo_revision( $aid );
+			$want = $req->get_param( 'revision' );
+			if ( null !== $want && '' !== $want && (int) $want !== $have ) {
+				return new WP_Error(
+					'gasf_crm_stale',
+					'Somebody else has already dealt with this photo. Reload to see where it got to.',
+					array( 'status' => 409 )
+				);
+			}
+			if ( ! update_post_meta( $aid, '_gasf_photo_rev', $have + 1, $have ) ) {
+				return new WP_Error(
+					'gasf_crm_stale',
+					'Somebody else was deciding about this at the same moment. Reload to see where it got to.',
+					array( 'status' => 409 )
+				);
+			}
+
 			// Terminal state written BEFORE the delete, not after. The sweep
 			// reopens any imported item whose attachment has gone, on the
 			// assumption it was lost to an interrupted run — so a rejection
 			// recorded afterwards would look exactly like a crash, and the next
 			// intake would obligingly fetch the rejected photo again.
-			gasf_crm_photo_item_set( $aid, 'rejected', array(
-				'fail_reason' => 'rejected by user ' . get_current_user_id(),
-			) );
+			//
+			// Checked, not fired and forgotten. If the item will not move, the
+			// bytes stay: an undeletable record beside a deleted file is a
+			// nuisance, but a deleted file whose claim still says 'imported' is
+			// the re-download bug, and this is the last moment either can be
+			// prevented.
+			$item = gasf_crm_photo_item_for_attachment( $aid );
+			if ( $item ) {
+				$moved = gasf_crm_photo_item_move( (int) $item['id'], null, 'rejected', array(
+					'fail_reason' => 'rejected by user ' . get_current_user_id(),
+				) );
+				if ( ! $moved ) {
+					update_post_meta( $aid, '_gasf_photo_rev', $have ); // hand the revision back
+					gasf_mec_log( 'CRM photos: NOT deleting media #' . $aid . ' — its record would not move to rejected' );
+					return new WP_Error(
+						'gasf_crm_reject',
+						'The photo has not been deleted: its record could not be updated, and deleting it now would have it fetched again.',
+						array( 'status' => 500 )
+					);
+				}
+			}
 
 			wp_delete_attachment( $aid, true );
 			return array( 'ok' => true, 'photo' => $aid );
