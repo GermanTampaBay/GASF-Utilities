@@ -71,7 +71,7 @@ add_action( 'rest_api_init', function () {
 					'status'     => (string) $t['status'],
 					'stream'     => (string) $t['stream'],
 					'last'       => (string) $t['last_message_at'],
-					'locked_by'  => $holder ? $holder->display_name : null,
+					'locked_by'  => $holder ? gasf_crm_display_name( $holder->ID ) : null,
 					'locked_mine' => (int) $t['locked_by'] === get_current_user_id(),
 				);
 			}, $threads );
@@ -124,7 +124,7 @@ add_action( 'rest_api_init', function () {
 				// nobody has taken a photo from.
 				'photos'    => function_exists( 'gasf_crm_photo_thread_block' ) ? gasf_crm_photo_thread_block( $id ) : array(),
 				'can_reply' => (bool) $mine,
-				'locked_by' => ( ! $mine && $holder ) ? $holder->display_name : null,
+				'locked_by' => ( ! $mine && $holder ) ? gasf_crm_display_name( $holder->ID ) : null,
 				'messages'  => $messages,
 				'events'    => array_map( function ( $e ) {
 					return array(
@@ -412,8 +412,7 @@ function gasf_crm_rest_forward( WP_REST_Request $req ) {
 	}
 
 	$cfg     = gasf_crm_cfg();
-	$name    = get_user_meta( $user_id, 'gasf_crm_name', true );
-	$name    = $name ? $name : wp_get_current_user()->display_name;
+	$name    = gasf_crm_display_name( $user_id );
 	$note    = trim( (string) $req->get_param( 'comment' ) );
 	$comment = ( '' !== $note ? wpautop( esc_html( $note ) ) : '' )
 		. '<p>--<br>Forwarded by ' . esc_html( $name ) . '<br>' . esc_html( $cfg['signature_org'] ) . '</p>';
@@ -498,7 +497,7 @@ function gasf_crm_rest_reply( WP_REST_Request $req ) {
 	if ( ! gasf_crm_claim_thread( $thread_id, $user_id ) ) {
 		$holder = get_userdata( (int) $thread['locked_by'] );
 		return new WP_Error( 'gasf_crm_locked',
-			( $holder ? $holder->display_name : 'Someone else' ) . ' is replying to this thread.',
+			( $holder ? gasf_crm_display_name( $holder->ID ) : 'Someone else' ) . ' is replying to this thread.',
 			array( 'status' => 409 )
 		);
 	}
@@ -515,8 +514,7 @@ function gasf_crm_rest_reply( WP_REST_Request $req ) {
 
 	$cfg  = gasf_crm_cfg();
 	$user = wp_get_current_user();
-	$name = get_user_meta( $user_id, 'gasf_crm_name', true );
-	$name = $name ? $name : $user->display_name;
+	$name = gasf_crm_display_name( $user_id );
 
 	$html = $clean
 		. '<p>--<br>' . esc_html( $name ) . '<br>' . esc_html( $cfg['signature_org'] ) . '</p>';

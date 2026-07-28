@@ -969,9 +969,10 @@ function gasf_crm_render_inbox() {
 		<button class="hbtn" id="checkmail">Check for new mail</button>
 		<button class="hbtn" onclick="var h=document.getElementById('help');h.style.display=h.style.display==='none'?'block':'none';window.scrollTo(0,0)">Help</button>
 		<?php
+		$whoami = gasf_crm_display_name( $user->ID );
 		// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped inside the helper.
-		echo gasf_crm_avatar_html( $user );
-		echo esc_html( $user->display_name );
+		echo gasf_crm_avatar_html( $user, $whoami );
+		echo esc_html( $whoami );
 		?> &middot;
 		<a href="<?php echo esc_url( home_url( '/email/logout' ) ); ?>">Sign out</a>
 	</div>

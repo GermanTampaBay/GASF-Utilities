@@ -478,11 +478,7 @@ function gasf_crm_log_event( $thread_id, $action, $detail = '', $user_id = null 
 	// question it exists to answer.
 	$actor = 'System';
 	if ( $user_id ) {
-		$actor = (string) get_user_meta( $user_id, 'gasf_crm_name', true );
-		if ( '' === $actor ) {
-			$u     = get_userdata( $user_id );
-			$actor = $u ? $u->display_name : 'User ' . $user_id;
-		}
+		$actor = gasf_crm_display_name( $user_id );
 	}
 
 	$wpdb->insert( gasf_crm_table( 'events' ), array(

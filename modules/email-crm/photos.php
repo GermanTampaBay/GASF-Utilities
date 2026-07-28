@@ -266,7 +266,7 @@ function gasf_crm_photo_consent_record( $attachment_id, $decision, $note ) {
 
 	if ( 'clear' === $decision ) {
 		delete_post_meta( $id, '_gasf_photo_consent' );
-		gasf_mec_log( sprintf( 'CRM photos: permission record cleared on media #%d by %s', $id, $user->display_name ) );
+		gasf_mec_log( sprintf( 'CRM photos: permission record cleared on media #%d by %s', $id, gasf_crm_display_name( $user->ID ) ) );
 		gasf_crm_log_event( 0, 'photo_consent', 'media #' . $id . ' permission record cleared' );
 		return gasf_crm_photo_consent_state( $id );
 	}
@@ -291,7 +291,7 @@ function gasf_crm_photo_consent_record( $attachment_id, $decision, $note ) {
 		'at'               => current_time( 'mysql', true ),
 		'note'             => $note,
 		'recorded_by'      => $user->ID,
-		'recorded_by_name' => $user->display_name,
+		'recorded_by_name' => gasf_crm_display_name( $user->ID ),
 		'version'          => GASF_CRM_PHOTO_CONSENT_VERSION,
 		// What the submitter WOULD have agreed to, kept so the scope of the
 		// permission is on the record even though they never saw this text.
@@ -299,7 +299,7 @@ function gasf_crm_photo_consent_record( $attachment_id, $decision, $note ) {
 	) );
 
 	gasf_mec_log( sprintf( 'CRM photos: permission %s on media #%d by %s — %s',
-		'grant' === $decision ? 'RECORDED' : 'REFUSAL recorded', $id, $user->display_name, $note ) );
+		'grant' === $decision ? 'RECORDED' : 'REFUSAL recorded', $id, gasf_crm_display_name( $user->ID ), $note ) );
 	gasf_crm_log_event( 0, 'photo_consent', sprintf( 'media #%d marked %s', $id, 'grant' === $decision ? 'cleared for use' : 'do not publish' ) );
 
 	return gasf_crm_photo_consent_state( $id );
@@ -3798,7 +3798,7 @@ add_filter( 'attachment_fields_to_edit', function ( $fields, $post ) {
 		$out .= esc_html( sprintf(
 			'Kept %s%s',
 			mysql2date( get_option( 'date_format' ), $src['approved_at'] ),
-			$by ? ' by ' . $by->display_name : ''
+			$by ? ' by ' . gasf_crm_display_name( $by->ID ) : ''
 		) ) . '<br>';
 	}
 

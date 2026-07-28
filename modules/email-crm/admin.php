@@ -177,6 +177,21 @@ function gasf_crm_admin_tab() {
 				: '<div class="notice notice-error"><p>Could not remove that entry — it may already be gone.</p></div>';
 		}
 
+		if ( 'user_name' === $act ) {
+			$uid   = (int) ( $_POST['user_id'] ?? 0 );
+			$uname = sanitize_text_field( wp_unslash( $_POST['user_name'] ?? '' ) );
+			if ( $uid && gasf_crm_set_display_name( $uid, $uname ) ) {
+				$from   = gasf_crm_provider_name( $uid );
+				$notice = '<div class="notice notice-success"><p>' . esc_html(
+					'' === trim( $uname )
+						? 'Override removed' . ( $from ? ' — that account is called "' . $from . '" again, which is the name its provider gives.' : '.' )
+						: 'Saved. Replies and forwards from that account are now signed "' . trim( $uname ) . '".'
+				) . '</p></div>';
+			} else {
+				$notice = '<div class="notice notice-error"><p>Could not save that name.</p></div>';
+			}
+		}
+
 		if ( 'user_streams' === $act ) {
 			$uid = (int) ( $_POST['user_id'] ?? 0 );
 			// Unchecking every box submits nothing, which is a real answer here:
@@ -657,17 +672,56 @@ function gasf_crm_admin_tab() {
 				width:28px;height:28px;border-radius:50%;background:#f3efe6;color:#8a6508;
 				font-size:11px;font-weight:700;line-height:1;overflow:hidden;flex:none}
 			.gasf-crm-accounts .me img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
+			.gasf-crm-accounts .namefix{display:flex;gap:5px;align-items:center;margin:7px 0 3px}
+			.gasf-crm-accounts .namefix input{width:190px;max-width:100%}
+			.gasf-crm-accounts .fromprov{margin:0;color:#646970;font-size:11px;line-height:1.4}
 		</style>';
 
 		echo '<table class="widefat striped gasf-crm-accounts"><thead><tr><th>Name</th><th>Email</th><th>Provider</th><th>Status</th><th>Can see</th><th>Action</th></tr></thead><tbody>';
 		foreach ( $users as $u ) {
 			$st = get_user_meta( $u->ID, 'gasf_crm_status', true );
 			$colour = 'approved' === $st ? '#2c7a3f' : ( 'denied' === $st ? '#d63638' : '#dba617' );
-			$name   = get_user_meta( $u->ID, 'gasf_crm_name', true ) ?: $u->display_name;
-			// Shown for pending accounts too — knowing what somebody looks like is
-			// most useful at the moment you are deciding whether to approve them.
+			$name   = gasf_crm_display_name( $u->ID );
+			$from   = gasf_crm_provider_name( $u->ID );
+			$over   = (string) get_user_meta( $u->ID, 'gasf_crm_name_override', true );
+
+			/*
+			 * The name cell does three things, because one string cannot.
+			 *
+			 * The top line is the name actually in use — what goes on the bottom
+			 * of every reply this account sends. The box below it is the
+			 * override, empty unless somebody has typed one. The last line is
+			 * always what the provider says, whether or not it agrees.
+			 *
+			 * That last line is shown unconditionally on purpose. The question
+			 * an admin returns with months later is "has Google been fixed yet,
+			 * can I drop this override" — and a line that hides itself once the
+			 * two match would go blank exactly when its answer became useful.
+			 */
 			// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped inside the helper.
-			echo '<tr><td><span class="who">' . gasf_crm_avatar_html( $u, $name ) . '<span>' . esc_html( $name ) . '</span></span></td>';
+			echo '<tr><td><span class="who">' . gasf_crm_avatar_html( $u, $name ) . '<span>' . esc_html( $name ) . '</span></span>';
+
+			echo '<form method="post" class="namefix">';
+			wp_nonce_field( 'gasf_crm' );
+			echo '<input type="hidden" name="gasf_crm_action" value="user_name">';
+			echo '<input type="hidden" name="user_id" value="' . (int) $u->ID . '">';
+			printf(
+				'<input type="text" name="user_name" value="%s" maxlength="80" placeholder="%s" aria-label="%s">',
+				esc_attr( $over ),
+				esc_attr( $from ?: 'Name for signatures' ),
+				esc_attr( 'Name override for ' . $name )
+			);
+			echo '<button type="submit" class="button button-small">Save</button>';
+			echo '</form>';
+
+			echo '<p class="fromprov">' . esc_html(
+				$from
+					? ( $over !== '' && $over !== $from ? 'Overriding ' : 'From ' )
+						. ucfirst( (string) get_user_meta( $u->ID, 'gasf_crm_provider', true ) ?: 'provider' ) . ': ' . $from
+					: 'Their provider has never sent a name.'
+			) . '</p>';
+
+			echo '</td>';
 			echo '<td>' . esc_html( get_user_meta( $u->ID, 'gasf_crm_email', true ) ) . '</td>';
 			echo '<td>' . esc_html( get_user_meta( $u->ID, 'gasf_crm_provider', true ) ) . '</td>';
 			echo '<td><strong style="color:' . esc_attr( $colour ) . '">' . esc_html( $st ?: 'pending' ) . '</strong></td>';

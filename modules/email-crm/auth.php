@@ -473,6 +473,106 @@ function gasf_crm_auth_fail( $msg, $detail = '' ) {
 }
 
 /* --------------------------------------------------------------------------
+ * What we call people
+ * -------------------------------------------------------------------------- */
+
+/**
+ * The name to put on a volunteer's work.
+ *
+ * Three sources, most specific first:
+ *
+ *   gasf_crm_name_override   typed on the Accounts screen, ours, never touched
+ *                            by sign-in
+ *   gasf_crm_name            whatever the provider last told us
+ *   display_name / login     WordPress's own, as a last resort
+ *
+ * The override has to exist because the middle one is not ours to keep. It is
+ * rewritten from the provider on every single sign-in — see
+ * gasf_crm_find_or_create_user — so a correction saved there survives exactly
+ * until the next time that person signs in, and then silently reverts. That is
+ * a worse failure than not offering the edit at all, because it looks like it
+ * worked.
+ *
+ * It matters more than a label in a table. This name goes out at the bottom of
+ * every reply and forward the club sends, so somebody whose provider account
+ * says "McColley" signs every club email that way until they can get Google
+ * changed — which is not always quick, and is not always theirs to do.
+ *
+ * Same shape as gasf_crm_set_contact_name, for the same reason: a human
+ * correction outranks whatever a machine keeps re-asserting.
+ *
+ * @param int $user_id Defaults to the current user.
+ * @return string Never empty for a real user.
+ */
+function gasf_crm_display_name( $user_id = 0 ) {
+	$user_id = $user_id ? (int) $user_id : get_current_user_id();
+	if ( ! $user_id ) { return ''; }
+
+	$name = trim( (string) get_user_meta( $user_id, 'gasf_crm_name_override', true ) );
+	if ( '' !== $name ) { return $name; }
+
+	$name = trim( (string) get_user_meta( $user_id, 'gasf_crm_name', true ) );
+	if ( '' !== $name ) { return $name; }
+
+	$u = get_userdata( $user_id );
+	if ( ! $u ) { return 'User ' . $user_id; }
+
+	return trim( (string) $u->display_name ) ?: (string) $u->user_login;
+}
+
+/**
+ * What the provider currently says this person is called.
+ *
+ * Reported unconditionally, never only when it disagrees with an override. The
+ * Accounts screen shows it beside the override at all times, because the
+ * question an admin comes back with months later is "has Google been fixed
+ * yet, can I drop the override" — and a field that hides itself once the two
+ * match cannot answer that. It would go blank at the exact moment its answer
+ * became useful.
+ *
+ * @return string '' only if the provider never sent a name.
+ */
+function gasf_crm_provider_name( $user_id ) {
+	return trim( (string) get_user_meta( (int) $user_id, 'gasf_crm_name', true ) );
+}
+
+/**
+ * Is this account's name currently being overridden by hand?
+ */
+function gasf_crm_name_is_overridden( $user_id ) {
+	return '' !== trim( (string) get_user_meta( (int) $user_id, 'gasf_crm_name_override', true ) );
+}
+
+/**
+ * Save or clear a volunteer's name override.
+ *
+ * Clearing is deliberate and reversible: emptying the box hands the name back
+ * to the provider, which is what somebody wants the moment they have finally
+ * managed to change it at Google.
+ *
+ * @return bool
+ */
+function gasf_crm_set_display_name( $user_id, $name ) {
+	$user_id = (int) $user_id;
+	if ( ! $user_id || ! get_userdata( $user_id ) ) { return false; }
+
+	$name = trim( sanitize_text_field( (string) $name ) );
+
+	if ( '' === $name ) {
+		delete_user_meta( $user_id, 'gasf_crm_name_override' );
+		return true;
+	}
+
+	// A signature is not a paragraph. Long enough for "Susanne Kern-McColley",
+	// short enough that nobody pastes an essay into the bottom of club email.
+	if ( function_exists( 'mb_substr' ) ) { $name = mb_substr( $name, 0, 80 ); }
+	else { $name = substr( $name, 0, 80 ); }
+
+	update_user_meta( $user_id, 'gasf_crm_name_override', $name );
+	return true;
+}
+
+/* --------------------------------------------------------------------------
  * Approval state
  * -------------------------------------------------------------------------- */
 
