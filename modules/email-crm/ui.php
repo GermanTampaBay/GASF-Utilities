@@ -595,6 +595,25 @@ input:focus,select:focus,textarea:focus,.edbody:focus{
 .msg .hd b{font-family:var(--body);font-size:14px;letter-spacing:0}
 .streamtag,.badge,.firsttime{border-radius:2px;font-weight:700;letter-spacing:.06em}
 
+/* Which order the names are in. Small, quiet, and out of the way of the rows —
+   it is a preference, not a control anyone came here to use. */
+.nsortbar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:0 0 12px}
+.nsortbar>span{
+	font:700 10px/1.4 var(--slug);text-transform:uppercase;letter-spacing:.13em;
+	color:var(--gasf-muted);margin-right:2px;
+}
+.nsort{
+	padding:5px 11px;cursor:pointer;
+	font:400 12px/1.3 var(--body);color:var(--gasf-muted);
+	background:var(--gasf-surface);border:1px solid var(--gasf-border);border-radius:2px;
+	transition:color .15s,border-color .15s,background-color .15s;
+}
+.nsort:hover{color:var(--gasf-text);border-color:var(--gasf-muted)}
+.nsort.on{
+	color:var(--s-ink);border-color:var(--s-accent);background:var(--s-tint);
+	font-weight:600;box-shadow:inset 0 0 0 1px var(--s-accent);
+}
+
 /* The camera's clock. Typed, because it is recorded fact rather than anything
    anyone gets to edit — the register does that telling on its own, without a
    "read only" label to say it. */
@@ -700,6 +719,11 @@ input:focus,select:focus,textarea:focus,.edbody:focus{
 	   the controls already have a line to themselves, so the width is free. */
 	.nrow button.ico,.prow2 button.ico{width:44px;min-height:44px}
 	.nrow button,.prow2 button{min-height:44px}
+	/* The sort buttons stay small — they are a preference, tapped once in a
+	   session, and three 44px pills would push the names themselves below the
+	   fold on a phone. Still comfortably above the 24px minimum. */
+	.nsort{min-height:34px;padding:7px 12px}
+	.nsortbar{gap:5px}
 	.tabs{overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}
 	.tabs::-webkit-scrollbar{display:none}
 	.tabs button{flex:0 0 auto;white-space:nowrap}
@@ -1082,6 +1106,21 @@ function gasf_crm_render_inbox() {
 	<div class="card pad lnamespanel" id="lnamespanel" hidden>
 		<h3 style="margin:0 0 4px">Names in the collection</h3>
 		<p class="muted" style="margin:0 0 10px">Correct a spelling and it changes on every photo at once. If the same person is in here twice, merge them &mdash; both sets of photos are kept.</p>
+		<?php
+		/*
+		 * Three orders, because a volunteer opens this panel with one of three
+		 * questions. "Is this spelled right" is alphabetical. "Who do we have
+		 * most of" is the count. "What has just turned up" is the newest names,
+		 * and it is the one that finds work rather than confirming it — a fresh
+		 * misspelling arrives at the bottom of an A-Z list, where nobody looks.
+		 */
+		?>
+		<div class="nsortbar">
+			<span>Sort by</span>
+			<button type="button" class="nsort" data-sort="name">First name</button>
+			<button type="button" class="nsort" data-sort="photos">Most photos</button>
+			<button type="button" class="nsort" data-sort="added">Recently added</button>
+		</div>
 		<div id="lnameslist" class="nameslist"><span class="muted">Loading&hellip;</span></div>
 	</div>
 
@@ -2771,12 +2810,54 @@ function gasf_crm_render_inbox() {
 		};
 	}
 
+	/* Ordering for the names panel.
+
+	   Client-side on purpose: the whole list is already in hand, so switching is
+	   instant and costs no round trip. Remembered, because somebody who prefers
+	   one order today prefers it tomorrow, and re-choosing it every visit is a
+	   small tax on the person doing the least glamorous job here. */
+	var NSORT_KEY = 'gasf.crm.namesort';
+	var nsort = 'name';
+	try { nsort = localStorage.getItem(NSORT_KEY) || 'name'; } catch (e) {}
+
+	// 'de' so umlauts collate where a reader expects them — Jürgen under J,
+	// Müller under M — instead of after Z, which is where a raw code-unit
+	// compare puts everything past ASCII. At a German-American club that is not
+	// an edge case, it is a good fraction of the list.
+	function cmpName(x, y){
+		return String(x.label || '').localeCompare(String(y.label || ''), 'de', { sensitivity: 'base' });
+	}
+
+	function sortNames(list){
+		var a = list.slice();   // never sort the cached PEOPLE array in place
+		if (nsort === 'photos')     { a.sort(function(x, y){ return (y.n || 0) - (x.n || 0) || cmpName(x, y); }); }
+		else if (nsort === 'added') { a.sort(function(x, y){ return (y.id || 0) - (x.id || 0) || cmpName(x, y); }); }
+		else                        { a.sort(cmpName); }
+		return a;
+	}
+
+	Array.prototype.forEach.call(document.querySelectorAll('.nsort'), function(b){
+		b.onclick = function(){
+			nsort = b.dataset.sort;
+			try { localStorage.setItem(NSORT_KEY, nsort); } catch (e) {}
+			paintNames();
+		};
+	});
+
 	function paintNames(){
 		var box = document.getElementById('lnameslist');
+
+		// Marked here rather than in the click handler, so the highlight is
+		// correct on first paint too — the order is restored from storage and
+		// nobody has clicked anything yet.
+		Array.prototype.forEach.call(document.querySelectorAll('.nsort'), function(b){
+			b.classList.toggle('on', b.dataset.sort === nsort);
+		});
+
 		loadPeople(true).then(function(list){
 			if (!list.length) { box.innerHTML = '<span class="muted">Nobody has been named in a photo yet.</span>'; return; }
 
-			box.innerHTML = list.map(function(p){
+			box.innerHTML = sortNames(list).map(function(p){
 				return '<div class="nrow" data-name="' + esc(p.value) + '">' +
 					'<div class="nmain">' +
 						'<input type="text" class="nname" value="' + esc(p.label) + '" aria-label="Name">' +

@@ -720,9 +720,26 @@ add_action( 'rest_api_init', function () {
 					'value' => $t->name,
 					'label' => function_exists( 'gasf_photo_label' ) ? gasf_photo_label( $t->name ) : $t->name,
 					'n'     => (int) ( $counts[ (int) $t->term_id ] ?? 0 ),
+					// term_id ascends as names are created. Nothing else records
+					// when a name entered the collection — terms carry no date —
+					// and it is what the panel's "recently added" order reads.
+					'id'    => (int) $t->term_id,
 				);
 			}
-			usort( $out, function ( $a, $b ) { return $b['n'] - $a['n'] ?: strnatcasecmp( $a['label'], $b['label'] ); } );
+
+			// Alphabetical, which for "Michael Tressler" means by first name —
+			// that is how the club refers to people. Sorted on a transliterated
+			// key so Jürgen files under J and Müller under M, rather than after
+			// Z where a byte-wise compare puts anything starting past ASCII.
+			//
+			// This is only the default. The panel re-sorts client-side on the
+			// volunteer's choice, and the suggestion matcher does its own ranking
+			// (score, then photo count), so neither depends on arrival order.
+			usort( $out, function ( $a, $b ) {
+				$ka = function_exists( 'gasf_photo_translit' ) ? gasf_photo_translit( $a['label'] ) : $a['label'];
+				$kb = function_exists( 'gasf_photo_translit' ) ? gasf_photo_translit( $b['label'] ) : $b['label'];
+				return strnatcasecmp( $ka, $kb ) ?: strnatcasecmp( $a['label'], $b['label'] );
+			} );
 
 			return array( 'people' => $out );
 		},

@@ -410,7 +410,10 @@ function gasfPdist(a, b, max){
 /* Prepare a list once: [{value,label,n}] gains its two normalised forms. */
 function gasfPrepare(list){
 	return (list || []).map(function(p){
-		return { value: p.value, label: p.label, n: p.n || 0,
+		// This rebuilds rather than decorates, so anything not named here is
+		// dropped. id rides along for the CRM's "recently added" ordering; the
+		// public form has no use for it and sends none, hence the 0.
+		return { value: p.value, label: p.label, n: p.n || 0, id: p.id || 0,
 		         a: gasfPnorm(p.label, true), b: gasfPnorm(p.label, false) };
 	});
 }
