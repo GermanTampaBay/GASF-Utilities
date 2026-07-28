@@ -461,24 +461,64 @@ JS;
 	 * still awaiting review.
 	 */
 	function gasf_photo_public_people() {
-		$terms = get_terms( array( 'taxonomy' => 'gasf_photo_person', 'hide_empty' => true ) );
-		if ( is_wp_error( $terms ) ) { return array(); }
+		/*
+		 * hide_empty => FALSE, deliberately.
+		 *
+		 * WordPress leaves $term->count at 0 for terms on attachments — it counts
+		 * published posts of counted types, and an attachment is neither. So
+		 * hide_empty => true dropped 49 of 51 real names, and $term->count is
+		 * useless for ranking. Both are answered from the relationships instead.
+		 */
+		$terms = get_terms( array( 'taxonomy' => 'gasf_photo_person', 'hide_empty' => false ) );
+		if ( is_wp_error( $terms ) || ! $terms ) { return array(); }
 
 		$out = array();
 		foreach ( $terms as $t ) {
 			$ids = get_objects_in_term( array( $t->term_id ), 'gasf_photo_person' );
+			$public = 0;
 			foreach ( (array) $ids as $pid ) {
 				if ( 'attachment' !== get_post_type( $pid ) ) { continue; }
 				if ( function_exists( 'gasf_crm_photo_is_private' ) && gasf_crm_photo_is_private( $pid ) ) { continue; }
-				$out[] = array(
-					'value' => $t->name,
-					'label' => gasf_photo_label( $t->name ),
-					'n'     => (int) $t->count,
-				);
-				break;
+				$public++;
 			}
+			if ( ! $public ) { continue; }   // only on unreviewed photos: held back
+			$out[] = array(
+				'value' => $t->name,
+				'label' => gasf_photo_label( $t->name ),
+				// The real number, so the people who appear most often — usually
+				// who you meant — sort first.
+				'n'     => $public,
+			);
 		}
 		usort( $out, function ( $a, $b ) { return $b['n'] - $a['n'] ?: strnatcasecmp( $a['label'], $b['label'] ); } );
+		return $out;
+	}
+
+	/**
+	 * How many photos each person is actually on.
+	 *
+	 * One query rather than a count per term, and NOT $term->count — see above.
+	 * The Fix names panel was showing "0 photos" against every name for exactly
+	 * this reason, which made the counts worse than useless: they were wrong in a
+	 * way that looked like data.
+	 *
+	 * @return array<int,int> term_id => photos
+	 */
+	function gasf_photo_person_counts() {
+		global $wpdb;
+		$tax = 'gasf_photo_person';
+		$rows = $wpdb->get_results( $wpdb->prepare(
+			"SELECT tt.term_id, COUNT(tr.object_id) AS n
+			   FROM {$wpdb->term_taxonomy} tt
+			   JOIN {$wpdb->term_relationships} tr ON tr.term_taxonomy_id = tt.term_taxonomy_id
+			   JOIN {$wpdb->posts} p ON p.ID = tr.object_id AND p.post_type = 'attachment'
+			  WHERE tt.taxonomy = %s
+			  GROUP BY tt.term_id",
+			$tax
+		), ARRAY_A );
+
+		$out = array();
+		foreach ( (array) $rows as $r ) { $out[ (int) $r['term_id'] ] = (int) $r['n']; }
 		return $out;
 	}
 

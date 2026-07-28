@@ -698,6 +698,12 @@ add_action( 'rest_api_init', function () {
 			$terms = get_terms( array( 'taxonomy' => 'gasf_photo_person', 'hide_empty' => false ) );
 			if ( is_wp_error( $terms ) ) { return array( 'people' => array() ); }
 
+			// Real counts, in one query. $term->count is 0 for attachment terms —
+			// WordPress counts published posts of counted types and an attachment
+			// is neither — so the panel was reporting "0 photos" against every
+			// name, and the suggestions were ranking on nothing.
+			$counts = function_exists( 'gasf_photo_person_counts' ) ? gasf_photo_person_counts() : array();
+
 			$out = array();
 			foreach ( $terms as $t ) {
 				$out[] = array(
@@ -706,7 +712,7 @@ add_action( 'rest_api_init', function () {
 					// holding &amp; must round-trip to the term it came from.
 					'value' => $t->name,
 					'label' => function_exists( 'gasf_photo_label' ) ? gasf_photo_label( $t->name ) : $t->name,
-					'n'     => (int) $t->count,
+					'n'     => (int) ( $counts[ (int) $t->term_id ] ?? 0 ),
 				);
 			}
 			usort( $out, function ( $a, $b ) { return $b['n'] - $a['n'] ?: strnatcasecmp( $a['label'], $b['label'] ); } );
