@@ -32,6 +32,20 @@ function gasf_crm_photo_page( $state, $invite = null, $notice = '' ) {
 	echo '<header class="bar"><div class="wrap"><h1>' . esc_html( get_bloginfo( 'name' ) ) . '</h1></div></header>';
 	echo '<div class="wrap main">';
 
+	// Ours, not theirs. Somebody who followed a link we sent should not be left
+	// wondering whether their photos went astray, and should not be told to try
+	// again — nothing they do will help until a volunteer turns the catalogue
+	// back on.
+	if ( 'unavailable' === $state ) {
+		echo '<div class="card pad">';
+		echo '<h2>We cannot take this just now</h2>';
+		echo '<p>Something at our end is switched off, so the form for describing your photos is not available. This is our problem, not anything you did.</p>';
+		echo '<p><strong>Your photos are safe with us</strong> &mdash; nothing has been lost. Please try the link again in a day or so, and it should work.</p>';
+		echo '<p>If it still does not, reply to the email you had from us and we will sort it out.</p>';
+		echo '</div></div></body></html>';
+		return;
+	}
+
 	if ( in_array( $state, array( 'unknown', 'expired', 'used' ), true ) ) {
 		// 'used' is its own message rather than being folded into 'expired'.
 		// Somebody who filled the form in and clicked their own link again has
@@ -100,7 +114,7 @@ function gasf_crm_photo_page( $state, $invite = null, $notice = '' ) {
 		$g = (int) get_post_meta( $id, '_gasf_photo_place_guess', true );
 		if ( $g ) { $guesses[ $g ] = true; }
 	}
-	$suggest_place = ( 1 === count( $guesses ) ) ? (int) key( $guesses ) : gasf_photo_home_place();
+	$suggest_place = ( 1 === count( $guesses ) ) ? (int) key( $guesses ) : ( function_exists( 'gasf_photo_home_place' ) ? gasf_photo_home_place() : 0 );
 
 	$places = get_terms( array( 'taxonomy' => 'gasf_photo_place', 'hide_empty' => false ) );
 	if ( is_wp_error( $places ) ) { $places = array(); }
@@ -171,9 +185,9 @@ function gasf_crm_photo_page( $state, $invite = null, $notice = '' ) {
 		$g = (int) get_post_meta( $id, '_gasf_photo_place_guess', true );
 		if ( $g ) { $candidates[ $g ] = true; }
 	}
-	$candidates[ gasf_photo_home_place() ] = true;
+	if ( function_exists( 'gasf_photo_home_place' ) ) { $candidates[ gasf_photo_home_place() ] = true; }
 
-	$tree = gasf_photo_place_tree_public( array_keys( $candidates ), $suggest_place );
+	$tree = function_exists( 'gasf_photo_place_tree_public' ) ? gasf_photo_place_tree_public( array_keys( $candidates ), $suggest_place ) : array();
 
 	// Parent names travel with the list so the form can tell a REFINEMENT of the
 	// geofence ("the grounds" -> "the Bierstube") from a contradiction of it
@@ -264,7 +278,7 @@ function gasf_crm_photo_page( $state, $invite = null, $notice = '' ) {
 		// but never in a particular room.
 		echo '<div class="f"><span>Where?</span>';
 		if ( $place_val ) {
-			printf( '<p class="hint">The camera put this at <strong>%s</strong>. Say which part if you know.</p>', esc_html( gasf_photo_label( $place_val ) ) );
+			printf( '<p class="hint">The camera put this at <strong>%s</strong>. Say which part if you know.</p>', esc_html( function_exists( 'gasf_photo_label' ) ? gasf_photo_label( $place_val ) : $place_val ) );
 		}
 		// A dropdown, not a stack of radios. Eight places times six photos was
 		// forty-eight rows of form; the hierarchy survives as indentation in the
@@ -285,7 +299,7 @@ function gasf_crm_photo_page( $state, $invite = null, $notice = '' ) {
 					esc_attr( $term->name ),
 					selected( $term->name, $place_val, false ),
 					esc_html( str_repeat( "\xC2\xA0", 4 * min( 2, (int) $row['depth'] ) ) ),
-					esc_html( gasf_photo_label( $term->name ) ),
+					esc_html( function_exists( 'gasf_photo_label' ) ? gasf_photo_label( $term->name ) : $term->name ),
 					// Only where it distinguishes something. On the grounds, which
 					// contain rooms, "anywhere" separates it from "the Bierstube".
 					// On England Brothers Park it answered a question nobody asked.

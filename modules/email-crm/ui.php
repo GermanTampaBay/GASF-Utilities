@@ -649,6 +649,17 @@ function gasf_crm_render_inbox() {
 <?php if ( gasf_crm_user_can_stream( 'photos' ) ) : ?>
 <div class="wrap" id="photoview" hidden><div class="layout">
 	<div class="card">
+		<?php if ( ! gasf_crm_photos_available() ) : ?>
+			<?php // Said once, at the top of the screen that stops working, rather ?>
+			<?php // than left for a volunteer to discover when approval refuses.  ?>
+			<div class="pane note err" style="margin:10px">
+				<strong>The Photo Catalogue is switched off.</strong>
+				Photos already here can still be looked at, but nothing can be approved,
+				no new submissions are being taken in, and the tagging links we have sent
+				will not open. Turn <em>Photo Catalogue</em> back on in GASF Utilities →
+				Settings to resume.
+			</div>
+		<?php endif; ?>
 		<div class="tabs pstates">
 			<button class="on" data-pstate="review">Needs you</button>
 			<button data-pstate="waiting">With the sender</button>

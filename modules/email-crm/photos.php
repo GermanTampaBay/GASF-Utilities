@@ -64,6 +64,40 @@ define( 'GASF_CRM_PHOTO_REMIND_TRIES', 3 );
  */
 define( 'GASF_CRM_PHOTO_INVITE_KEEP_DAYS', 90 );
 
+/**
+ * Is the Photo Catalogue there?
+ *
+ * This module does the INTAKE — fetching photos, asking the sender, holding them
+ * for review. Module 43 owns the vocabulary they are described with: the person,
+ * place and event taxonomies, the geofence, the EXIF reader, the filename and
+ * title rules. Approving a photo without it is not a reduced feature, it is a
+ * photo with nowhere to put anything anybody says about it.
+ *
+ * The two are separately switchable, so this is a real state, not a theoretical
+ * one. Left implicit it was a set of fatal errors waiting for whoever turned the
+ * catalogue off: a white screen on the public tagging page for a member of the
+ * public, and an undefined-function fatal partway through approving a photo,
+ * after the taxonomy writes and before the file was moved.
+ *
+ * Checked by function rather than by reading the gate option, because what
+ * actually matters is whether the code is loaded — a module that is enabled but
+ * failed to load is the same problem wearing a different hat.
+ */
+function gasf_crm_photos_available() {
+	foreach ( array(
+		'gasf_photo_info',
+		'gasf_photo_label',
+		'gasf_photo_place_tree',
+		'gasf_photo_place_tree_public',
+		'gasf_photo_home_place',
+		'gasf_photo_has_calendar',
+		'gasf_photo_apply_names',
+	) as $fn ) {
+		if ( ! function_exists( $fn ) ) { return false; }
+	}
+	return true;
+}
+
 /** Caps on what one submitter can type, so a form post cannot become a flood. */
 define( 'GASF_CRM_PHOTO_MAX_PEOPLE', 25 );
 define( 'GASF_CRM_PHOTO_CAPTION_MAX', 150 );
@@ -1205,6 +1239,16 @@ add_action( 'template_redirect', function () {
 	header( 'Expires: Wed, 11 Jan 1984 05:00:00 GMT', true );
 	header( 'X-Robots-Tag: noindex, nofollow', true );
 
+	// The form is built entirely from the catalogue's vocabulary. Without it this
+	// page fataled — a white screen for a member of the public who followed a
+	// link the club sent them, with no way to tell whether their photos had been
+	// lost. Say plainly that it is us, and that their photos are safe.
+	if ( ! gasf_crm_photos_available() ) {
+		gasf_mec_log( 'CRM photos: a tagging link was opened while the Photo Catalogue module is not loaded.' );
+		gasf_crm_photo_page( 'unavailable' );
+		exit;
+	}
+
 	// Wrong or stale tokens are throttled per IP. Not because the token is
 	// guessable — 32 random bytes are not — but because an endpoint that does a
 	// database lookup for any string handed to it should not do so unboundedly.
@@ -1740,6 +1784,14 @@ function gasf_crm_photo_autoprocess() {
 
 	$cfg = gasf_crm_cfg();
 	if ( empty( $cfg['photos_auto'] ) ) { return 0; }
+
+	// Nothing is taken in without somewhere to describe it. Stopping at the door
+	// leaves the mail in the mailbox, which is recoverable; importing photos that
+	// cannot be catalogued and asking senders about them is not.
+	if ( ! gasf_crm_photos_available() ) {
+		gasf_mec_log( 'CRM photos: intake skipped — the Photo Catalogue module is not loaded, so there is nothing to catalogue into.' );
+		return 0;
+	}
 
 	$lock = gasf_crm_photo_lock();
 	if ( ! $lock ) {
@@ -2708,6 +2760,19 @@ function gasf_crm_photo_confirm( $attachment_id, array $keep ) {
 		return new WP_Error( 'gasf_crm_403', 'You do not have access to photo submissions.' );
 	}
 
+	// Refused up front, before the revision is consumed or a single term is
+	// written. Approval is the one operation here that spans taxonomy, files and
+	// state, and it was reaching an undefined function partway through — after
+	// the tags had been applied and before the photo was moved out of the private
+	// store, leaving it tagged, unpublished, and its revision spent.
+	if ( ! gasf_crm_photos_available() ) {
+		return new WP_Error(
+			'gasf_crm_nocatalog',
+			'Photos cannot be approved right now: the Photo Catalogue module is switched off, so there is nowhere to record what this photo shows. Nothing has been changed.',
+			array( 'status' => 503 )
+		);
+	}
+
 	// Compare-and-swap before anything is written.
 	//
 	// update_post_meta with a previous value compiles to UPDATE ... WHERE
@@ -2763,7 +2828,8 @@ function gasf_crm_photo_confirm( $attachment_id, array $keep ) {
 	// for 200 Wednesdays. The exact event is kept alongside it as meta, so
 	// "photos from THIS one" stays answerable without polluting the vocabulary.
 	$eid = (int) ( $keep['event_id'] ?? 0 );
-	if ( $eid && gasf_photo_has_calendar() && GASF_EVENTS_CPT === get_post_type( $eid ) ) {
+	if ( $eid && function_exists( 'gasf_photo_has_calendar' ) && gasf_photo_has_calendar()
+		&& defined( 'GASF_EVENTS_CPT' ) && GASF_EVENTS_CPT === get_post_type( $eid ) ) {
 		update_post_meta( $id, '_gasf_photo_event_id', $eid );
 	} else {
 		delete_post_meta( $id, '_gasf_photo_event_id' );

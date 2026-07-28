@@ -257,7 +257,22 @@ function gasf_crm_admin_tab() {
 				<p class="description">The <strong>General</strong> stream. Must be a shared mailbox, not an alias on a person's mailbox.</p></td></tr>
 			<tr><th scope="row">Photo submissions mailbox</th>
 				<td><input type="email" class="regular-text" name="mailbox_photos" value="<?php echo esc_attr( $cfg['mailbox_photos'] ); ?>" placeholder="photos@germantampabay.com">
-				<p class="description">The <strong>Photo submissions</strong> stream. Leave blank to switch it off entirely. Any mailbox added here must also be a member of the <code>gasf-crm-scope</code> group, or Graph will refuse it — that group is what the Application Access Policy is scoped to. Volunteers are granted streams individually in Accounts below.</p></td></tr>
+				<p class="description">The <strong>Photo submissions</strong> stream. Leave blank to switch it off entirely. Any mailbox added here must also be a member of the <code>gasf-crm-scope</code> group, or Graph will refuse it — that group is what the Application Access Policy is scoped to. Volunteers are granted streams individually in Accounts below.</p>
+				<?php
+				// The dependency stated where the thing it depends on can be seen.
+				// The two modules switch independently, and a photos mailbox
+				// configured against a missing catalogue is a stream that quietly
+				// does nothing.
+				if ( ! empty( $cfg['mailbox_photos'] ) && function_exists( 'gasf_crm_photos_available' ) && ! gasf_crm_photos_available() ) :
+					?>
+					<p class="description" style="color:#b32d2e">
+						<strong>This stream needs the Photo Catalogue module, which is switched off.</strong>
+						Photos are not being taken in, nothing can be approved, and tagging links
+						already sent to submitters will not open. Enable <em>Photo Catalogue</em>
+						to resume — nothing has been lost in the meantime.
+					</p>
+				<?php endif; ?>
+				</td></tr>
 			<tr><th scope="row">Tenant ID</th>
 				<td><input type="text" class="regular-text code" name="tenant_id" value="<?php echo esc_attr( $cfg['tenant_id'] ); ?>"></td></tr>
 			<tr><th scope="row">Application (client) ID</th>
