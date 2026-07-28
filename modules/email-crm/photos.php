@@ -338,7 +338,7 @@ function gasf_crm_photo_message_sender( $graph_message_id ) {
  *
  * @return int|WP_Error attachment ID
  */
-function gasf_crm_photo_approve( array $thread, $graph_message_id, $graph_attachment_id ) {
+function gasf_crm_photo_approve( array $thread, $graph_message_id, $graph_attachment_id, $item_id = 0 ) {
 	$stream = (string) $thread['stream'];
 
 	// Resolved before anything is downloaded. A photo whose sender cannot be
@@ -402,8 +402,22 @@ function gasf_crm_photo_approve( array $thread, $graph_message_id, $graph_attach
 		return $dirs;
 	};
 
+	// Stamped the instant the row exists, before any size is generated.
+	//
+	// add_attachment fires inside wp_insert_attachment; wp_generate_attachment_metadata
+	// runs afterwards and is the slow part — resizing a phone photo a dozen ways
+	// is where a run realistically gets killed. Writing the owning item here
+	// rather than after media_handle_sideload returns means an interruption
+	// during resizing still leaves a file that can be traced back to its claim,
+	// which is exactly what the sweep needs to tell wreckage from work.
+	$claim = function ( $new_id ) use ( $item_id ) {
+		if ( $item_id > 0 ) { update_post_meta( $new_id, '_gasf_photo_item', (int) $item_id ); }
+	};
+
 	add_filter( 'upload_dir', $to_review, 99 );
+	add_action( 'add_attachment', $claim, 1 );
 	$id = media_handle_sideload( array( 'name' => $name, 'tmp_name' => $tmp ), 0 );
+	remove_action( 'add_attachment', $claim, 1 );
 	remove_filter( 'upload_dir', $to_review, 99 );
 
 	if ( is_wp_error( $id ) ) {
@@ -442,6 +456,57 @@ function gasf_crm_photo_approve( array $thread, $graph_message_id, $graph_attach
 	update_post_meta( $id, '_gasf_photo_rev', 0 );
 
 	gasf_crm_log_event( (int) $thread['id'], 'photo_approved', $name . ' → media #' . $id );
+
+	return (int) $id;
+}
+
+/**
+ * Keep one photo, claiming it first — the path both the intake and a volunteer
+ * clicking Keep go through.
+ *
+ * Nothing may reach the private store without an item row owning it. The sweep
+ * deletes private files no item claims, so a keep that skipped the claim would
+ * have its photo removed by the next intake run: the volunteer would see it
+ * saved, and it would quietly disappear an hour later.
+ *
+ * @return int|WP_Error attachment id
+ */
+function gasf_crm_photo_keep( array $thread, $graph_message_id, $graph_attachment_id, array $meta = array() ) {
+	$have = gasf_crm_photo_already_kept( $graph_message_id, $graph_attachment_id );
+	if ( $have ) { return $have; }
+
+	$sub = gasf_crm_photo_submission_open(
+		array( 'graph_message_id' => (string) $graph_message_id ),
+		$thread
+	);
+	if ( is_wp_error( $sub ) ) { return $sub; }
+
+	$item = gasf_crm_photo_item_claim(
+		$sub['id'], $graph_attachment_id,
+		(string) ( $meta['name'] ?? '' ),
+		(string) ( $meta['contentType'] ?? '' ),
+		(int) ( $meta['size'] ?? 0 )
+	);
+	if ( ! $item ) {
+		// Claimed by an intake run that is fetching it right now. Not an error to
+		// show anybody — the photo is on its way.
+		$have = gasf_crm_photo_already_kept( $graph_message_id, $graph_attachment_id );
+		if ( $have ) { return $have; }
+		return new WP_Error( 'gasf_crm_busy', 'That photo is already being fetched — give it a moment.', array( 'status' => 409 ) );
+	}
+
+	$id = gasf_crm_photo_approve( $thread, $graph_message_id, $graph_attachment_id, $item );
+	if ( is_wp_error( $id ) ) {
+		gasf_crm_photo_item_move( $item, 'pending_import', 'failed', array(
+			'fail_reason' => substr( $id->get_error_message(), 0, 191 ),
+		) );
+		return $id;
+	}
+
+	gasf_crm_photo_item_move( $item, 'pending_import', 'imported', array(
+		'wp_attachment_id' => (int) $id,
+		'private_path'     => (string) get_post_meta( (int) $id, '_wp_attached_file', true ),
+	) );
 
 	return (int) $id;
 }
@@ -534,8 +599,26 @@ function gasf_crm_photo_invite_create( $thread_id, $email, $name, array $attachm
 	) );
 	if ( ! $ok ) { return new WP_Error( 'gasf_crm_invite', 'Could not create the tagging link.' ); }
 
+	$invite_id = (int) $wpdb->insert_id;
+
+	// Membership as rows, alongside the JSON column the older code still reads.
+	// "Which invitation covers this photo" used to be three LIKE queries against
+	// a JSON list — one each for the first, middle and last position — because a
+	// substring match on '[19434,' cannot find 19434 at the end. Every one of
+	// those was a full table scan, and a missing case meant a photo silently
+	// reported as never asked about.
+	foreach ( $ids as $aid ) {
+		$item = gasf_crm_photo_item_for_attachment( $aid );
+		if ( ! $item ) { continue; }
+		$wpdb->query( $wpdb->prepare(
+			'INSERT IGNORE INTO ' . gasf_crm_table( 'photo_invite_items' ) . '
+			  (invite_id, photo_item_id) VALUES (%d, %d)',
+			$invite_id, (int) $item['id']
+		) );
+	}
+
 	return array(
-		'id'    => (int) $wpdb->insert_id,
+		'id'    => $invite_id,
 		'token' => $token,
 		'url'   => gasf_crm_photo_invite_url( $token ),
 	);
@@ -885,6 +968,13 @@ function gasf_crm_photo_save_pending( array $invite ) {
 			'by'       => (string) $invite['email'],
 			'at'       => current_time( 'mysql', true ),
 		) );
+
+		// The sender has answered, so this is a volunteer's to look at now rather
+		// than something still being waited on.
+		gasf_crm_photo_item_set( $aid, 'described', array( 'pending_json' => wp_json_encode( array(
+			'people' => array_values( array_unique( $people ) ), 'caption' => $caption,
+			'place'  => $place, 'event' => $event, 'event_id' => $event_id,
+		) ) ) );
 	}
 
 	gasf_crm_log_event( (int) $invite['thread_id'], 'photo_tagged', $invite['email'] . ' described ' . count( $invite['ids'] ) . ' photo(s)' );
@@ -931,6 +1021,230 @@ function gasf_crm_photo_notify_review( array $invite, $count ) {
 	foreach ( $to as $addr ) {
 		gasf_crm_graph_send( $addr, 'Photo descriptions waiting to be checked', $body, 'photos' );
 	}
+}
+
+/* =====================================================================
+ * The workflow state model
+ *
+ * State used to be inferred — a boolean on the message, the presence of some
+ * postmeta, which directory a file sat in. Inference works until something
+ * half-finishes, and then nothing can distinguish "not started" from "died
+ * halfway" from "finished". That is how a killed run left two photos
+ * permanently unreachable and, later, an attachment with files on disk that no
+ * query could see.
+ *
+ * Now one row per message and one per attachment say where things are, and the
+ * transitions are compare-and-swap so two workers cannot both advance the same
+ * thing.
+ *
+ *   submission : pending → processing → complete
+ *                              ↓
+ *                    retry (backoff) · held (too many) · failed (terminal)
+ *
+ *   item       : pending_import → imported → invited → described | released
+ *                                                          ↓
+ *                                              confirmed | rejected
+ *
+ * The item names deliberately match what the UI already calls these states, so
+ * the screens keep working while the source of truth moves underneath them.
+ * ================================================================== */
+
+/** How long one worker may hold a submission before another may take it. */
+define( 'GASF_CRM_PHOTO_LEASE', 10 * MINUTE_IN_SECONDS );
+
+/** Give up on a submission after this many attempts. */
+define( 'GASF_CRM_PHOTO_MAX_ATTEMPTS', 5 );
+
+/**
+ * Find or create the submission row for a message.
+ *
+ * The sender is copied in, not looked up later: who sent a submission is a fact
+ * about the moment it arrived, and the thread it belongs to will name somebody
+ * else the next time anyone replies.
+ *
+ * @return array|WP_Error
+ */
+function gasf_crm_photo_submission_open( array $msg, array $thread ) {
+	global $wpdb;
+
+	$t   = gasf_crm_table( 'photo_submissions' );
+	$now = current_time( 'mysql', true );
+
+	$sender = gasf_crm_photo_message_sender( (string) $msg['graph_message_id'] );
+	if ( is_wp_error( $sender ) ) { return $sender; }
+
+	// INSERT IGNORE against the unique (stream, graph_message_id): two workers
+	// arriving together produce one row, and the loser reads it back.
+	$wpdb->query( $wpdb->prepare(
+		"INSERT IGNORE INTO {$t}
+		  (thread_id, stream, graph_message_id, sender_email, sender_name, subject,
+		   state, revision, attempt_count, created_at, updated_at)
+		 VALUES (%d, %s, %s, %s, %s, %s, 'pending', 0, 0, %s, %s)",
+		(int) $thread['id'], (string) $thread['stream'], (string) $msg['graph_message_id'],
+		$sender['email'], $sender['name'], (string) $thread['subject'], $now, $now
+	) );
+
+	$row = $wpdb->get_row( $wpdb->prepare(
+		"SELECT * FROM {$t} WHERE stream = %s AND graph_message_id = %s LIMIT 1",
+		(string) $thread['stream'], (string) $msg['graph_message_id']
+	), ARRAY_A );
+
+	return $row ? $row : new WP_Error( 'gasf_crm_sub', 'Could not open a submission record.' );
+}
+
+/**
+ * Take a lease on a submission, or fail.
+ *
+ * The WHERE clause carries every condition, so the database decides the winner.
+ * A lease that has expired can be taken over — a worker that died holding one
+ * must not stall the submission forever — but only by matching the revision it
+ * was read at, so a stale reader cannot resurrect old work.
+ *
+ * @return string owner token, or '' if somebody else holds it
+ */
+function gasf_crm_photo_submission_claim( array $sub ) {
+	global $wpdb;
+
+	$t     = gasf_crm_table( 'photo_submissions' );
+	$now   = current_time( 'mysql', true );
+	$owner = bin2hex( random_bytes( 8 ) );
+
+	$won = (int) $wpdb->query( $wpdb->prepare(
+		"UPDATE {$t}
+		    SET state = 'processing', lease_owner = %s, lease_until = %s,
+		        attempt_count = attempt_count + 1, revision = revision + 1, updated_at = %s
+		  WHERE id = %d AND revision = %d
+		    AND state IN ('pending','retry','processing')
+		    AND (next_attempt_at IS NULL OR next_attempt_at <= %s)
+		    AND (lease_until IS NULL OR lease_until <= %s)",
+		$owner,
+		gmdate( 'Y-m-d H:i:s', time() + GASF_CRM_PHOTO_LEASE ),
+		$now, (int) $sub['id'], (int) $sub['revision'], $now, $now
+	) );
+
+	return ( 1 === $won ) ? $owner : '';
+}
+
+/** Push the lease out while long work is still running. */
+function gasf_crm_photo_submission_touch( $id, $owner ) {
+	global $wpdb;
+	$wpdb->query( $wpdb->prepare(
+		'UPDATE ' . gasf_crm_table( 'photo_submissions' ) . '
+		    SET lease_until = %s, updated_at = %s
+		  WHERE id = %d AND lease_owner = %s',
+		gmdate( 'Y-m-d H:i:s', time() + GASF_CRM_PHOTO_LEASE ),
+		current_time( 'mysql', true ), (int) $id, (string) $owner
+	) );
+}
+
+/**
+ * Move a submission on, but only while we still hold it.
+ *
+ * Matching lease_owner is what stops a worker that has been superseded — its
+ * lease expired and somebody else took over — from writing a conclusion about
+ * work that is now being redone.
+ */
+function gasf_crm_photo_submission_finish( $id, $owner, $state, $reason = '', $retry_in = 0 ) {
+	global $wpdb;
+
+	$data = array(
+		'state'       => $state,
+		'fail_reason' => substr( (string) $reason, 0, 191 ),
+		'lease_owner' => null,
+		'lease_until' => null,
+		'updated_at'  => current_time( 'mysql', true ),
+	);
+	if ( $retry_in > 0 ) {
+		$data['next_attempt_at'] = gmdate( 'Y-m-d H:i:s', time() + (int) $retry_in );
+	}
+
+	return (bool) $wpdb->update(
+		gasf_crm_table( 'photo_submissions' ),
+		$data,
+		array( 'id' => (int) $id, 'lease_owner' => (string) $owner )
+	);
+}
+
+/**
+ * Claim one attachment for import, before a single byte is downloaded.
+ *
+ * This is the whole point of the table. The unique key on
+ * (submission_id, graph_attachment_id) means the INSERT itself is the claim: it
+ * succeeds exactly once however many workers race, and a run killed immediately
+ * afterwards leaves a pending_import row that the next run finds and retries —
+ * rather than nothing at all, or an orphaned attachment nobody can see.
+ *
+ * @return int item id, or 0 if another worker holds it or it is already done
+ */
+function gasf_crm_photo_item_claim( $submission_id, $graph_attachment_id, $filename, $mime, $bytes ) {
+	global $wpdb;
+
+	$t   = gasf_crm_table( 'photo_items' );
+	$now = current_time( 'mysql', true );
+
+	$wpdb->query( $wpdb->prepare(
+		"INSERT IGNORE INTO {$t}
+		  (submission_id, graph_attachment_id, state, revision, filename, mime, bytes, created_at, updated_at)
+		 VALUES (%d, %s, 'pending_import', 0, %s, %s, %d, %s, %s)",
+		(int) $submission_id, (string) $graph_attachment_id,
+		substr( (string) $filename, 0, 191 ), substr( (string) $mime, 0, 64 ), (int) $bytes, $now, $now
+	) );
+
+	$row = $wpdb->get_row( $wpdb->prepare(
+		"SELECT id, state FROM {$t} WHERE submission_id = %d AND graph_attachment_id = %s LIMIT 1",
+		(int) $submission_id, (string) $graph_attachment_id
+	), ARRAY_A );
+	if ( ! $row ) { return 0; }
+
+	// Anything past pending_import has already been fetched by somebody.
+	return ( 'pending_import' === $row['state'] ) ? (int) $row['id'] : 0;
+}
+
+/** Advance an item, compare-and-swapping on the state we believe it is in. */
+function gasf_crm_photo_item_move( $item_id, $from, $to, array $set = array() ) {
+	global $wpdb;
+
+	$data = array_merge( $set, array(
+		'state'      => $to,
+		'updated_at' => current_time( 'mysql', true ),
+	) );
+
+	$sql = 'UPDATE ' . gasf_crm_table( 'photo_items' ) . ' SET ';
+	$bits = array();
+	$args = array();
+	foreach ( $data as $k => $v ) { $bits[] = "`{$k}` = %s"; $args[] = $v; }
+	$bits[] = 'revision = revision + 1';
+	$sql   .= implode( ', ', $bits ) . ' WHERE id = %d';
+	$args[] = (int) $item_id;
+
+	if ( null !== $from ) {
+		$sql   .= ' AND state = %s';
+		$args[] = $from;
+	}
+
+	return 1 === (int) $wpdb->query( $wpdb->prepare( $sql, $args ) ); // phpcs:ignore WordPress.DB.PreparedSQL
+}
+
+/**
+ * Move whatever item owns this attachment, if one does.
+ *
+ * Deliberately quiet when there is no item. A volunteer can still act on a
+ * photo that predates the table, and refusing to let them approve it because
+ * the bookkeeping is missing would be the workflow serving itself.
+ */
+function gasf_crm_photo_item_set( $attachment_id, $to, array $set = array() ) {
+	$item = gasf_crm_photo_item_for_attachment( $attachment_id );
+	if ( ! $item ) { return false; }
+	return gasf_crm_photo_item_move( (int) $item['id'], null, $to, $set );
+}
+
+/** The item row behind a WordPress attachment, or null. */
+function gasf_crm_photo_item_for_attachment( $attachment_id ) {
+	global $wpdb;
+	return $wpdb->get_row( $wpdb->prepare(
+		'SELECT * FROM ' . gasf_crm_table( 'photo_items' ) . ' WHERE wp_attachment_id = %d LIMIT 1',
+		(int) $attachment_id
+	), ARRAY_A );
 }
 
 /* =====================================================================
@@ -1010,40 +1324,198 @@ function gasf_crm_photo_autoprocess() {
 }
 
 /**
- * Delete imports that were interrupted between sideload and provenance.
+ * Delete private files that no item claims, and reopen claims that lost theirs.
  *
- * media_handle_sideload creates the attachment and generates every size, and
- * only THEN is _gasf_photo_source written. A run killed in that gap leaves an
- * attachment with files on disk and no record of who sent it — invisible to
- * every query the CRM makes, because they all filter on that meta key, and
- * therefore never reviewed, never published and never cleaned up.
+ * Two halves, because an interrupted import can leave either kind of debris:
  *
- * Observed rather than theorised: a cron intake was interrupted mid-session and
- * left exactly one such row.
+ *   - An attachment in the private root that no photo_items row owns. Nothing
+ *     will ever review it, publish it or delete it, because every CRM query
+ *     starts from the item table. Unreviewed image bytes with no owner are
+ *     exactly what the private root exists to prevent, so they go.
+ *   - An item stuck in pending_import whose attachment is gone. The claim is
+ *     still valid — the photo really is still waiting — so it is reset for
+ *     another attempt rather than deleted.
  *
- * The proper fix is the photo_items claim, where a row is written BEFORE the
- * download and an interruption leaves a retryable record rather than a ghost.
- * Until that is wired, this sweeps at the start of every intake, which is the
- * only moment we know no import is legitimately in flight — the lock is held.
+ * This is no longer the primary defence. The claim is: a row now exists before
+ * the download, so an interruption leaves a retryable record instead of a
+ * ghost. This runs under the intake lock, the one moment nothing can legitimately
+ * be mid-import, and cleans up after crashes the claim cannot prevent — a kill
+ * between the attachment row and its size generation.
  */
 function gasf_crm_photo_sweep_orphans() {
 	global $wpdb;
 
+	$items = gasf_crm_table( 'photo_items' );
+
+	// Half one: private files with neither a claim nor provenance.
+	//
+	// BOTH must be absent. Requiring only the claim would have been enough to
+	// delete every photo that predates this table, and a photo a volunteer kept
+	// by hand is real work regardless of what the bookkeeping says. Anything
+	// carrying provenance is left alone and picked up by the backfill instead.
 	$rows = $wpdb->get_col( $wpdb->prepare(
 		"SELECT p.post_id FROM {$wpdb->postmeta} p
+		  LEFT JOIN {$wpdb->postmeta} c
+		         ON c.post_id = p.post_id AND c.meta_key = '_gasf_photo_item'
 		  LEFT JOIN {$wpdb->postmeta} s
 		         ON s.post_id = p.post_id AND s.meta_key = '_gasf_photo_source'
+		  LEFT JOIN {$items} i
+		         ON i.id = CAST(c.meta_value AS UNSIGNED) AND i.wp_attachment_id = p.post_id
 		  WHERE p.meta_key = '_wp_attached_file'
 		    AND p.meta_value LIKE %s
+		    AND i.id IS NULL
 		    AND s.post_id IS NULL",
 		$wpdb->esc_like( GASF_CRM_PHOTO_REVIEW_DIR . '/' ) . '%'
 	) );
 
 	foreach ( $rows as $id ) {
-		gasf_mec_log( 'CRM photos: removing interrupted import #' . (int) $id . ' (no provenance recorded)' );
+		gasf_mec_log( 'CRM photos: removing unclaimed private image #' . (int) $id . ' (interrupted import)' );
 		wp_delete_attachment( (int) $id, true );
 	}
+
+	// Half two: claims whose attachment did not survive. Not deleted — the photo
+	// is still owed, so the row goes back to pending_import and the next pass
+	// fetches it again. attempt_count on the submission still governs how many
+	// times that may happen.
+	$reopened = (int) $wpdb->query(
+		"UPDATE {$items}
+		    SET wp_attachment_id = 0, updated_at = UTC_TIMESTAMP(), revision = revision + 1
+		  WHERE state = 'imported'
+		    AND wp_attachment_id > 0
+		    AND wp_attachment_id NOT IN (
+		        SELECT ID FROM {$wpdb->posts} WHERE post_type = 'attachment' )"
+	);
+	if ( $reopened ) {
+		$wpdb->query( "UPDATE {$items} SET state = 'pending_import' WHERE state = 'imported' AND wp_attachment_id = 0" );
+		gasf_mec_log( 'CRM photos: ' . $reopened . ' item(s) lost their attachment — reopened for another attempt' );
+	}
+
 	return count( $rows );
+}
+
+/**
+ * Give every photo that predates the item table a claim.
+ *
+ * Runs once on upgrade, and is safe to run again — every write is INSERT IGNORE
+ * or keyed on a state that only moves forwards.
+ *
+ * Provenance is the source: it already records the message, the sender and the
+ * Graph attachment, which is exactly what a submission and an item hold. The
+ * state is read back from where the photo actually is, so a photo already
+ * confirmed does not reappear in the queue as though nobody had looked at it.
+ *
+ * @return array{submissions:int,items:int,invites:int}
+ */
+function gasf_crm_photo_backfill() {
+	global $wpdb;
+
+	$done = array( 'submissions' => 0, 'items' => 0, 'invites' => 0 );
+
+	$ids = $wpdb->get_col(
+		"SELECT DISTINCT p.post_id FROM {$wpdb->postmeta} p
+		  LEFT JOIN " . gasf_crm_table( 'photo_items' ) . " i ON i.wp_attachment_id = p.post_id
+		  WHERE p.meta_key = '_gasf_photo_source' AND i.id IS NULL"
+	);
+
+	foreach ( $ids as $aid ) {
+		$aid = (int) $aid;
+		$src = get_post_meta( $aid, '_gasf_photo_source', true );
+		if ( ! is_array( $src ) || empty( $src['graph_msg'] ) ) { continue; }
+
+		$thread = array(
+			'id'      => (int) ( $src['thread'] ?? 0 ),
+			'stream'  => (string) ( $src['stream'] ?? 'photos' ),
+			'subject' => (string) ( $src['subject'] ?? '' ),
+		);
+
+		// Not gasf_crm_photo_submission_open: that re-derives the sender from the
+		// messages table, and a message purged from the CRM would leave a photo
+		// that cannot be backfilled at all. Provenance already holds the sender
+		// as it was at the time, which is the more truthful answer anyway.
+		$t   = gasf_crm_table( 'photo_submissions' );
+		$now = current_time( 'mysql', true );
+		$wpdb->query( $wpdb->prepare(
+			"INSERT IGNORE INTO {$t}
+			  (thread_id, stream, graph_message_id, sender_email, sender_name, subject,
+			   state, revision, attempt_count, created_at, updated_at)
+			 VALUES (%d, %s, %s, %s, %s, %s, 'complete', 0, 1, %s, %s)",
+			$thread['id'], $thread['stream'], (string) $src['graph_msg'],
+			(string) ( $src['email'] ?? '' ), (string) ( $src['name'] ?? '' ),
+			$thread['subject'], (string) ( $src['approved_at'] ?? $now ), $now
+		) );
+		if ( $wpdb->rows_affected ) { $done['submissions']++; }
+
+		$sub_id = (int) $wpdb->get_var( $wpdb->prepare(
+			"SELECT id FROM {$t} WHERE stream = %s AND graph_message_id = %s LIMIT 1",
+			$thread['stream'], (string) $src['graph_msg']
+		) );
+		if ( ! $sub_id ) { continue; }
+
+		// Read from the photo itself, NOT from gasf_crm_photo_state — that now
+		// answers via the join table this function is about to populate, so it
+		// would call every already-invited photo 'untagged' and quietly restart
+		// the clock on people who were asked days ago. Invitation membership is
+		// applied in a second pass below, once the item rows it needs exist.
+		$state = 'imported';
+		if ( get_post_meta( $aid, '_gasf_photo_confirmed', true ) ) {
+			$state = 'confirmed';
+		} elseif ( get_post_meta( $aid, '_gasf_photo_pending', true ) ) {
+			$state = 'described';
+		}
+
+		$wpdb->query( $wpdb->prepare(
+			'INSERT IGNORE INTO ' . gasf_crm_table( 'photo_items' ) . '
+			  (submission_id, graph_attachment_id, wp_attachment_id, state, revision,
+			   private_path, filename, created_at, updated_at)
+			 VALUES (%d, %s, %d, %s, 0, %s, %s, %s, %s)',
+			$sub_id, (string) ( $src['graph_att'] ?? '' ), $aid, $state,
+			(string) get_post_meta( $aid, '_wp_attached_file', true ),
+			basename( (string) get_post_meta( $aid, '_wp_attached_file', true ) ),
+			(string) ( $src['approved_at'] ?? $now ), $now
+		) );
+		if ( $wpdb->rows_affected ) { $done['items']++; }
+
+		$item = gasf_crm_photo_item_for_attachment( $aid );
+		if ( $item ) { update_post_meta( $aid, '_gasf_photo_item', (int) $item['id'] ); }
+	}
+
+	// Invitation membership, from the JSON column the join table replaces, plus
+	// the invited/released state that membership implies.
+	$invites = $wpdb->get_results(
+		'SELECT id, attachment_ids, created_at FROM ' . gasf_crm_table( 'photo_invites' ) . '
+		  ORDER BY created_at ASC', ARRAY_A
+	);
+	foreach ( (array) $invites as $inv ) {
+		$list = json_decode( (string) $inv['attachment_ids'], true );
+		// Dated from the EARLIEST invitation covering a photo. Reminders mint a
+		// second row, and taking the later one would push the release date out by
+		// two days every time somebody was nudged — the ordering above is what
+		// makes the first write the one that sticks.
+		$free = strtotime( $inv['created_at'] . ' UTC' ) + ( GASF_CRM_PHOTO_RELEASE_DAYS * DAY_IN_SECONDS );
+		$due  = time() >= $free ? 'released' : 'invited';
+
+		foreach ( (array) $list as $aid ) {
+			$item = gasf_crm_photo_item_for_attachment( (int) $aid );
+			if ( ! $item ) { continue; }
+
+			$wpdb->query( $wpdb->prepare(
+				'INSERT IGNORE INTO ' . gasf_crm_table( 'photo_invite_items' ) . '
+				  (invite_id, photo_item_id) VALUES (%d, %d)',
+				(int) $inv['id'], (int) $item['id']
+			) );
+			if ( $wpdb->rows_affected ) { $done['invites']++; }
+
+			// Only from 'imported'. A photo already described or confirmed has
+			// moved past this and must not be dragged back to waiting.
+			gasf_crm_photo_item_move( (int) $item['id'], 'imported', $due );
+		}
+	}
+
+	gasf_mec_log( sprintf(
+		'CRM photos: backfilled %d submission(s), %d item(s), %d invitation link(s)',
+		$done['submissions'], $done['items'], $done['invites']
+	) );
+	return $done;
 }
 
 function gasf_crm_photo_autoprocess_run() {
@@ -1060,15 +1532,29 @@ function gasf_crm_photo_autoprocess_run() {
 	}
 	if ( ! $photo_streams ) { return 0; }
 
-	$in = implode( ',', array_fill( 0, count( $photo_streams ), '%s' ) );
+	// Candidates are messages with no finished submission behind them. A message
+	// whose submission is complete, held or failed is not selected at all; one in
+	// retry waits for its backoff to elapse. photos_done is no longer consulted —
+	// a single boolean could not distinguish "not started" from "died halfway",
+	// which is how a killed run once abandoned two photos permanently.
+	$in   = implode( ',', array_fill( 0, count( $photo_streams ), '%s' ) );
+	$subs = gasf_crm_table( 'photo_submissions' );
+	$now  = current_time( 'mysql', true );
+
 	$rows = $wpdb->get_results( $wpdb->prepare(
 		'SELECT m.id, m.graph_message_id, m.thread_id, m.from_addr, m.from_name
 		   FROM ' . gasf_crm_table( 'messages' ) . ' m
 		   JOIN ' . gasf_crm_table( 'threads' ) . ' t ON t.id = m.thread_id
-		  WHERE m.direction = \'in\' AND m.has_attachments = 1 AND m.photos_done = 0
+		   LEFT JOIN ' . $subs . ' s
+		          ON s.stream = t.stream AND s.graph_message_id = m.graph_message_id
+		  WHERE m.direction = \'in\' AND m.has_attachments = 1
 		    AND t.stream IN (' . $in . ')
+		    AND ( s.id IS NULL OR (
+		          s.state IN (\'pending\',\'retry\',\'processing\')
+		      AND ( s.next_attempt_at IS NULL OR s.next_attempt_at <= %s )
+		      AND ( s.lease_until    IS NULL OR s.lease_until    <= %s ) ) )
 		  ORDER BY m.id ASC LIMIT 10', // phpcs:ignore WordPress.DB.PreparedSQL
-		$photo_streams
+		array_merge( $photo_streams, array( $now, $now ) )
 	), ARRAY_A );
 
 	$taken = 0;
@@ -1076,24 +1562,44 @@ function gasf_crm_photo_autoprocess_run() {
 		$thread = gasf_crm_get_thread( (int) $row['thread_id'] );
 		if ( ! $thread ) { continue; }
 
-		$kept   = array();  // everything on this message, new or already here
-		$fresh  = 0;        // how many this run actually fetched
-		$failed = false;
+		$sub = gasf_crm_photo_submission_open( $row, $thread );
+		if ( is_wp_error( $sub ) ) {
+			// No usable sender. An unattributable photo is worse than a missing
+			// one, so this is terminal rather than retried forever.
+			gasf_mec_log( 'CRM photos: message ' . (int) $row['id'] . ' — ' . $sub->get_error_message() );
+			continue;
+		}
+
+		$owner = gasf_crm_photo_submission_claim( $sub );
+		if ( ! $owner ) { continue; } // somebody else has it
+
+		// Beyond the attempt ceiling this stops being a transient problem and
+		// starts being a thing a person needs to look at.
+		if ( (int) $sub['attempt_count'] + 1 > GASF_CRM_PHOTO_MAX_ATTEMPTS ) {
+			gasf_crm_photo_submission_finish( $sub['id'], $owner, 'failed', 'gave up after ' . GASF_CRM_PHOTO_MAX_ATTEMPTS . ' attempts' );
+			gasf_mec_log( 'CRM photos: giving up on message ' . (int) $row['id'] . ' after ' . GASF_CRM_PHOTO_MAX_ATTEMPTS . ' attempts' );
+			gasf_crm_log_event( (int) $thread['id'], 'photo_failed', 'import failed repeatedly — needs a volunteer' );
+			continue;
+		}
 
 		$all = gasf_crm_graph_attachments( $row['graph_message_id'], (string) $thread['stream'] );
 		if ( is_wp_error( $all ) ) {
+			// Graph being unreachable is the ordinary transient case: back off and
+			// come round again rather than burning the submission.
+			gasf_crm_photo_submission_finish( $sub['id'], $owner, 'retry', $all->get_error_message(), gasf_crm_photo_backoff( $sub ) );
 			gasf_mec_log( 'CRM photos: could not list attachments on message ' . (int) $row['id'] . ' — ' . $all->get_error_message() );
-			continue; // left unmarked, so the next run tries again
+			continue;
 		}
 
-		// Too many to take unattended. Left entirely unprocessed rather than
-		// part-imported: half a submission is worse than none, because it looks
-		// finished. A volunteer keeps them by hand from the thread.
+		// Too many to take unattended. Held, not failed — the photos are fine,
+		// there are simply more than an unattended job should pull in one go, and
+		// a volunteer keeps them by hand from the thread.
 		$images = 0;
 		foreach ( (array) $all as $a ) {
 			if ( 0 === strpos( strtolower( (string) ( $a['contentType'] ?? '' ) ), 'image/' ) ) { $images++; }
 		}
 		if ( $images > GASF_CRM_PHOTO_MAX_PER_MESSAGE ) {
+			gasf_crm_photo_submission_finish( $sub['id'], $owner, 'held', $images . ' images, over the ' . GASF_CRM_PHOTO_MAX_PER_MESSAGE . ' limit' );
 			gasf_mec_log( sprintf(
 				'CRM photos: message %d from %s carries %d images, over the %d limit — NOT taken in automatically, needs a volunteer.',
 				(int) $row['id'], $thread['last_from_addr'], $images, GASF_CRM_PHOTO_MAX_PER_MESSAGE
@@ -1102,38 +1608,69 @@ function gasf_crm_photo_autoprocess_run() {
 			continue;
 		}
 
+		$kept  = array();  // everything on this message, new or already here
+		$fresh = 0;        // how many this run actually fetched
+		$stuck = '';       // first hard failure, if any
+
 		foreach ( (array) $all as $a ) {
 			$type = strtolower( (string) ( $a['contentType'] ?? '' ) );
 			$kind = (string) ( $a['@odata.type'] ?? '' );
 			if ( 0 !== strpos( $type, 'image/' ) ) { continue; }
 			if ( false !== strpos( $kind, 'referenceAttachment' ) || false !== strpos( $kind, 'itemAttachment' ) ) { continue; }
 
-			// Already here — from a previous run, or because a volunteer kept it
-			// by hand before this got to it. Either way it is not fetched twice.
-			$have = gasf_crm_photo_already_kept( $row['graph_message_id'], (string) ( $a['id'] ?? '' ) );
+			$att = (string) ( $a['id'] ?? '' );
+
+			// Already here — a previous attempt, or a volunteer who kept it by
+			// hand before this got to it. Either way it is not fetched twice.
+			$have = gasf_crm_photo_already_kept( $row['graph_message_id'], $att );
 			if ( $have ) { $kept[] = $have; continue; }
 
-			$id = gasf_crm_photo_approve( $thread, (string) $row['graph_message_id'], (string) ( $a['id'] ?? '' ) );
+			// The claim. This INSERT is what makes the whole thing recoverable:
+			// it succeeds exactly once no matter how many workers race, and a
+			// crash immediately after leaves a pending_import row the next pass
+			// will find — rather than nothing at all.
+			$item = gasf_crm_photo_item_claim(
+				$sub['id'], $att,
+				(string) ( $a['name'] ?? '' ), $type, (int) ( $a['size'] ?? 0 )
+			);
+			if ( ! $item ) { continue; } // another worker owns this one
+
+			gasf_crm_photo_submission_touch( $sub['id'], $owner );
+
+			$id = gasf_crm_photo_approve( $thread, (string) $row['graph_message_id'], $att, $item );
 			if ( is_wp_error( $id ) ) {
+				gasf_crm_photo_item_move( $item, 'pending_import', 'failed', array(
+					'fail_reason' => substr( $id->get_error_message(), 0, 191 ),
+				) );
 				gasf_mec_log( 'CRM photos: auto-keep failed for ' . ( $a['name'] ?? '?' ) . ' — ' . $id->get_error_message() );
-				$failed = true;
+				$stuck = $id->get_error_message();
 				continue;
 			}
+
+			gasf_crm_photo_item_move( $item, 'pending_import', 'imported', array(
+				'wp_attachment_id' => (int) $id,
+				'private_path'     => (string) get_post_meta( (int) $id, '_wp_attached_file', true ),
+			) );
+
 			$kept[] = (int) $id;
 			$fresh++;
 		}
 
-		// Marked only once every image on the message is in. The first version
-		// marked it BEFORE the work, to stop a retry sending a second email —
-		// but a run killed halfway then abandoned the remaining photos for good,
-		// silently. Per-attachment keys make a retry harmless, so the flag can
-		// wait until there is genuinely nothing left to fetch.
-		if ( ! $failed ) {
-			$wpdb->update( gasf_crm_table( 'messages' ), array( 'photos_done' => 1 ), array( 'id' => (int) $row['id'] ), array( '%d' ), array( '%d' ) );
+		$taken += $fresh;
+
+		// A failed photo means the submission is not finished. It goes back to
+		// retry so the remaining images are fetched on a later pass, and the
+		// failed item is left where it is — its claim already records what
+		// went wrong, so a retry will not re-download what did work.
+		if ( '' !== $stuck ) {
+			gasf_crm_photo_submission_finish( $sub['id'], $owner, 'retry', $stuck, gasf_crm_photo_backoff( $sub ) );
+			continue;
 		}
 
-		$taken += $fresh;
-		if ( ! $kept ) { continue; }
+		if ( ! $kept ) {
+			gasf_crm_photo_submission_finish( $sub['id'], $owner, 'complete', 'no images on this message' );
+			continue;
+		}
 
 		// One ask per submission. A retry, or more photos arriving on the same
 		// thread later, must not start the clock again on somebody who is
@@ -1143,25 +1680,23 @@ function gasf_crm_photo_autoprocess_run() {
 			  WHERE thread_id = %d AND submitted_at IS NULL AND expires_at > %s',
 			(int) $thread['id'], current_time( 'mysql', true )
 		) );
-		if ( $live ) { continue; }
-
-		// Addressed to whoever sent THIS message, not to whoever wrote last.
-		$to_addr = sanitize_email( (string) $row['from_addr'] );
-		$to_name = sanitize_text_field( (string) $row['from_name'] );
-		if ( ! is_email( $to_addr ) ) {
-			gasf_mec_log( 'CRM photos: message ' . (int) $row['id'] . ' has no usable sender — photos kept, no link sent.' );
+		if ( $live ) {
+			gasf_crm_photo_submission_finish( $sub['id'], $owner, 'complete', 'joined a live invitation' );
 			continue;
 		}
 
 		$inv = gasf_crm_photo_invite_create(
 			(int) $thread['id'],
-			$to_addr,
-			$to_name,
+			$sub['sender_email'],
+			$sub['sender_name'],
 			$kept,
 			(string) $thread['stream'],
 			(string) $row['graph_message_id']
 		);
 		if ( is_wp_error( $inv ) ) {
+			// The photos are in; only the ask failed. Retryable, and the photos
+			// already kept are skipped next time round by their claims.
+			gasf_crm_photo_submission_finish( $sub['id'], $owner, 'retry', $inv->get_error_message(), gasf_crm_photo_backoff( $sub ) );
 			gasf_mec_log( 'CRM photos: took in ' . count( $kept ) . ' photo(s) from thread ' . (int) $thread['id']
 				. ' but could not mint a tagging link — ' . $inv->get_error_message() );
 			continue;
@@ -1169,12 +1704,31 @@ function gasf_crm_photo_autoprocess_run() {
 
 		gasf_crm_photo_invite_send( array(
 			'thread_id' => (int) $thread['id'],
-			'email'     => $to_addr,
-			'name'      => $to_name,
+			'email'     => $sub['sender_email'],
+			'name'      => $sub['sender_name'],
 		), $inv['token'], (string) $thread['stream'] );
+
+		// Everything on this message is in and the sender has been asked.
+		foreach ( $kept as $aid ) {
+			$it = gasf_crm_photo_item_for_attachment( (int) $aid );
+			if ( $it ) { gasf_crm_photo_item_move( (int) $it['id'], 'imported', 'invited' ); }
+		}
+		gasf_crm_photo_submission_finish( $sub['id'], $owner, 'complete' );
 	}
 
 	return $taken;
+}
+
+/**
+ * How long to wait before trying a submission again.
+ *
+ * Exponential, so a mailbox that is down for an hour is not hammered once a
+ * minute, and capped so a transient problem that clears overnight does not
+ * leave photos sitting for days.
+ */
+function gasf_crm_photo_backoff( array $sub ) {
+	$n = max( 1, (int) $sub['attempt_count'] + 1 );
+	return (int) min( 6 * HOUR_IN_SECONDS, 5 * MINUTE_IN_SECONDS * pow( 2, $n - 1 ) );
 }
 
 /* =====================================================================
@@ -1261,7 +1815,42 @@ function gasf_crm_photo_chase() {
 		$sent++;
 	}
 
+	gasf_crm_photo_release_due();
 	return $sent;
+}
+
+/**
+ * Move photos out of purgatory once the grace period is up.
+ *
+ * The state a screen shows and the state the table records have to be the same
+ * thing. Purgatory is the one state that ends by itself — nobody acts, time
+ * simply passes — so without this the row would say 'invited' forever while
+ * every screen said 'released', and the next person to trust the table over the
+ * screen would be wrong.
+ *
+ * Dated from the earliest invitation covering each photo, so a reminder does
+ * not extend the wait.
+ *
+ * @return int photos released
+ */
+function gasf_crm_photo_release_due() {
+	global $wpdb;
+
+	$cut = gmdate( 'Y-m-d H:i:s', time() - ( GASF_CRM_PHOTO_RELEASE_DAYS * DAY_IN_SECONDS ) );
+
+	$n = (int) $wpdb->query( $wpdb->prepare(
+		'UPDATE ' . gasf_crm_table( 'photo_items' ) . ' i
+		    JOIN ( SELECT l.photo_item_id AS item, MIN(v.created_at) AS asked
+		             FROM ' . gasf_crm_table( 'photo_invite_items' ) . ' l
+		             JOIN ' . gasf_crm_table( 'photo_invites' ) . ' v ON v.id = l.invite_id
+		            GROUP BY l.photo_item_id ) f ON f.item = i.id
+		     SET i.state = %s, i.updated_at = %s, i.revision = i.revision + 1
+		   WHERE i.state = %s AND f.asked <= %s',
+		'released', current_time( 'mysql', true ), 'invited', $cut
+	) );
+
+	if ( $n ) { gasf_mec_log( 'CRM photos: released ' . $n . ' photo(s) from the grace period' ); }
+	return $n;
 }
 
 /**
@@ -1288,28 +1877,23 @@ function gasf_crm_photo_state( $attachment_id ) {
 	// The EARLIEST invite covering this photo. A reminder mints a second row,
 	// and dating the grace period from that one would silently extend purgatory
 	// by two days every time somebody was nudged.
+	//
+	// Joined through photo_invite_items. This used to be up to three LIKE scans
+	// against a JSON column, one per position in the list, and a photo whose
+	// membership none of them matched was reported as never asked about.
 	$t   = gasf_crm_table( 'photo_invites' );
+	$pii = gasf_crm_table( 'photo_invite_items' );
+	$pit = gasf_crm_table( 'photo_items' );
+
 	$row = $wpdb->get_row( $wpdb->prepare(
-		"SELECT id, created_at, submitted_at FROM {$t}
-		  WHERE attachment_ids LIKE %s ORDER BY created_at ASC LIMIT 1",
-		'%' . $wpdb->esc_like( '[' . $id . ',' ) . '%'
+		"SELECT v.id, v.created_at, v.submitted_at
+		   FROM {$t} v
+		   JOIN {$pii} l ON l.invite_id = v.id
+		   JOIN {$pit} i ON i.id = l.photo_item_id
+		  WHERE i.wp_attachment_id = %d
+		  ORDER BY v.created_at ASC LIMIT 1",
+		$id
 	), ARRAY_A );
-	if ( ! $row ) {
-		// LIKE on a JSON list needs all three positions: first, middle, last/only.
-		$row = $wpdb->get_row( $wpdb->prepare(
-			"SELECT id, created_at, submitted_at FROM {$t}
-			  WHERE attachment_ids LIKE %s OR attachment_ids LIKE %s
-			  ORDER BY created_at ASC LIMIT 1",
-			'%' . $wpdb->esc_like( ',' . $id . ',' ) . '%',
-			'%' . $wpdb->esc_like( ',' . $id . ']' ) . '%'
-		), ARRAY_A );
-	}
-	if ( ! $row ) {
-		$row = $wpdb->get_row( $wpdb->prepare(
-			"SELECT id, created_at, submitted_at FROM {$t} WHERE attachment_ids = %s LIMIT 1",
-			'[' . $id . ']'
-		), ARRAY_A );
-	}
 
 	// Nobody was asked, so nothing is owed and it is a volunteer's to tag now.
 	if ( ! $row ) { return array( 'state' => 'untagged', 'release' => '', 'invite' => 0 ); }
@@ -1531,6 +2115,8 @@ function gasf_crm_photo_confirm( $attachment_id, array $keep ) {
 		'at'   => current_time( 'mysql', true ),
 	) );
 
+	gasf_crm_photo_item_set( $id, 'confirmed' );
+
 	return true;
 }
 
@@ -1555,7 +2141,7 @@ add_action( 'rest_api_init', function () {
 			$thread = gasf_crm_rest_thread( (int) $req->get_param( 'id' ) );
 			if ( is_wp_error( $thread ) ) { return $thread; }
 
-			$id = gasf_crm_photo_approve(
+			$id = gasf_crm_photo_keep(
 				$thread,
 				(string) $req->get_param( 'msg' ),
 				(string) $req->get_param( 'att' )
@@ -1707,6 +2293,15 @@ add_action( 'rest_api_init', function () {
 			if ( ! empty( $src['thread'] ) ) {
 				gasf_crm_log_event( (int) $src['thread'], 'photo_rejected', 'media #' . $aid . ' removed' );
 			}
+
+			// Terminal state written BEFORE the delete, not after. The sweep
+			// reopens any imported item whose attachment has gone, on the
+			// assumption it was lost to an interrupted run — so a rejection
+			// recorded afterwards would look exactly like a crash, and the next
+			// intake would obligingly fetch the rejected photo again.
+			gasf_crm_photo_item_set( $aid, 'rejected', array(
+				'fail_reason' => 'rejected by user ' . get_current_user_id(),
+			) );
 
 			wp_delete_attachment( $aid, true );
 			return array( 'ok' => true, 'photo' => $aid );

@@ -33,7 +33,7 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 	// upgrade check below runs dbDelta and flushes rules on any change. This
 	// plugin runs as an mu-plugin on the main site, where activation hooks
 	// never fire, so a version-compare on every load is the only reliable hook.
-	define( 'GASF_CRM_SCHEMA', '1.11.0' );
+	define( 'GASF_CRM_SCHEMA', '1.12.0' );
 
 	/**
 	 * How long the sign-in history is kept.
@@ -236,6 +236,15 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 				gasf_mec_log( 'CRM: dropped legacy global unique index ' . $index . ' on ' . $table );
 			}
 		}
+
+		// Give every photo taken in before the item table a claim of its own.
+		//
+		// Not optional and not deferrable: the intake sweep removes private
+		// images that nothing owns, so a photo left without an item row would be
+		// deleted by the next unattended run. Ordered after install_tables for
+		// the obvious reason and before the version stamp so a failure here is
+		// retried rather than recorded as done.
+		if ( function_exists( 'gasf_crm_photo_backfill' ) ) { gasf_crm_photo_backfill(); }
 
 		flush_rewrite_rules( false );
 		update_option( 'gasf_crm_schema', GASF_CRM_SCHEMA, false );
