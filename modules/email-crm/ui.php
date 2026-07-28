@@ -633,7 +633,18 @@ input:focus,select:focus,textarea:focus,.edbody:focus{
 	background:var(--gasf-surface);font-size:13px;
 }
 .uprow .upname{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.uprow .upsize,.uprow .upstate{flex:0 0 auto;font:400 11px/1 var(--slug);letter-spacing:.05em;color:var(--gasf-muted)}
+.uprow .upsize,.uprow .upstate,.uprow .uprate{flex:0 0 auto;font:400 11px/1 var(--slug);letter-spacing:.05em;color:var(--gasf-muted)}
+.uprow .uprate{min-width:132px;text-align:right}
+/* The bar. Thin and quiet — it is a status, not the point of the screen. */
+.upbar{flex:1 1 120px;min-width:60px;height:6px;border-radius:2px;overflow:hidden;
+	background:var(--gasf-chip);border:1px solid var(--gasf-border)}
+.upbar>span{display:block;height:100%;background:var(--s-ink);transition:width .2s linear}
+/* Bytes are up and the server is working. There is no percentage to show for
+   that, so it paces instead of pretending to know. */
+.upbar.indet>span{width:38%;animation:upslide 1.1s ease-in-out infinite}
+@keyframes upslide{0%{margin-left:-38%}100%{margin-left:100%}}
+@media (prefers-reduced-motion:reduce){.upbar.indet>span{animation:none;width:100%;opacity:.45}}
+.uprow.sending{border-color:var(--s-accent);background:var(--s-wash)}
 .uprow .upstate{min-width:86px;text-align:right}
 .uprow.going{border-color:var(--s-accent);background:var(--s-wash)}
 .uprow.going .upstate{color:var(--s-ink);font-weight:700}
@@ -1315,6 +1326,7 @@ function gasf_crm_render_inbox() {
 		<div class="actions" style="margin-top:14px">
 			<button class="btn" id="upgo" type="button" disabled>Upload</button>
 			<button class="btn sec" id="upclear" type="button" hidden>Clear the list</button>
+			<button class="btn warn" id="upstop" type="button" hidden>Stop</button>
 			<span class="muted" id="upstatus"></span>
 		</div>
 	</div>
@@ -2607,7 +2619,7 @@ function gasf_crm_render_inbox() {
 	 * Sequential rather than parallel on purpose: these are phone photos over a
 	 * club's broadband, and six at once is how a browser starts timing them out.
 	 */
-	var upQueue = [], upBusy = false;
+	var upQueue = [], upBusy = false, upStop = false;
 
 	function upEl(id){ return document.getElementById(id); }
 
@@ -2738,27 +2750,67 @@ function gasf_crm_render_inbox() {
 		upPaint();
 	}
 
+	function upKB(n){
+		return n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.round(n / 1024) + ' KB';
+	}
+
+	// "4 minutes left" beats "just under 260 seconds", and beats a bar with no
+	// number beside it on an upload long enough to walk away from.
+	function upLeft(secs){
+		if (!isFinite(secs) || secs < 1) { return ''; }
+		if (secs < 60)  { return Math.round(secs) + 's left'; }
+		var m = Math.round(secs / 60);
+		return m + ' minute' + (m === 1 ? '' : 's') + ' left';
+	}
+
 	function upPaint(){
 		var box = upEl('uplist');
 		box.innerHTML = upQueue.map(function(u, i){
-			var cls = 'uprow ' + u.state;
-			return '<div class="' + cls + '">' +
+			var word = ({ waiting: 'waiting', going: 'uploading…', sending: 'saving…', done: 'added', failed: 'failed' })[u.state];
+
+			// The bar is only meaningful while bytes are moving. Once they are up
+			// the wait is the server's and its length is not knowable from here,
+			// so it says so instead of sitting at 100% looking stuck.
+			var bar = '';
+			if (u.state === 'going') {
+				var pct = u.total ? Math.round(u.sent * 100 / u.total) : 0;
+				bar = '<span class="upbar"><span style="width:' + pct + '%"></span></span>';
+				word = pct + '%';
+			} else if (u.state === 'sending') {
+				bar = '<span class="upbar indet"><span></span></span>';
+			}
+
+			var detail = '';
+			if (u.state === 'going' && u.rate) {
+				detail = upKB(u.rate) + '/s' + (u.eta ? ' · ' + upLeft(u.eta) : '');
+			}
+
+			return '<div class="uprow ' + u.state + '">' +
 				'<span class="upname">' + esc(u.file.name) + '</span>' +
-				'<span class="upsize">' + Math.round(u.file.size / 1024) + ' KB</span>' +
-				'<span class="upstate">' + esc(u.msg || ({
-					waiting: 'waiting', going: 'uploading…', done: 'added', failed: 'failed'
-				})[u.state]) + '</span>' +
+				'<span class="upsize">' + upKB(u.file.size) + '</span>' +
+				bar +
+				(detail ? '<span class="uprate">' + esc(detail) + '</span>' : '') +
+				'<span class="upstate">' + esc(u.msg || word) + '</span>' +
 				(u.state === 'waiting' ? '<button type="button" class="updrop" data-i="' + i + '" aria-label="Remove from the list">&times;</button>' : '') +
 				'</div>';
 		}).join('');
 
 		var pending = upQueue.filter(function(u){ return u.state === 'waiting'; }).length;
+		var done    = upQueue.filter(function(u){ return u.state === 'done'; }).length;
+
 		upEl('upgo').disabled = upBusy || !pending;
-		upEl('upgo').textContent = pending ? 'Upload ' + pending + ' photo' + (pending === 1 ? '' : 's') : 'Upload';
+		upEl('upgo').textContent = pending ? 'Upload ' + pending + ' file' + (pending === 1 ? '' : 's') : 'Upload';
 		upEl('upclear').hidden = !upQueue.length || upBusy;
+		upEl('upstop').hidden  = !upBusy;
+
+		// Where the batch as a whole has got to, which is the number somebody
+		// glancing over actually wants.
+		if (upBusy) {
+			upEl('upstatus').textContent = (done + 1) + ' of ' + upQueue.length + '…';
+		}
 	}
 
-	function upSend(u){
+	function upSend(u, onProgress){
 		var fd = new FormData();
 		fd.append('file', u.file);
 		fd.append('consent', upEl('upconsent').checked ? '1' : '0');
@@ -2768,38 +2820,41 @@ function gasf_crm_render_inbox() {
 		fd.append('event', upEl('upevent').value);
 		fd.append('event_id', String(upEventId()));
 
-		// Not api(): that sets a JSON content type, and a multipart body needs the
-		// browser to write its own boundary. The nonce still goes with it.
-		return fetch(API + '/photos/upload', {
-			method: 'POST',
-			headers: { 'X-WP-Nonce': NONCE },
-			credentials: 'same-origin',
-			body: fd
-		}).then(function(r){
-			/*
-			 * Read it as text first, then try JSON.
-			 *
-			 * When the server dies part-way through — a timeout mid-resize, a
-			 * gateway giving up, a firewall stepping in — it answers with an HTML
-			 * error page. r.json() on that throws "Unexpected token '<',
-			 * "<!DOCTYPE"... is not valid JSON", which is a true statement about
-			 * a string and tells the person uploading nothing at all about their
-			 * photo. The status code is the useful part, so say it.
-			 */
-			return r.text().then(function(t){
-				var b = null;
-				try { b = JSON.parse(t); } catch (e) { /* not JSON — handled below */ }
+		return new Promise(function(resolve, reject){
+			var xhr = new XMLHttpRequest();
+			u.xhr = xhr;                       // so Stop can abort it mid-flight
+			xhr.open('POST', API + '/photos/upload', true);
+			xhr.setRequestHeader('X-WP-Nonce', NONCE);
+			xhr.withCredentials = true;
 
+			xhr.upload.onprogress = function(e){
+				if (e.lengthComputable) { onProgress(e.loaded, e.total); }
+			};
+			// Bytes are all up; from here the wait is the server's, and how long
+			// that takes is not knowable from out here. Said in words rather than
+			// left as a bar sitting at 100% looking stuck.
+			xhr.upload.onload = function(){ onProgress(u.file.size, u.file.size, true); };
+
+			xhr.onload = function(){
+				var b = null;
+				try { b = JSON.parse(xhr.responseText); } catch (e) { /* see below */ }
 				if (b) {
-					if (!r.ok) { throw new Error(b.message || ('Error ' + r.status)); }
-					return b;
+					if (xhr.status >= 200 && xhr.status < 300) { return resolve(b); }
+					return reject(new Error(b.message || ('Error ' + xhr.status)));
 				}
-				if (r.status === 413) { throw new Error('is too large for the server to accept.'); }
-				if (r.status === 408 || r.status === 504 || r.status === 524) {
-					throw new Error('took too long to process and the server gave up. Nothing was saved.');
+				// The server answered with something that is not JSON — an error
+				// page from a timeout, a gateway, or a firewall.
+				if (xhr.status === 413) { return reject(new Error('is too large for the server to accept.')); }
+				if (xhr.status === 408 || xhr.status === 504 || xhr.status === 524) {
+					return reject(new Error('took too long to process and the server gave up. Nothing was saved.'));
 				}
-				throw new Error('the server sent an error page instead of a result (HTTP ' + r.status + '). Nothing was saved.');
-			});
+				reject(new Error('the server sent an error page instead of a result (HTTP ' + xhr.status + '). Nothing was saved.'));
+			};
+			xhr.onerror   = function(){ reject(new Error('could not reach the server — the connection dropped.')); };
+			xhr.ontimeout = function(){ reject(new Error('timed out on the way up.')); };
+			xhr.onabort   = function(){ reject(new Error('was stopped.')); };
+
+			xhr.send(fd);
 		});
 	}
 
@@ -2818,6 +2873,7 @@ function gasf_crm_render_inbox() {
 		}
 
 		upBusy = true;
+		upStop = false;
 		upEl('upstatus').textContent = '';
 		upPaint();
 
@@ -2825,25 +2881,49 @@ function gasf_crm_render_inbox() {
 
 		var next = function(){
 			var u = upQueue.filter(function(x){ return x.state === 'waiting'; })[0];
-			if (!u) {
+
+			if (!u || upStop) {
 				upBusy = false;
 				upPaint();
+				var stopped = upStop && upQueue.some(function(x){ return x.state === 'waiting'; });
 				upEl('upstatus').textContent = added
-					? added + ' photo' + (added === 1 ? '' : 's') + ' added' +
-					  (failed ? ', ' + failed + ' failed' : '') + '. Tag who is in them in the photo library.'
-					: (failed ? 'Nothing was added.' : '');
-				// The library is now stale. PLACES is rendered with the page and
-				// cannot be refreshed in place, but nothing here invents a place —
-				// the dropdown only offers ones that already exist.
+					? added + ' file' + (added === 1 ? '' : 's') + ' added' +
+					  (failed ? ', ' + failed + ' failed' : '') +
+					  (stopped ? ', the rest left in the list' : '') +
+					  '. Tag who is in them in the photo library.'
+					: (failed ? 'Nothing was added.' : (stopped ? 'Stopped. Nothing else was sent.' : ''));
 				if (added) { loadLib(); }
 				return;
 			}
-			u.state = 'going'; u.msg = ''; upPaint();
-			upSend(u).then(function(){
+
+			u.state = 'going'; u.msg = ''; u.sent = 0; u.total = u.file.size;
+			u.rate = 0; u.eta = 0;
+			var t0 = Date.now(), lastPaint = 0;
+			upPaint();
+
+			upSend(u, function(sent, total, finished){
+				u.sent = sent; u.total = total;
+
+				var secs = (Date.now() - t0) / 1000;
+				if (secs > 0.5) {
+					u.rate = sent / secs;
+					u.eta  = u.rate ? (total - sent) / u.rate : 0;
+				}
+				if (finished) { u.state = 'sending'; }
+
+				// Repainting on every progress event rebuilds the whole list
+				// dozens of times a second for no benefit anybody can see.
+				var now = Date.now();
+				if (finished || now - lastPaint > 200) { lastPaint = now; upPaint(); }
+			}).then(function(){
 				u.state = 'done'; added++;
 			}).catch(function(e){
-				u.state = 'failed'; u.msg = e.message; failed++;
+				u.state = 'failed';
+				// The messages read as a sentence continuing the filename.
+				u.msg = u.file.name + ' ' + e.message;
+				failed++;
 			}).then(function(){
+				u.xhr = null;
 				upPaint();
 				next();
 			});
@@ -2891,6 +2971,17 @@ function gasf_crm_render_inbox() {
 
 		upEl('upgo').onclick = upRun;
 		upEl('upclear').onclick = function(){ upQueue = []; upEl('upstatus').textContent = ''; upPaint(); };
+
+		/* Stop means stop after this one, and abort the one in flight.
+		   Anything still waiting stays in the list rather than being thrown away —
+		   somebody stopping a long batch usually wants to finish it later, not
+		   drag twenty files in again. */
+		upEl('upstop').onclick = function(){
+			upStop = true;
+			upEl('upstatus').textContent = 'Stopping…';
+			var going = upQueue.filter(function(u){ return u.xhr; })[0];
+			if (going) { going.xhr.abort(); }
+		};
 		upEl('update').onchange = function(){ if (!upEl('upevent').value.trim()) { upEvSearch(); } };
 
 		var evbox = upEl('upevent');
