@@ -1326,7 +1326,19 @@ function gasf_crm_photo_autoprocess() {
 	if ( empty( $cfg['photos_auto'] ) ) { return 0; }
 
 	$lock = gasf_crm_photo_lock();
-	if ( ! $lock ) { return 0; }
+	if ( ! $lock ) {
+		// Zero because it could not start, not because there was nothing to do.
+		// Those are different facts and the return value cannot tell them apart,
+		// so the one that would otherwise be invisible gets said out loud —
+		// a contended lock that never clears is a stuck intake, and the whole
+		// point of this exercise is that a stall must not look like idleness.
+		$held = (array) get_option( 'gasf_crm_photo_lock' );
+		gasf_mec_log( sprintf(
+			'CRM photos: intake skipped, another run has held the lock for %d min (breaks at 20)',
+			empty( $held['at'] ) ? 0 : intdiv( time() - (int) $held['at'], 60 )
+		) );
+		return 0;
+	}
 
 	try {
 		return gasf_crm_photo_autoprocess_run();
