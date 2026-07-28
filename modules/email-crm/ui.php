@@ -2761,7 +2761,11 @@ function gasf_crm_render_inbox() {
 		// still in review is edited on its own form, with approve/reject beside
 		// it, and offering a second route to a different form would be two ways
 		// to do the same thing that behave differently.
-		if (p.saved) { bits.push('<button class="btn" id="lbeditbtn" type="button" style="margin-top:8px">Edit details</button>'); }
+		// Library photos only. A submission still in review is edited on its own
+		// form, which has approve and reject beside it — and the edit route
+		// refuses anything not yet in the collection, so offering the button
+		// here would be a dead end.
+		if (p.lib) { bits.push('<button class="btn" id="lbeditbtn" type="button" style="margin-top:8px">Edit details</button>'); }
 
 		// The library passes the CARD (whose .lopen is the button); the review
 		// screens pass the button itself. Either way, focus has somewhere to

@@ -286,6 +286,13 @@ function gasf_crm_photo_library_card( $attachment_id ) {
 		 * club ends up publishing a photo it was never given, and treating it as
 		 * refusal would quietly bury photos people were perfectly happy to share.
 		 */
+		// Marks this as a LIBRARY card. The review screen's card carries the same
+		// 'saved' block for form hydration, so 'saved' cannot tell them apart —
+		// and the viewer used it to decide whether to offer Edit details. That
+		// offered editing on a photo still in review, where saving is refused
+		// because it is not in the library yet: a form you can fill in and not
+		// submit, which is worse than no button.
+		'lib'      => true,
 		'consent'  => gasf_crm_photo_consent_state( $id ),
 		'revision' => gasf_crm_photo_revision( $id ),
 		'guess'    => ( ! empty( $info['place_guess'] ) && ! is_wp_error( $info['place_guess'] ) ) ? $info['place_guess']->name : '',
