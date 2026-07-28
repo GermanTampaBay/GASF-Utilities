@@ -589,6 +589,27 @@ function gasf_crm_photo_has_metadata( $path ) {
 function gasf_crm_photo_scrub( $path ) {
 	if ( ! is_file( $path ) ) { return true; }
 
+	/*
+	 * Nothing to strip? Then do not re-encode it.
+	 *
+	 * This is the same byte scan the bottom of this function uses to decide the
+	 * strip worked, so skipping on it cannot weaken the guarantee: a file that
+	 * passes here would have passed there. No metadata also means no orientation
+	 * tag to bake in and no ICC profile to convert, which is the other work this
+	 * function does.
+	 *
+	 * It matters because of how much this runs. The site registers sixteen image
+	 * sizes, so publishing one photo meant seventeen Imagick load-and-re-encode
+	 * passes — and WordPress already strips profiles from the sizes it
+	 * generates, so sixteen of those were re-encoding files that were clean when
+	 * they arrived. On a phone-sized photo that pushed the request past the
+	 * sixty-second limit and killed it mid-resize, which the browser saw as an
+	 * HTML error page where JSON should have been.
+	 *
+	 * It also saves a generation of JPEG quality on every size, every time.
+	 */
+	if ( ! gasf_crm_photo_has_metadata( $path ) ) { return true; }
+
 	if ( class_exists( 'Imagick' ) ) {
 		try {
 			$im = new Imagick( $path );

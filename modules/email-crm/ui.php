@@ -2766,9 +2766,29 @@ function gasf_crm_render_inbox() {
 			credentials: 'same-origin',
 			body: fd
 		}).then(function(r){
-			return r.json().then(function(b){
-				if (!r.ok) { throw new Error((b && b.message) || ('Error ' + r.status)); }
-				return b;
+			/*
+			 * Read it as text first, then try JSON.
+			 *
+			 * When the server dies part-way through — a timeout mid-resize, a
+			 * gateway giving up, a firewall stepping in — it answers with an HTML
+			 * error page. r.json() on that throws "Unexpected token '<',
+			 * "<!DOCTYPE"... is not valid JSON", which is a true statement about
+			 * a string and tells the person uploading nothing at all about their
+			 * photo. The status code is the useful part, so say it.
+			 */
+			return r.text().then(function(t){
+				var b = null;
+				try { b = JSON.parse(t); } catch (e) { /* not JSON — handled below */ }
+
+				if (b) {
+					if (!r.ok) { throw new Error(b.message || ('Error ' + r.status)); }
+					return b;
+				}
+				if (r.status === 413) { throw new Error('is too large for the server to accept.'); }
+				if (r.status === 408 || r.status === 504 || r.status === 524) {
+					throw new Error('took too long to process and the server gave up. Nothing was saved.');
+				}
+				throw new Error('the server sent an error page instead of a result (HTTP ' + r.status + '). Nothing was saved.');
 			});
 		});
 	}

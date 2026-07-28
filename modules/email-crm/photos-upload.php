@@ -104,6 +104,23 @@ function gasf_crm_photo_upload_one( array $f, array $in ) {
 	require_once ABSPATH . 'wp-admin/includes/media.php';
 
 	/*
+	 * This request is allowed to take a while.
+	 *
+	 * The site registers sixteen image sizes, so one photo means sixteen resizes
+	 * before anything else happens, and a modern phone camera makes that real
+	 * work. The default sixty seconds killed it mid-resize — PHP printed a fatal
+	 * error page, the browser tried to read it as JSON, and the volunteer saw
+	 * "Unexpected token '<'", which tells them nothing at all.
+	 *
+	 * Raised rather than worked around: the resizing is legitimate and there is
+	 * no version of this that is fast enough to fit in a minute on every photo.
+	 * Best effort — some hosts refuse, and then the scrub short-circuit added
+	 * alongside this is what keeps it inside the limit.
+	 */
+	if ( function_exists( 'set_time_limit' ) ) { @set_time_limit( 300 ); } // phpcs:ignore WordPress.PHP.NoSilencedErrors -- refused on some hosts, not fatal.
+	@ini_set( 'max_execution_time', '300' );  // phpcs:ignore WordPress.PHP.NoSilencedErrors,WordPress.PHP.IniSet
+
+	/*
 	 * Into the review folder, created private — the same two filters the email
 	 * intake uses, for the same reason.
 	 *
