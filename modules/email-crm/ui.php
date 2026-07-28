@@ -595,6 +595,29 @@ input:focus,select:focus,textarea:focus,.edbody:focus{
 .msg .hd b{font-family:var(--body);font-size:14px;letter-spacing:0}
 .streamtag,.badge,.firsttime{border-radius:2px;font-weight:700;letter-spacing:.06em}
 
+/* The library's four panels have always said class="card pad". The class was
+   never defined anywhere in this sheet, so all four ran their text, their
+   headings and their filter labels straight into their own left border. */
+.pad{padding:14px 16px}
+
+/* Save and Remove as marks, not words — see ICO_SAVE in the script.
+   Square, thumb-sized, and no wider than they need to be, because every pixel
+   here is a pixel the name field does not get. */
+.nrow button.ico,.prow2 button.ico{
+	flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;
+	width:32px;min-height:30px;padding:0;line-height:0;
+}
+.nrow button.ico svg,.prow2 button.ico svg{display:block}
+.nrow .ndel,.prow2 .pdel{color:var(--danger);border-color:var(--danger)}
+.nrow .ndel:hover,.prow2 .pdel:hover{background:#f6e3df}
+
+/* The field is the content; it gets the room the icons freed. It will not
+   shrink below a readable name — the row wraps first, because a name you
+   cannot read is worse than a row that takes two lines. */
+.nrow .nname{flex:1 1 16ch;min-width:13ch;width:auto}
+.prow2 input[type=text].pname{flex:1 1 16ch;min-width:13ch}
+.nmain,.nmerge-row,.prow2{flex-wrap:wrap}
+
 /* The reading pane's own edge, and the notes, keep their meanings and take the
    square corners. */
 .note{border-radius:2px}
@@ -1183,6 +1206,26 @@ function gasf_crm_render_inbox() {
 			.replace(/"/g, '&quot;')
 			.replace(/'/g, '&#39;');
 	}
+
+	/* Save and Remove, as marks rather than words.
+	 *
+	 * In the names and places lists the content IS the text field — a person's
+	 * name, a place's name — and three word-buttons beside it were taking so
+	 * much of the row that "Pamela LaFleur Horgen" arrived as "Pamela LaFleu".
+	 * Truncating the thing you are there to correct is the one failure those
+	 * panels cannot afford.
+	 *
+	 * currentColor, so each one inherits whatever its button already had —
+	 * Remove stays red without a second rule. aria-hidden because the button
+	 * carries the accessible name; the icon must not be announced twice. */
+	var ICO_SAVE = '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" ' +
+		'stroke-width="1.4" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
+		'<path d="M2.6 2.6h8.3l2.5 2.5v8.3H2.6z"/><path d="M5.6 2.6h4.2v3.1H5.6z"/>' +
+		'<path d="M4.7 9.1h6.6v4.3H4.7z"/></svg>';
+	var ICO_DEL = '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" ' +
+		'stroke-width="1.8" stroke-linecap="round" aria-hidden="true" focusable="false">' +
+		'<path d="M4.4 4.4l7.2 7.2m0-7.2l-7.2 7.2"/></svg>';
+
 	function when(s){
 		if(!s) return '';
 		// Stored UTC — the trailing Z is what makes the browser render it in the
@@ -2685,9 +2728,9 @@ function gasf_crm_render_inbox() {
 					'<div class="nmain">' +
 						'<input type="text" class="nname" value="' + esc(p.label) + '" aria-label="Name">' +
 						'<span class="nct">' + p.n + '</span>' +
-						'<button class="btn sec nsave" type="button">Save</button>' +
+						'<button class="btn sec nsave ico" type="button" aria-label="Save" title="Save">' + ICO_SAVE + '</button>' +
 						'<button class="btn sec nmerge" type="button" title="Merge this person into another">Merge…</button>' +
-						'<button class="btn sec ndel" type="button" title="Remove this name from every photo">Remove</button>' +
+						'<button class="btn sec ndel ico" type="button" aria-label="Remove" title="Remove this name from every photo">' + ICO_DEL + '</button>' +
 					'</div>' +
 					// The merge target box carries class p-person on purpose: the
 					// name suggestions are wired by delegation on that class, so
@@ -2790,8 +2833,8 @@ function gasf_crm_render_inbox() {
 					'<input type="number" class="prad" value="' + esc(p.radius) + '" placeholder="' + r.defaultRadius + '" aria-label="Radius in metres">' +
 					'<span class="pct">' + p.photos + ' photo' + (p.photos === 1 ? '' : 's') + '</span>' +
 					(p.home ? '<span class="phome">home</span>' : '') +
-					'<button class="btn sec psave" type="button">Save</button>' +
-					'<button class="btn sec pdel" type="button">Remove</button>' +
+					'<button class="btn sec psave ico" type="button" aria-label="Save" title="Save">' + ICO_SAVE + '</button>' +
+					'<button class="btn sec pdel ico" type="button" aria-label="Remove" title="Remove this place">' + ICO_DEL + '</button>' +
 					'</div>';
 			}).join('');
 
