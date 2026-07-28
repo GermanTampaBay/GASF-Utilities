@@ -163,27 +163,27 @@ function gasf_crm_photo_upload_one( array $f, array $in ) {
 		return $data;
 	};
 
-	add_filter( 'upload_dir', $to_review, 99 );
-	add_filter( 'wp_insert_attachment_data', $hide, 99 );
-	// EXIF is read on the way in by the catalogue module's add_attachment hook,
-	// which is what puts the date, the time and the geofence guess on the photo
-	// before the scrub below takes them out of the file.
-	$id = media_handle_upload( 'file', 0, array(), array( 'test_form' => false ) );
-	remove_filter( 'wp_insert_attachment_data', $hide, 99 );
-	remove_filter( 'upload_dir', $to_review, 99 );
-
-	if ( is_wp_error( $id ) ) { return $id; }
-	$id = (int) $id;
-
 	/*
-	 * Provenance, written before anything else can fail.
+	 * Provenance, stamped the instant the row exists — NOT after the upload call
+	 * returns.
 	 *
-	 * Same question this answers for an emailed photo — who gave us this and may
-	 * we use it — with a different answer: a volunteer put it here directly.
-	 * approved_by/at match the emailed shape so the "Kept … by …" line and the
-	 * rest of the library read it without a special case.
+	 * gasf_crm_photo_sweep_orphans deletes private files in the review folder
+	 * that carry neither a queue claim nor provenance, on the reasonable grounds
+	 * that unreviewed bytes nobody owns are exactly what that folder exists to
+	 * prevent. A direct upload has no queue claim by definition, so provenance
+	 * is the only thing standing between it and the reaper.
+	 *
+	 * Written after media_handle_upload returned, it was missing for the whole
+	 * of the slow part: add_attachment fires inside wp_insert_attachment, and
+	 * the sixteen resizes happen afterwards. The sweep runs under the intake
+	 * lock, mail came in, and it removed uploads that were still being resized —
+	 * "removing unclaimed private image #19464 (interrupted import)" — leaving
+	 * the request to finish against a post that no longer existed.
+	 *
+	 * The email intake already solved this and says so in a comment above its
+	 * own $claim hook. This is the same fix for the same reason.
 	 */
-	update_post_meta( $id, '_gasf_photo_source', array(
+	$provenance = array(
 		'thread'      => 0,
 		'stream'      => 'photos',
 		'email'       => '',
@@ -192,11 +192,34 @@ function gasf_crm_photo_upload_one( array $f, array $in ) {
 		'approved_by' => get_current_user_id(),
 		'approved_at' => current_time( 'mysql', true ),
 		'upload'      => true,
-	) );
+	);
+	$stamp = function ( $new_id ) use ( $provenance ) {
+		update_post_meta( $new_id, '_gasf_photo_source', $provenance );
+		// A volunteer has vouched for it, which is what confirmed means — and it
+		// is what puts the photo in the library before it has a single tag.
+		update_post_meta( $new_id, '_gasf_photo_confirmed', current_time( 'mysql', true ) );
+	};
 
-	// A volunteer has vouched for it, which is what confirmed means. It is also
-	// what puts the photo in the library before it has a single tag.
-	update_post_meta( $id, '_gasf_photo_confirmed', current_time( 'mysql', true ) );
+	add_filter( 'upload_dir', $to_review, 99 );
+	add_filter( 'wp_insert_attachment_data', $hide, 99 );
+	add_action( 'add_attachment', $stamp, 1 );
+	// EXIF is read on the way in by the catalogue module's add_attachment hook,
+	// which is what puts the date, the time and the geofence guess on the photo
+	// before the scrub below takes them out of the file.
+	$id = media_handle_upload( 'file', 0, array(), array( 'test_form' => false ) );
+	remove_action( 'add_attachment', $stamp, 1 );
+	remove_filter( 'wp_insert_attachment_data', $hide, 99 );
+	remove_filter( 'upload_dir', $to_review, 99 );
+
+	if ( is_wp_error( $id ) ) { return $id; }
+	$id = (int) $id;
+
+	// The sweep can still have reached it if this request was slow enough and an
+	// intake ran before the stamp landed. Saying so beats a confusing failure
+	// three steps further down, against a post that is no longer there.
+	if ( ! get_post( $id ) ) {
+		return new WP_Error( 'gasf_crm_gone', $name . ' was removed while it was still being processed. Please try it again.', array( 'status' => 500 ) );
+	}
 
 	// Permission, recorded the same way and against the same wording as a
 	// volunteer recording it by hand. Before publish, so a photo is never
