@@ -219,69 +219,6 @@ header.bar .hbtn:hover{background:rgba(255,255,255,.26)}
 .pthumb:focus-visible,.pbig:focus-visible{outline:3px solid var(--s-accent);outline-offset:2px}
 .pbig img{display:block;max-width:100%;height:auto}
 
-/* ===================== phones =====================
- *
- * This is used standing in the Biergarten as much as at a desk, and until now
- * one breakpoint collapsed the columns and the rest was left to chance: a
- * five-button header wrapping into the title, a thread list capped at 78vh so
- * it scrolled inside a page that also scrolled, tap targets built for a mouse,
- * and 13px inputs — which iOS answers by zooming the page in on focus and
- * never zooming back out.
- *
- * Everything here is inside the query; the desktop layout is untouched. */
-@media(max-width:700px){
-	.wrap{padding:0 10px}
-
-	/* Header stacks: title on one line, actions on the next, scrolling sideways
-	   if they still do not fit rather than making the page wider than the phone. */
-	header.bar{padding:10px 0}
-	header.bar .wrap{display:block}
-	header.bar h1{font-size:17px;margin:0 0 8px}
-	header.bar .wrap>div{display:flex;flex-wrap:nowrap;overflow-x:auto;gap:6px;align-items:center;
-		-webkit-overflow-scrolling:touch;scrollbar-width:none}
-	header.bar .wrap>div::-webkit-scrollbar{display:none}
-	header.bar .hbtn{flex:0 0 auto;margin-right:0}
-
-	/* A list that scrolls inside a page that also scrolls is the most confusing
-	   thing a phone can be handed. Let the page do the scrolling. */
-	.list{max-height:none;overflow:visible}
-	.layout{gap:10px;padding:10px 0}
-
-	/* 44px is the smallest thing a thumb hits reliably. On a screen whose
-	   buttons approve and delete photographs, a miss is not cosmetic. */
-	.btn,.hbtn{min-height:44px;padding:10px 14px}
-	.tabs button,.pstates button{min-height:44px}
-	.tabs{overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}
-	.tabs::-webkit-scrollbar{display:none}
-	.tabs button{flex:0 0 auto;white-space:nowrap}
-
-	/* 16px, or iOS zooms in on focus and leaves it there. Every input, not just
-	   the obvious ones. */
-	.pf input,.pf select,.pf textarea,.lf input,.lf select,.nrow input,.p-person,
-	input[type=text],input[type=email],input[type=search],input[type=date],select,textarea{font-size:16px}
-
-	.lgrid{grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px}
-	.pgrid{grid-template-columns:repeat(auto-fill,minmax(100px,1fr))}
-	.nameslist{grid-template-columns:1fr}
-	.nmain,.nmerge-row{flex-wrap:wrap}
-	.prow{flex-direction:column;align-items:stretch}
-	.prow .pf{flex:1 1 auto}
-	.lfrow{gap:8px}
-
-	/* Sticky bars eat a short screen. */
-	.libbar{position:static}
-
-	/* Full-bleed viewer, close button where a thumb already is. */
-	.lightbox{padding:10px}
-	.lightbox img{max-height:58vh}
-	.lbedit{width:100%;max-height:74vh;padding:12px}
-	.lbclose{top:4px;right:6px;font-size:40px;min-width:44px;min-height:44px}
-	.lbinfo{font-size:14px}
-
-	.pcard{flex-direction:column}
-	.pbig img{max-height:52vh}
-	.actions{flex-wrap:wrap}
-}
 
 /* Two rows of near-identical tabs was the main reason this page read as a wall
    of grey. They do different jobs, so they now have different shapes: the top
@@ -523,6 +460,77 @@ header.bar .hbtn.nav.on{background:#fff;color:var(--gasf-ink,#1d1d1b);border-col
 .badge{display:inline-block;font-size:11px;padding:1px 7px;border-radius:9px;background:var(--gasf-chip);color:var(--gasf-muted);vertical-align:middle}
 .badge.ig{background:#fcf0f1;color:var(--danger)}
 .badge.an{background:#edf4ea;color:var(--ok)}
+
+/* Everything below is the phone layout, and it is LAST on purpose.
+   These rules and their desktop counterparts have the same specificity, so
+   the one written later wins — and sitting near the top of the sheet meant
+   roughly half of them were silently overridden by rules defined further
+   down. The lightbox kept its 20px desktop padding and its close button its
+   desktop position on a phone, which is exactly the kind of failure that
+   looks like it worked. Keep this block at the bottom. */
+/* ===================== phones =====================
+ *
+ * This is used standing in the Biergarten as much as at a desk, and until now
+ * one breakpoint collapsed the columns and the rest was left to chance: a
+ * five-button header wrapping into the title, a thread list capped at 78vh so
+ * it scrolled inside a page that also scrolled, tap targets built for a mouse,
+ * and 13px inputs — which iOS answers by zooming the page in on focus and
+ * never zooming back out.
+ *
+ * Everything here is inside the query; the desktop layout is untouched. */
+@media(max-width:700px){
+	.wrap{padding:0 10px}
+
+	/* Header stacks: title on one line, actions on the next, scrolling sideways
+	   if they still do not fit rather than making the page wider than the phone. */
+	header.bar{padding:10px 0}
+	header.bar .wrap{display:block}
+	header.bar h1{font-size:17px;margin:0 0 8px}
+	header.bar .wrap>div{display:flex;flex-wrap:nowrap;overflow-x:auto;gap:6px;align-items:center;
+		-webkit-overflow-scrolling:touch;scrollbar-width:none}
+	header.bar .wrap>div::-webkit-scrollbar{display:none}
+	header.bar .hbtn{flex:0 0 auto;margin-right:0}
+
+	/* A list that scrolls inside a page that also scrolls is the most confusing
+	   thing a phone can be handed. Let the page do the scrolling. */
+	.list{max-height:none;overflow:visible}
+	.layout{gap:10px;padding:10px 0}
+
+	/* 44px is the smallest thing a thumb hits reliably. On a screen whose
+	   buttons approve and delete photographs, a miss is not cosmetic. */
+	.btn,.hbtn{min-height:44px;padding:10px 14px}
+	.tabs button,.pstates button{min-height:44px}
+	.tabs{overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+	.tabs::-webkit-scrollbar{display:none}
+	.tabs button{flex:0 0 auto;white-space:nowrap}
+
+	/* 16px, or iOS zooms in on focus and leaves it there. Every input, not just
+	   the obvious ones. */
+	.pf input,.pf select,.pf textarea,.lf input,.lf select,.nrow input,.p-person,
+	input[type=text],input[type=email],input[type=search],input[type=date],select,textarea{font-size:16px}
+
+	.lgrid{grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px}
+	.pgrid{grid-template-columns:repeat(auto-fill,minmax(100px,1fr))}
+	.nameslist{grid-template-columns:1fr}
+	.nmain,.nmerge-row{flex-wrap:wrap}
+	.prow{flex-direction:column;align-items:stretch}
+	.prow .pf{flex:1 1 auto}
+	.lfrow{gap:8px}
+
+	/* Sticky bars eat a short screen. */
+	.libbar{position:static}
+
+	/* Full-bleed viewer, close button where a thumb already is. */
+	.lightbox{padding:10px}
+	.lightbox img{max-height:58vh}
+	.lbedit{width:100%;max-height:74vh;padding:12px}
+	.lbclose{top:4px;right:6px;font-size:40px;min-width:44px;min-height:44px}
+	.lbinfo{font-size:14px}
+
+	.pcard{flex-direction:column}
+	.pbig img{max-height:52vh}
+	.actions{flex-wrap:wrap}
+}
 </style>
 	<?php
 }
