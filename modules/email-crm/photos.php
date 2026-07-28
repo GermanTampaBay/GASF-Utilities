@@ -1222,7 +1222,21 @@ function gasf_crm_photo_item_move( $item_id, $from, $to, array $set = array() ) 
 		$args[] = $from;
 	}
 
-	return 1 === (int) $wpdb->query( $wpdb->prepare( $sql, $args ) ); // phpcs:ignore WordPress.DB.PreparedSQL
+	$wpdb->last_error = '';
+	$n = (int) $wpdb->query( $wpdb->prepare( $sql, $args ) ); // phpcs:ignore WordPress.DB.PreparedSQL
+
+	// Nought rows is ordinary — the compare-and-swap lost, somebody else moved it
+	// first, and the caller is meant to notice. An SQL error is not ordinary and
+	// must never pass as one: a rejection that failed to write its state looks
+	// exactly like a crashed import, and the sweep would fetch the photo again.
+	if ( '' !== $wpdb->last_error ) {
+		gasf_mec_log( sprintf(
+			'CRM photos: item %d could not move to %s — %s',
+			(int) $item_id, $to, $wpdb->last_error
+		) );
+	}
+
+	return 1 === $n;
 }
 
 /**

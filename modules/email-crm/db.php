@@ -178,6 +178,7 @@ function gasf_crm_install_tables() {
 		bytes BIGINT UNSIGNED NOT NULL DEFAULT 0,
 		exif_json LONGTEXT NULL,
 		pending_json LONGTEXT NULL,
+		fail_reason VARCHAR(191) NULL,
 		created_at DATETIME NOT NULL,
 		updated_at DATETIME NOT NULL,
 		PRIMARY KEY  (id),
