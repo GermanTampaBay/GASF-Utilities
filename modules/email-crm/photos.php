@@ -98,6 +98,28 @@ function gasf_crm_photos_available() {
 	return true;
 }
 
+/**
+ * A stored attachment title as a person should read it.
+ *
+ * WordPress kses-escapes post_title on the way IN, so the catalogue naming a
+ * photo after "Welton Brewing Co & Oyster Bar" leaves "…Co &amp; Oyster Bar"
+ * in the database. Both photo cards go to the browser as JSON and the client
+ * escapes every value exactly once on its way into the DOM — so handing over
+ * the stored form escapes it a second time and the grid prints "&amp;" at
+ * people, which is what it did.
+ *
+ * Decoded here for the same reason gasf_photo_info() decodes term names: a
+ * card is display data. The RAW form stays in each card's 'saved' block, which
+ * is matched against on write and must not be touched.
+ *
+ * html_entity_decode rather than gasf_photo_label(), which is the identical
+ * call: the catalogue module is separately switchable, and a title still needs
+ * decoding when it is off.
+ */
+function gasf_crm_photo_display_title( $attachment_id ) {
+	return html_entity_decode( (string) get_the_title( (int) $attachment_id ), ENT_QUOTES, 'UTF-8' );
+}
+
 /* =====================================================================
  * Permission to use a submitted photo
  *
@@ -3656,7 +3678,9 @@ function gasf_crm_photo_card( $attachment_id ) {
 		// volunteer acting on a stale screen is told rather than obeyed.
 		'revision'  => gasf_crm_photo_revision( $id ),
 		'confirmed' => 'confirmed' === $st['state'],
-		'title'     => get_the_title( $id ),
+		// Decoded, not the stored form — the client escapes it once more. See
+		// gasf_crm_photo_display_title().
+		'title'     => gasf_crm_photo_display_title( $id ),
 		'missing'   => $missing,
 	);
 }

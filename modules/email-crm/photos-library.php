@@ -252,7 +252,9 @@ function gasf_crm_photo_library_card( $attachment_id ) {
 		'full'    => wp_get_attachment_image_url( $id, 'large' ),
 		'url'     => wp_get_attachment_url( $id ),
 		'dlname'  => function_exists( 'gasf_photo_filename' ) ? gasf_photo_filename( $id ) : '',
-		'title'   => get_the_title( $id ),
+		// Decoded, not the stored form — the client escapes it once more. See
+		// gasf_crm_photo_display_title().
+		'title'   => gasf_crm_photo_display_title( $id ),
 		'caption' => (string) ( $info['caption'] ?? '' ),
 		'taken'   => (string) ( $info['taken'] ?? '' ),
 		'people'  => (array) ( $info['people'] ?? array() ),
