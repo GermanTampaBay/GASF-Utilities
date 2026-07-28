@@ -102,14 +102,34 @@ function gasf_crm_redact( $text ) {
  * Thin at launch, since the mailbox is new. It thickens on its own as mail gets
  * answered, and every reply written from here makes the next draft better.
  */
-function gasf_crm_reply_corpus( $limit = 25 ) {
+function gasf_crm_reply_corpus( $limit = 25, $stream = '' ) {
 	global $wpdb;
 	$m = gasf_crm_table( 'messages' );
+	$t = gasf_crm_table( 'threads' );
+
+	/*
+	 * Same mailbox only, and no drafting at all without one.
+	 *
+	 * This used to select the most recent replies from EVERY stream. The stream
+	 * boundary exists because a photos volunteer may not read general enquiries —
+	 * but the model was handed both, and is explicitly told to reuse facts from
+	 * what it is given. A volunteer with photos@ could ask for a draft and get
+	 * back club correspondence they have no access to, paraphrased past the
+	 * exact-copy guard, with the leak arriving in their own outbox.
+	 *
+	 * Empty stream returns nothing rather than everything. A caller that forgets
+	 * to say which mailbox it is drafting for gets a worse draft, not somebody
+	 * else's mail.
+	 */
+	$stream = (string) $stream;
+	if ( '' === $stream ) { return ''; }
 
 	$replies = $wpdb->get_results( $wpdb->prepare(
-		"SELECT thread_id, body_html, sent_at FROM {$m}
-		  WHERE direction = 'out' AND sent_by_user_id > 0
-		  ORDER BY sent_at DESC LIMIT %d", (int) $limit
+		"SELECT m.thread_id, m.body_html, m.sent_at
+		   FROM {$m} m
+		   JOIN {$t} t ON t.id = m.thread_id
+		  WHERE m.direction = 'out' AND m.sent_by_user_id > 0 AND t.stream = %s
+		  ORDER BY m.sent_at DESC LIMIT %d", $stream, (int) $limit
 	), ARRAY_A );
 
 	if ( ! $replies ) { return ''; }
@@ -222,7 +242,9 @@ function gasf_crm_draft_reply( $thread_id ) {
 	// anybody sends a reply, and folding it in would invalidate the cached
 	// prefix on every send — paying full price for the large half to append the
 	// small one.
-	$recent = gasf_crm_reply_corpus();
+	// Scoped to the mailbox this thread belongs to. A draft for photos@ is built
+	// only from what photos@ has answered before.
+	$recent = gasf_crm_reply_corpus( 25, (string) ( $thread['stream'] ?? '' ) );
 
 	$r = wp_remote_post( 'https://api.anthropic.com/v1/messages', array(
 		'timeout' => 45,

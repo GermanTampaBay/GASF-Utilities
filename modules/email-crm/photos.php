@@ -236,6 +236,92 @@ function gasf_crm_photo_is_private( $attachment_id ) {
 }
 
 /**
+ * Does this file still carry embedded metadata?
+ *
+ * A byte scan of the container rather than a call to exif_read_data, because
+ * the question is "is there a metadata block in here at all" and that includes
+ * the ones exif_read_data does not parse — XMP written by editing software,
+ * IPTC from a picture desk, an ICC profile, or a GPS block inside a segment PHP
+ * declines to walk.
+ *
+ * The point is to be able to VERIFY the strip worked rather than assume it did.
+ */
+function gasf_crm_photo_has_metadata( $path ) {
+	if ( ! is_file( $path ) ) { return false; }
+
+	$fh = fopen( $path, 'rb' ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+	if ( ! $fh ) { return true; } // unreadable: assume the worst, never assume clean
+	$head = fread( $fh, 256 * 1024 ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+	fclose( $fh ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+
+	foreach ( array( "Exif\0\0", '<x:xmpmeta', 'http://ns.adobe.com/xap', 'Photoshop 3.0', 'ICC_PROFILE', 'GPSLatitude', 'GPSLongitude' ) as $marker ) {
+		if ( false !== strpos( $head, $marker ) ) { return true; }
+	}
+	return false;
+}
+
+/**
+ * Re-encode an image so nothing but pixels survives.
+ *
+ * Until now EXIF was READ at intake and never removed, and the reason nothing
+ * leaked is that the host's WebP converter happens to drop it — the same
+ * converter whose EXIF destruction we had to work around when extracting the
+ * date and GPS in the first place. That is a coincidence, not a control, and it
+ * ends the day the host changes plugins.
+ *
+ * Nothing is lost by stripping: date, camera and GPS were already extracted
+ * into postmeta at intake and are what the catalogue runs on. The copy the
+ * public gets does not need to carry the photographer's home coordinates.
+ *
+ * Orientation is applied first. EXIF is what tells a viewer to rotate, so
+ * removing it from an unrotated file turns a portrait photo on its side —
+ * silently, and only for some images, which is the worst way to break.
+ *
+ * @return true|WP_Error
+ */
+function gasf_crm_photo_scrub( $path ) {
+	if ( ! is_file( $path ) ) { return true; }
+
+	if ( class_exists( 'Imagick' ) ) {
+		try {
+			$im = new Imagick( $path );
+			// Bake in the rotation the EXIF was asking for, before discarding it.
+			if ( method_exists( $im, 'autoOrient' ) ) {
+				$im->autoOrient();
+			}
+			// Colour first, profile second: stripImage removes the ICC profile, so
+			// a wide-gamut photo has to be converted to sRGB while the profile
+			// describing it is still attached, or the colours shift.
+			if ( $im->getImageColorspace() !== Imagick::COLORSPACE_SRGB ) {
+				$im->transformImageColorspace( Imagick::COLORSPACE_SRGB );
+			}
+			$im->stripImage();
+			$im->writeImage( $path );
+			$im->clear();
+			$im->destroy();
+		} catch ( Exception $e ) {
+			return new WP_Error( 'gasf_crm_scrub', 'Could not strip metadata from ' . basename( $path ) . ': ' . $e->getMessage() );
+		}
+	} else {
+		// GD drops every metadata block as a side effect of decoding to a raw
+		// bitmap and re-encoding. Quality-matched to WordPress's own default so
+		// publishing does not visibly soften a photo.
+		$editor = wp_get_image_editor( $path );
+		if ( is_wp_error( $editor ) ) { return $editor; }
+		$editor->set_quality( 82 );
+		$saved = $editor->save( $path );
+		if ( is_wp_error( $saved ) ) { return $saved; }
+	}
+
+	// Verified, not assumed. A strip that silently did nothing is exactly the
+	// failure this whole change exists to stop.
+	if ( gasf_crm_photo_has_metadata( $path ) ) {
+		return new WP_Error( 'gasf_crm_scrub', 'Metadata is still present in ' . basename( $path ) . ' after stripping.' );
+	}
+	return true;
+}
+
+/**
  * Move an approved photo out of the private folder into normal uploads.
  *
  * The whole set moves together — the full-size file, WordPress's untouched
@@ -263,6 +349,32 @@ function gasf_crm_photo_publish( $attachment_id ) {
 		if ( ! empty( $s['file'] ) ) { $names[] = $s['file']; }
 	}
 
+	/*
+	 * Strip every file BEFORE any of them moves.
+	 *
+	 * Done while they are still behind the boundary, and as a whole pass that
+	 * has to succeed before a single rename happens — so a photo is never
+	 * half-published with its GPS intact in whichever files got there first.
+	 *
+	 * Every file, not just the one WordPress calls the original: the -scaled
+	 * full size, the untouched original WordPress keeps beside it, and each
+	 * generated size, because a resize does not reliably drop the source's
+	 * metadata and any one of them is a complete disclosure on its own.
+	 *
+	 * Refusing to publish is the right failure. An approval that quietly did
+	 * not happen is a volunteer clicking again; a published photo carrying the
+	 * coordinates of somebody's house cannot be taken back.
+	 */
+	foreach ( array_unique( $names ) as $n ) {
+		$src = $from . $n;
+		if ( ! file_exists( $src ) ) { continue; }
+		$clean = gasf_crm_photo_scrub( $src );
+		if ( is_wp_error( $clean ) ) {
+			gasf_mec_log( 'CRM photos: NOT publishing media #' . $id . ' — ' . $clean->get_error_message() );
+			return new WP_Error( 'gasf_crm_pub', 'This photo still carries hidden camera data, so it has not been published: ' . $clean->get_error_message() );
+		}
+	}
+
 	foreach ( array_unique( $names ) as $n ) {
 		$src = $from . $n;
 		$dst = trailingslashit( $up['path'] ) . $n;
@@ -276,6 +388,32 @@ function gasf_crm_photo_publish( $attachment_id ) {
 	update_post_meta( $id, '_wp_attached_file', $new_rel );
 	if ( $meta ) {
 		$meta['file'] = $new_rel;
+
+		// Re-read from the files that now exist. Re-encoding changes every byte
+		// count, and orientation baked in during the strip can swap width and
+		// height — recorded dimensions that disagree with the image make layouts
+		// reserve the wrong space, and a wrong number is harder to spot than a
+		// missing one.
+		$main = trailingslashit( $up['path'] ) . basename( $rel );
+		$dim  = @getimagesize( $main ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+		if ( $dim ) {
+			$meta['width']  = (int) $dim[0];
+			$meta['height'] = (int) $dim[1];
+		}
+		if ( isset( $meta['filesize'] ) && is_file( $main ) ) { $meta['filesize'] = filesize( $main ); }
+
+		foreach ( (array) ( $meta['sizes'] ?? array() ) as $k => $s ) {
+			$f = trailingslashit( $up['path'] ) . ( $s['file'] ?? '' );
+			if ( ! empty( $s['file'] ) && is_file( $f ) ) {
+				$sd = @getimagesize( $f ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+				if ( $sd ) {
+					$meta['sizes'][ $k ]['width']  = (int) $sd[0];
+					$meta['sizes'][ $k ]['height'] = (int) $sd[1];
+				}
+				if ( isset( $s['filesize'] ) ) { $meta['sizes'][ $k ]['filesize'] = filesize( $f ); }
+			}
+		}
+
 		wp_update_attachment_metadata( $id, $meta );
 	}
 
