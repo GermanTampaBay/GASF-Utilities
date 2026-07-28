@@ -69,6 +69,9 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 	// After photos.php: the library leans on its private-path helpers and on
 	// gasf_crm_photos_available().
 	require_once GASF_CRM_DIR . '/photos-library.php';
+	// After photos-library.php: an upload publishes through photos.php and is
+	// then tagged through gasf_crm_photo_library_save().
+	require_once GASF_CRM_DIR . '/photos-upload.php';
 	require_once GASF_CRM_DIR . '/ui.php';
 	require_once GASF_CRM_DIR . '/admin.php';
 

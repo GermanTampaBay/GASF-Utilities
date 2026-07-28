@@ -595,6 +595,52 @@ input:focus,select:focus,textarea:focus,.edbody:focus{
 .msg .hd b{font-family:var(--body);font-size:14px;letter-spacing:0}
 .streamtag,.badge,.firsttime{border-radius:2px;font-weight:700;letter-spacing:.06em}
 
+/* ---- bulk upload ---- */
+
+/* The drop zone reads as an empty mount waiting for prints, which is what it
+   is. Generous, because it is a target you throw things at. */
+.dropzone{
+	display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;
+	min-height:150px;padding:26px 20px;text-align:center;cursor:pointer;
+	background:var(--s-wash);border:2px dashed var(--gasf-border);border-radius:2px;
+	transition:border-color .15s,background-color .15s;
+}
+.dropzone strong{font:600 17px/1.2 var(--display);letter-spacing:-.01em}
+.dropzone .muted{font-size:13px}
+.dropzone:hover,.dropzone:focus-visible{border-color:var(--s-accent);background:var(--s-tint);outline:none}
+.dropzone.over{border-color:var(--s-ink);background:var(--s-tint);border-style:solid}
+
+.uplist{margin-top:12px}
+.uprow{
+	display:flex;align-items:center;gap:10px;padding:7px 10px;
+	border:1px solid var(--gasf-border);border-radius:2px;margin-bottom:5px;
+	background:var(--gasf-surface);font-size:13px;
+}
+.uprow .upname{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.uprow .upsize,.uprow .upstate{flex:0 0 auto;font:400 11px/1 var(--slug);letter-spacing:.05em;color:var(--gasf-muted)}
+.uprow .upstate{min-width:86px;text-align:right}
+.uprow.going{border-color:var(--s-accent);background:var(--s-wash)}
+.uprow.going .upstate{color:var(--s-ink);font-weight:700}
+.uprow.done .upstate{color:var(--ok);font-weight:700}
+/* A failure keeps its reason on the row. The message is the useful part —
+   "which one broke" is answered by where it sits, "why" is not. */
+.uprow.failed{border-color:var(--danger);background:#f6e3df}
+.uprow.failed .upstate{min-width:0;text-align:left;color:var(--danger);font-weight:700;
+	font-family:var(--body);font-size:12px;letter-spacing:0;white-space:normal}
+.uprow .updrop{
+	flex:0 0 auto;width:26px;height:26px;padding:0;line-height:1;cursor:pointer;
+	background:none;border:1px solid var(--gasf-border);border-radius:2px;
+	color:var(--gasf-muted);font-size:15px;
+}
+.uprow .updrop:hover{color:var(--danger);border-color:var(--danger)}
+
+/* Permission gets the same room here as on the form a member fills in. A box
+   somebody has to tick is the last place to make the type small. */
+.consentbox{border-left:3px solid var(--gasf-accent)}
+.cbox{display:flex;gap:12px;align-items:flex-start;line-height:1.5;cursor:pointer}
+.cbox input{width:22px;height:22px;flex:0 0 auto;margin:1px 0 0;accent-color:var(--gasf-accent)}
+.consentbox .pf input[type=text]{max-width:520px}
+
 /* Which order the names are in. Small, quiet, and out of the way of the rows —
    it is a preference, not a control anyone came here to use. */
 .nsortbar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:0 0 12px}
@@ -965,6 +1011,7 @@ function gasf_crm_render_inbox() {
 			<button class="hbtn nav on" data-view="mail">Mail</button>
 			<button class="hbtn nav" data-view="photos">Photos</button>
 			<button class="hbtn nav" data-view="library">Photo library</button>
+			<button class="hbtn nav" data-view="upload">Add photos</button>
 		<?php endif; ?>
 		<button class="hbtn" id="checkmail">Check for new mail</button>
 		<button class="hbtn" onclick="var h=document.getElementById('help');h.style.display=h.style.display==='none'?'block':'none';window.scrollTo(0,0)">Help</button>
@@ -1165,6 +1212,69 @@ function gasf_crm_render_inbox() {
 			<button class="btn sec" id="lprev" type="button">Previous</button>
 			<span class="muted" id="lpage"></span>
 			<button class="btn sec" id="lnext" type="button">Next</button>
+		</div>
+	</div>
+</div>
+
+<?php
+/*
+ * Bulk upload.
+ *
+ * The batch answers what a whole evening has in common — the day, the occasion,
+ * the room — because typing that 25 times is how it stops getting typed at all.
+ * Who is in each photo is the one thing that genuinely differs per picture, so
+ * it is deliberately NOT here: these land in the library ready to be tagged,
+ * which is the job this screen exists to shorten rather than replace.
+ */
+?>
+<div class="wrap" id="uploadview" hidden data-stream="photos">
+	<div class="card pad libhead">
+		<h2 style="margin:0 0 4px">Add photos</h2>
+		<p class="muted" style="margin:0">Drag a whole event in at once. Fill in the day, the occasion and the place below and every photo in the batch gets them &mdash; then tag who is in them afterwards, in the photo library.</p>
+	</div>
+
+	<div class="card pad">
+		<h3>What they all have in common</h3>
+		<div class="lfrow">
+			<label class="lf"><span>Date</span><input type="date" id="update"></label>
+			<label class="lf"><span>Where</span><select id="upplace"><option value="">&mdash; not sure &mdash;</option></select></label>
+			<label class="lf"><span>Occasion</span><input type="text" id="upevent" list="upevents" autocomplete="off" placeholder="Search the club calendar"></label>
+		</div>
+		<datalist id="upevents"></datalist>
+		<p class="muted" style="margin:10px 0 0">A photo that carries its own date from the camera keeps it &mdash; the date here fills in the ones that do not.</p>
+	</div>
+
+	<?php
+	/*
+	 * Permission, given the same weight as on the form a member fills in.
+	 *
+	 * A volunteer uploading their own photos of an event has genuinely answered
+	 * this, and the note is what makes that an answer somebody can check in two
+	 * years rather than an assertion nobody can. It is pre-filled because the
+	 * true answer is nearly always the same sentence, and editable because
+	 * sometimes it is not.
+	 */
+	?>
+	<div class="card pad consentbox">
+		<h3>May we use them?</h3>
+		<label class="cbox"><input type="checkbox" id="upconsent"> <span><?php echo esc_html( gasf_crm_photo_consent_text() ); ?></span></label>
+		<label class="pf" style="margin-top:12px"><span>How permission was given</span>
+			<input type="text" id="upnote" maxlength="200" value="Photographed by a club volunteer at a club event.">
+		</label>
+		<p class="muted" style="margin:8px 0 0">Recorded against every photo in this batch, and shown to whoever looks at them later.</p>
+	</div>
+
+	<div class="card pad">
+		<div class="dropzone" id="updrop" tabindex="0" role="button" aria-label="Choose photos, or drag them here">
+			<strong>Drag photos here</strong>
+			<span class="muted">or click to choose them &mdash; JPEG, PNG, GIF or WebP</span>
+			<input type="file" id="upinput" accept="image/jpeg,image/png,image/gif,image/webp" multiple hidden>
+		</div>
+		<div id="uplist" class="uplist"></div>
+		<div class="actions" style="margin-top:14px">
+			<button class="btn" id="upgo" type="button" disabled>Upload</button>
+			<button class="btn sec" id="upclear" type="button" hidden>Clear the list</button>
+			<span class="muted" id="upstatus"></span>
 		</div>
 	</div>
 </div>
@@ -2425,7 +2535,8 @@ function gasf_crm_render_inbox() {
 		var panes = {
 			mail:    document.getElementById('mailview'),
 			photos:  document.getElementById('photoview'),
-			library: document.getElementById('libview')
+			library: document.getElementById('libview'),
+			upload:  document.getElementById('uploadview')
 		};
 		if (!panes.photos) { return; } // no photos stream: mail is the only view
 
@@ -2436,9 +2547,212 @@ function gasf_crm_render_inbox() {
 
 		if (which === 'photos')  { loadPhotos(); }
 		if (which === 'library') { loadLib(); }
+		if (which === 'upload')  { upFill(); }
 		remember();
 		window.scrollTo(0, 0);
 	}
+
+	/* ===================== bulk upload =====================
+	 *
+	 * One request per file, not one request per batch. PHP's max_file_uploads
+	 * defaults to 20, so a single POST carrying 25 photos quietly drops five —
+	 * no error anywhere, just fewer pictures than were dragged in. Sending them
+	 * one at a time also turns a failure into one photo's problem instead of the
+	 * whole evening's, and gives the person watching a line per file rather than
+	 * a spinner that might mean anything.
+	 *
+	 * Sequential rather than parallel on purpose: these are phone photos over a
+	 * club's broadband, and six at once is how a browser starts timing them out.
+	 */
+	var upQueue = [], upBusy = false, upEvents = [];
+
+	function upEl(id){ return document.getElementById(id); }
+
+	function upFill(){
+		// Places, from the same list the rest of the app already holds.
+		var sel = upEl('upplace');
+		if (sel && sel.options.length < 2) {
+			PLACES.forEach(function(pl){
+				var pad = '';
+				for (var i = 0; i < Math.min(2, pl.depth); i++) { pad += '    '; }
+				var o = document.createElement('option');
+				o.value = pl.name;
+				o.textContent = pad + (pl.label || pl.name);
+				sel.appendChild(o);
+			});
+		}
+		upEvents2();
+	}
+
+	// The club's calendar for whatever day is in the box, offered as a datalist
+	// so it is a suggestion rather than a cage — an occasion the calendar never
+	// knew about can still be typed.
+	function upEvents2(){
+		var d = upEl('update'), dl = upEl('upevents');
+		if (!d || !dl) { return; }
+		if (!d.value) { dl.innerHTML = ''; upEvents = []; return; }
+		api('/photos/events?_=1&date=' + encodeURIComponent(d.value)).then(function(r){
+			upEvents = (r && r.events) || [];
+			dl.innerHTML = upEvents.map(function(e){
+				return '<option value="' + esc(e.title) + '">' + esc(e.when || '') + '</option>';
+			}).join('');
+		}).catch(function(){ /* the calendar is a convenience; typing still works */ });
+	}
+
+	function upEventId(){
+		var name = (upEl('upevent').value || '').trim().toLowerCase();
+		var hit = upEvents.filter(function(e){ return String(e.title).toLowerCase() === name; })[0];
+		return hit ? hit.id : 0;
+	}
+
+	function upAdd(files){
+		Array.prototype.forEach.call(files, function(f){
+			if (!/^image\//.test(f.type)) { return; }   // a dragged folder or PDF, silently skipped
+			upQueue.push({ file: f, state: 'waiting', msg: '' });
+		});
+		upPaint();
+	}
+
+	function upPaint(){
+		var box = upEl('uplist');
+		box.innerHTML = upQueue.map(function(u, i){
+			var cls = 'uprow ' + u.state;
+			return '<div class="' + cls + '">' +
+				'<span class="upname">' + esc(u.file.name) + '</span>' +
+				'<span class="upsize">' + Math.round(u.file.size / 1024) + ' KB</span>' +
+				'<span class="upstate">' + esc(u.msg || ({
+					waiting: 'waiting', going: 'uploading…', done: 'added', failed: 'failed'
+				})[u.state]) + '</span>' +
+				(u.state === 'waiting' ? '<button type="button" class="updrop" data-i="' + i + '" aria-label="Remove from the list">&times;</button>' : '') +
+				'</div>';
+		}).join('');
+
+		var pending = upQueue.filter(function(u){ return u.state === 'waiting'; }).length;
+		upEl('upgo').disabled = upBusy || !pending;
+		upEl('upgo').textContent = pending ? 'Upload ' + pending + ' photo' + (pending === 1 ? '' : 's') : 'Upload';
+		upEl('upclear').hidden = !upQueue.length || upBusy;
+	}
+
+	function upSend(u){
+		var fd = new FormData();
+		fd.append('file', u.file);
+		fd.append('consent', upEl('upconsent').checked ? '1' : '0');
+		fd.append('note', upEl('upnote').value);
+		fd.append('taken', upEl('update').value);
+		fd.append('place', upEl('upplace').value);
+		fd.append('event', upEl('upevent').value);
+		fd.append('event_id', String(upEventId()));
+
+		// Not api(): that sets a JSON content type, and a multipart body needs the
+		// browser to write its own boundary. The nonce still goes with it.
+		return fetch(API + '/photos/upload', {
+			method: 'POST',
+			headers: { 'X-WP-Nonce': NONCE },
+			credentials: 'same-origin',
+			body: fd
+		}).then(function(r){
+			return r.json().then(function(b){
+				if (!r.ok) { throw new Error((b && b.message) || ('Error ' + r.status)); }
+				return b;
+			});
+		});
+	}
+
+	function upRun(){
+		if (upBusy) { return; }
+
+		if (!upEl('upconsent').checked) {
+			upEl('upstatus').textContent = 'Tick the permission box first.';
+			upEl('upconsent').focus();
+			return;
+		}
+		if (!upEl('upnote').value.trim()) {
+			upEl('upstatus').textContent = 'Say how permission was given.';
+			upEl('upnote').focus();
+			return;
+		}
+
+		upBusy = true;
+		upEl('upstatus').textContent = '';
+		upPaint();
+
+		var added = 0, failed = 0;
+
+		var next = function(){
+			var u = upQueue.filter(function(x){ return x.state === 'waiting'; })[0];
+			if (!u) {
+				upBusy = false;
+				upPaint();
+				upEl('upstatus').textContent = added
+					? added + ' photo' + (added === 1 ? '' : 's') + ' added' +
+					  (failed ? ', ' + failed + ' failed' : '') + '. Tag who is in them in the photo library.'
+					: (failed ? 'Nothing was added.' : '');
+				// The library is now stale. PLACES is rendered with the page and
+				// cannot be refreshed in place, but nothing here invents a place —
+				// the dropdown only offers ones that already exist.
+				if (added) { loadLib(); }
+				return;
+			}
+			u.state = 'going'; u.msg = ''; upPaint();
+			upSend(u).then(function(){
+				u.state = 'done'; added++;
+			}).catch(function(e){
+				u.state = 'failed'; u.msg = e.message; failed++;
+			}).then(function(){
+				upPaint();
+				next();
+			});
+		};
+		next();
+	}
+
+	(function upWire(){
+		var drop = upEl('updrop'), input = upEl('upinput');
+		if (!drop || !input) { return; }
+
+		drop.onclick = function(){ input.click(); };
+		drop.onkeydown = function(e){ if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); input.click(); } };
+		input.onchange = function(){ upAdd(input.files); input.value = ''; };
+
+		// dragover must be cancelled or the browser navigates to the file instead
+		// of letting the page have it.
+		['dragenter', 'dragover'].forEach(function(ev){
+			drop.addEventListener(ev, function(e){ e.preventDefault(); drop.classList.add('over'); });
+		});
+		['dragleave', 'drop'].forEach(function(ev){
+			drop.addEventListener(ev, function(e){ e.preventDefault(); drop.classList.remove('over'); });
+		});
+		drop.addEventListener('drop', function(e){
+			if (e.dataTransfer && e.dataTransfer.files) { upAdd(e.dataTransfer.files); }
+		});
+
+		// A photo dropped anywhere on the page was meant for the zone.
+		var view = upEl('uploadview');
+		if (view) {
+			view.addEventListener('dragover', function(e){ e.preventDefault(); });
+			view.addEventListener('drop', function(e){
+				if (e.target.closest && e.target.closest('#updrop')) { return; }
+				e.preventDefault();
+				if (e.dataTransfer && e.dataTransfer.files) { upAdd(e.dataTransfer.files); }
+			});
+		}
+
+		upEl('uplist').addEventListener('click', function(e){
+			var b = e.target.closest ? e.target.closest('.updrop') : null;
+			if (!b) { return; }
+			upQueue.splice(parseInt(b.dataset.i, 10), 1);
+			upPaint();
+		});
+
+		upEl('upgo').onclick = upRun;
+		upEl('upclear').onclick = function(){ upQueue = []; upEl('upstatus').textContent = ''; upPaint(); };
+		upEl('update').onchange = upEvents2;
+
+		// Leaving mid-upload loses the rest of the batch, so say so.
+		window.addEventListener('beforeunload', function(e){
+			if (upBusy) { e.preventDefault(); e.returnValue = ''; }
+		});
+	}());
 
 	function loadPhotos(){
 		if (!pgrid) { return; }
@@ -2613,8 +2927,10 @@ function gasf_crm_render_inbox() {
 		 */
 		try {
 			var h = '#mail';
+			var uv = document.getElementById('uploadview');
 			if (!document.getElementById('photoview').hidden) { h = pcur ? '#photo/' + pcur : '#photos'; }
 			else if (!document.getElementById('libview').hidden) { h = '#library'; }
+			else if (uv && !uv.hidden) { h = '#upload'; }
 			else if (current) { h = '#thread/' + current; }
 
 			if (h !== location.hash && window.history && window.history.replaceState) {
@@ -2634,6 +2950,7 @@ function gasf_crm_render_inbox() {
 			else if ((m = h.match(/^photo\/(\d+)$/))) { showView('photos'); openPhoto(parseInt(m[1], 10)); }
 			else if (h === 'photos')  { showView('photos'); }
 			else if (h === 'library') { showView('library'); }
+			else if (h === 'upload')  { showView('upload'); }
 			else { return false; }
 		} catch (e) { return false; }
 		finally { routing = false; }

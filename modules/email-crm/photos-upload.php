@@ -1,0 +1,268 @@
+<?php
+/**
+ * Bulk upload — modules/email-crm/photos-upload.php
+ *
+ * The other way photos get into the collection.
+ *
+ * Everything else in this module arrives by email from a member, which is why
+ * it has an intake queue, an invitation, a reminder and a review step: we do
+ * not know who sent it, whether they took it, or whether we may use it. A
+ * volunteer emptying their own camera after an event has already answered all
+ * three, and making them post 25 photos to themselves to get them in would be
+ * a ceremony that protects nobody.
+ *
+ * So this is a shorter path, not a looser one. It skips the queue, the invite
+ * and the reminders. It does NOT skip the two things that exist for the
+ * subject's sake rather than the club's:
+ *
+ *   - Permission is recorded, with a note, exactly as a volunteer recording it
+ *     by hand for an emailed photo. The tickbox is not a formality; without it
+ *     the request is refused.
+ *   - Every file is scrubbed of EXIF before it becomes readable, by the same
+ *     publish path emailed photos go through. Uploads land in the private
+ *     review folder first and are published from there, so there is never a
+ *     moment where an unscrubbed file sits in the webroot.
+ *
+ * One file per request, deliberately. PHP's max_file_uploads defaults to 20,
+ * so a single POST carrying 25 photos silently drops five of them — no error,
+ * no warning, just fewer pictures than you dragged in. Uploading them one at a
+ * time also means a failure is one photo's problem rather than the batch's,
+ * and the person watching gets a progress line per file instead of a spinner.
+ */
+if ( ! defined( 'ABSPATH' ) ) { exit; }
+
+/** What a browser will hand us that WordPress can actually process. */
+function gasf_crm_upload_types() {
+	return array( 'jpg', 'jpeg', 'png', 'gif', 'webp' );
+}
+
+/**
+ * Take one uploaded file into the collection, tagged with the batch's answers.
+ *
+ * @param array $f  One $_FILES entry.
+ * @param array $in Batch fields: taken, place, event, event_id, note.
+ * @return array|WP_Error The library card on success.
+ */
+function gasf_crm_photo_upload_one( array $f, array $in ) {
+	if ( ! function_exists( 'gasf_crm_photos_available' ) || ! gasf_crm_photos_available() ) {
+		return new WP_Error( 'gasf_crm_off', 'The photo catalogue is switched off, so there is nowhere to put these.', array( 'status' => 503 ) );
+	}
+
+	$name = (string) ( $f['name'] ?? '' );
+	if ( '' === $name || empty( $f['tmp_name'] ) ) {
+		return new WP_Error( 'gasf_crm_nofile', 'No file arrived.', array( 'status' => 400 ) );
+	}
+
+	if ( ! empty( $f['error'] ) ) {
+		// PHP's own upload errors, said in words. UPLOAD_ERR_INI_SIZE is the one
+		// that actually happens, and "the server refused it" is not a useful
+		// thing to read when the fix is a smaller file.
+		$why = array(
+			UPLOAD_ERR_INI_SIZE   => 'is bigger than this server accepts in one upload',
+			UPLOAD_ERR_FORM_SIZE  => 'is bigger than the form allows',
+			UPLOAD_ERR_PARTIAL    => 'only arrived partly — the connection dropped',
+			UPLOAD_ERR_NO_FILE    => 'did not arrive at all',
+			UPLOAD_ERR_NO_TMP_DIR => 'could not be stored — the server has no temp folder',
+			UPLOAD_ERR_CANT_WRITE => 'could not be written to disk',
+			UPLOAD_ERR_EXTENSION  => 'was blocked by the server',
+		);
+		return new WP_Error( 'gasf_crm_upload', sprintf( '%s %s.', $name,
+			$why[ (int) $f['error'] ] ?? 'could not be uploaded' ), array( 'status' => 400 ) );
+	}
+
+	$ext = strtolower( (string) pathinfo( $name, PATHINFO_EXTENSION ) );
+	if ( ! in_array( $ext, gasf_crm_upload_types(), true ) ) {
+		// HEIC named explicitly: it is what an iPhone produces by default, so it
+		// is the likeliest thing to be turned away, and "not a supported image"
+		// gives somebody no idea that the fix is a setting on their phone.
+		$hint = in_array( $ext, array( 'heic', 'heif' ), true )
+			? ' iPhones save HEIC by default — in Settings → Camera → Formats, choose "Most Compatible", or share the photos rather than sending the originals.'
+			: '';
+		return new WP_Error( 'gasf_crm_type', sprintf(
+			'%s is a .%s, which cannot be catalogued. JPEG, PNG, GIF and WebP work.%s', $name, $ext ?: '?', $hint
+		), array( 'status' => 415 ) );
+	}
+
+	$size = (int) ( $f['size'] ?? 0 );
+	if ( defined( 'GASF_CRM_PHOTO_MAX_BYTES' ) && $size > GASF_CRM_PHOTO_MAX_BYTES ) {
+		return new WP_Error( 'gasf_crm_big', sprintf( '%s is %s, over the %s limit for one photo.',
+			$name, size_format( $size ), size_format( GASF_CRM_PHOTO_MAX_BYTES ) ), array( 'status' => 413 ) );
+	}
+
+	// Refuse a decompression bomb before WordPress tries to make six sizes of it.
+	$dim = @getimagesize( $f['tmp_name'] ); // phpcs:ignore WordPress.PHP.NoSilencedErrors -- a bad image is an expected input here.
+	if ( ! $dim || empty( $dim[0] ) || empty( $dim[1] ) ) {
+		return new WP_Error( 'gasf_crm_type', $name . ' does not look like an image we can read.', array( 'status' => 415 ) );
+	}
+	if ( defined( 'GASF_CRM_PHOTO_MAX_PIXELS' ) && ( $dim[0] * $dim[1] ) > GASF_CRM_PHOTO_MAX_PIXELS ) {
+		return new WP_Error( 'gasf_crm_big', sprintf( '%s is %s×%s, which is more than we resize in one go.',
+			$name, number_format_i18n( $dim[0] ), number_format_i18n( $dim[1] ) ), array( 'status' => 413 ) );
+	}
+
+	require_once ABSPATH . 'wp-admin/includes/image.php';
+	require_once ABSPATH . 'wp-admin/includes/file.php';
+	require_once ABSPATH . 'wp-admin/includes/media.php';
+
+	/*
+	 * Into the review folder, created private — the same two filters the email
+	 * intake uses, for the same reason.
+	 *
+	 * These photos are going public in a moment anyway, so it would be tempting
+	 * to write them straight into uploads. The reason not to is the scrub: EXIF
+	 * comes off in gasf_crm_photo_publish, and publishing from behind the
+	 * boundary means a file is never readable with its GPS still in it, not even
+	 * for the second between writing and stripping.
+	 */
+	$to_review = function ( $dirs ) {
+		$root            = gasf_crm_photo_private_root();
+		$dirs['path']    = $root;
+		$dirs['basedir'] = $root;
+		$dirs['subdir']  = '';
+		$dirs['baseurl'] = home_url();
+		$dirs['url']     = home_url();
+		return $dirs;
+	};
+	$hide = function ( $data ) {
+		$data['post_status'] = 'private';
+		return $data;
+	};
+
+	add_filter( 'upload_dir', $to_review, 99 );
+	add_filter( 'wp_insert_attachment_data', $hide, 99 );
+	// EXIF is read on the way in by the catalogue module's add_attachment hook,
+	// which is what puts the date, the time and the geofence guess on the photo
+	// before the scrub below takes them out of the file.
+	$id = media_handle_upload( 'file', 0, array(), array( 'test_form' => false ) );
+	remove_filter( 'wp_insert_attachment_data', $hide, 99 );
+	remove_filter( 'upload_dir', $to_review, 99 );
+
+	if ( is_wp_error( $id ) ) { return $id; }
+	$id = (int) $id;
+
+	/*
+	 * Provenance, written before anything else can fail.
+	 *
+	 * Same question this answers for an emailed photo — who gave us this and may
+	 * we use it — with a different answer: a volunteer put it here directly.
+	 * approved_by/at match the emailed shape so the "Kept … by …" line and the
+	 * rest of the library read it without a special case.
+	 */
+	update_post_meta( $id, '_gasf_photo_source', array(
+		'thread'      => 0,
+		'stream'      => 'photos',
+		'email'       => '',
+		'name'        => gasf_crm_display_name( get_current_user_id() ),
+		'subject'     => 'Uploaded directly',
+		'approved_by' => get_current_user_id(),
+		'approved_at' => current_time( 'mysql', true ),
+		'upload'      => true,
+	) );
+
+	// A volunteer has vouched for it, which is what confirmed means. It is also
+	// what puts the photo in the library before it has a single tag.
+	update_post_meta( $id, '_gasf_photo_confirmed', current_time( 'mysql', true ) );
+
+	// Permission, recorded the same way and against the same wording as a
+	// volunteer recording it by hand. Before publish, so a photo is never
+	// readable without its permission already on the record.
+	$rec = gasf_crm_photo_consent_record( $id, 'grant', (string) ( $in['note'] ?? '' ) );
+	if ( is_wp_error( $rec ) ) {
+		wp_delete_attachment( $id, true );
+		return $rec;
+	}
+
+	// Scrub every size, verify, move out of the review folder, hand over the
+	// file mode, flip to inherit. All of it already lives in publish.
+	$pub = gasf_crm_photo_publish( $id );
+	if ( is_wp_error( $pub ) ) {
+		wp_delete_attachment( $id, true );
+		return $pub;
+	}
+
+	/*
+	 * The batch's answers, applied through the ordinary tag writer.
+	 *
+	 * The photo's OWN date wins over the batch's. Somebody uploading an evening's
+	 * photos gives one date for the lot, and that is right for the ones with no
+	 * EXIF — but a camera that recorded the real day knows better than a form,
+	 * and overwriting it would throw away the only evidence in favour of a
+	 * default. Same for the place: an explicit choice from the form wins, since
+	 * that is a human saying where they were, but with the box left blank a
+	 * geofence guess is better than nothing.
+	 */
+	$own_date  = (string) get_post_meta( $id, '_gasf_photo_taken', true );
+	$own_place = (int) get_post_meta( $id, '_gasf_photo_place_guess', true );
+	$own_place = $own_place ? get_term( $own_place, 'gasf_photo_place' ) : null;
+
+	$place = trim( (string) ( $in['place'] ?? '' ) );
+	if ( '' === $place && $own_place && ! is_wp_error( $own_place ) ) { $place = $own_place->name; }
+
+	$saved = gasf_crm_photo_library_save( $id, array(
+		'people'   => array(),                                   // the whole point: tagged afterwards
+		'place'    => $place,
+		'event'    => trim( (string) ( $in['event'] ?? '' ) ),
+		'event_id' => (int) ( $in['event_id'] ?? 0 ),
+		'taken'    => $own_date ?: trim( (string) ( $in['taken'] ?? '' ) ),
+		'caption'  => '',
+	) );
+	// A tagging failure here is recoverable by editing the photo, and the photo
+	// itself is already safe — scrubbed, consented, in the library. Losing it
+	// over a bad place name would be the worse outcome.
+	if ( is_wp_error( $saved ) ) {
+		gasf_mec_log( sprintf( 'CRM upload: media #%d uploaded but its batch tags did not apply — %s',
+			$id, $saved->get_error_message() ) );
+	}
+
+	gasf_mec_log( sprintf( 'CRM upload: media #%d (%s) added by %s',
+		$id, $name, gasf_crm_display_name( get_current_user_id() ) ) );
+
+	return gasf_crm_photo_library_card( $id );
+}
+
+add_action( 'rest_api_init', function () {
+
+	$guard = function () {
+		$sess = gasf_crm_rest_guard();
+		if ( is_wp_error( $sess ) || ! $sess ) { return $sess ?: false; }
+		return gasf_crm_user_can_stream( 'photos' );
+	};
+
+	register_rest_route( 'gasf/v1', '/crm/photos/upload', array(
+		'methods'             => 'POST',
+		'permission_callback' => $guard,
+		'callback'            => function ( WP_REST_Request $req ) {
+
+			/*
+			 * The tickbox is a gate, not a field.
+			 *
+			 * Checked here rather than trusted from the form, because the form is
+			 * the one place it cannot be enforced: a request that never went
+			 * through the page would simply omit it. The club cannot publish a
+			 * photograph of somebody without an answer to "may we", and an upload
+			 * with no answer is not a faster route to the same place — it is a
+			 * photo that should not have been taken in.
+			 */
+			if ( '1' !== (string) $req->get_param( 'consent' ) ) {
+				return new WP_Error( 'gasf_crm_consent',
+					'Please tick the permission box — we cannot take photos in without it.',
+					array( 'status' => 400 ) );
+			}
+
+			$files = $req->get_file_params();
+			if ( empty( $files['file'] ) ) {
+				return new WP_Error( 'gasf_crm_nofile', 'No file arrived with that request.', array( 'status' => 400 ) );
+			}
+
+			$card = gasf_crm_photo_upload_one( $files['file'], array(
+				'taken'    => (string) $req->get_param( 'taken' ),
+				'place'    => (string) $req->get_param( 'place' ),
+				'event'    => (string) $req->get_param( 'event' ),
+				'event_id' => (int) $req->get_param( 'event_id' ),
+				'note'     => (string) $req->get_param( 'note' ),
+			) );
+
+			if ( is_wp_error( $card ) ) { return $card; }
+			return array( 'ok' => true, 'photo' => $card );
+		},
+	) );
+} );
