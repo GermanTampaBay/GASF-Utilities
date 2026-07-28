@@ -149,9 +149,20 @@ function gasf_crm_photo_consent_state( $attachment_id ) {
 		);
 	}
 
-	// No submitter, so nobody to have asked: this is the club's own picture,
-	// already published on its own site. Different question entirely.
-	if ( ! get_post_meta( $id, '_gasf_photo_source', true ) ) {
+	/*
+	 * The club's own picture — but only on POSITIVE evidence, never on the
+	 * absence of a submitter.
+	 *
+	 * "No provenance recorded" and "no provenance because there never was any"
+	 * look identical from here, and the first version treated both as
+	 * club-owned. That is the wrong way for this to fail: a submitted photo
+	 * whose provenance was lost would quietly report itself as the club's to
+	 * publish. The autotag receipt is real evidence — it means the photo was
+	 * already in the club's own media library, put there by the club, before
+	 * any of this existed.
+	 */
+	if ( get_post_meta( $id, '_gasf_photo_autotag', true )
+		&& ! get_post_meta( $id, '_gasf_photo_source', true ) ) {
 		return array( 'state' => 'club', 'label' => "The club's own photo", 'at' => '', 'by' => '', 'text' => '' );
 	}
 
@@ -159,7 +170,9 @@ function gasf_crm_photo_consent_state( $attachment_id ) {
 		'state' => 'unknown',
 		'label' => 'Permission not on record',
 		'at'    => '',
-		'by'    => (string) ( ( get_post_meta( $id, '_gasf_photo_source', true )['name'] ?? '' ) ?: '' ),
+		// Indexed defensively: a photo reaching here may have no source at all
+		// now that a missing one no longer counts as club-owned.
+		'by'    => (string) ( is_array( $src = get_post_meta( $id, '_gasf_photo_source', true ) ) ? ( $src['name'] ?? '' ) : '' ),
 		'text'  => '',
 	);
 }

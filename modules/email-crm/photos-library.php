@@ -171,6 +171,28 @@ function gasf_crm_photo_library_filter( array $ids, array $f ) {
 }
 
 /**
+ * Is this attachment part of the club collection?
+ *
+ * The same three routes in that the listing uses, asked about one photo. Kept
+ * as its own function because "what may a volunteer edit" and "what does the
+ * grid show" must not be allowed to drift apart — the moment they do, one of
+ * them is a hole.
+ */
+function gasf_crm_photo_in_library( $attachment_id ) {
+	$id = (int) $attachment_id;
+	if ( 'attachment' !== get_post_type( $id ) ) { return false; }
+
+	if ( get_post_meta( $id, '_gasf_photo_confirmed', true ) ) { return true; }
+	if ( get_post_meta( $id, '_gasf_photo_autotag', true ) ) { return true; }
+
+	foreach ( array( 'gasf_photo_person', 'gasf_photo_place', 'gasf_photo_event' ) as $tax ) {
+		$t = wp_get_object_terms( $id, $tax, array( 'fields' => 'ids' ) );
+		if ( ! is_wp_error( $t ) && $t ) { return true; }
+	}
+	return false;
+}
+
+/**
  * One photo as the grid needs it.
  *
  * dlname is the descriptive filename the catalogue builds — "2026-07-11-
@@ -318,6 +340,27 @@ function gasf_crm_photo_library_save( $attachment_id, array $in ) {
 	}
 	if ( ! gasf_crm_user_can_stream( 'photos' ) ) {
 		return new WP_Error( 'gasf_crm_403', 'You do not have access to the photo library.', array( 'status' => 403 ) );
+	}
+
+	/*
+	 * And it has to be a photo IN the library.
+	 *
+	 * Holding the photos stream said "you may edit club photographs"; it did
+	 * not say "you may edit any of the 1,430 files in this site's media
+	 * library". Without this check the id in the request was the only thing
+	 * deciding, so a photos volunteer — who is not a WordPress editor and has
+	 * no business in the media library at all — could retitle a sponsor's logo
+	 * or a page header by asking for its id.
+	 *
+	 * Membership is the same test the grid uses, so nothing editable here is
+	 * anything a volunteer cannot already see.
+	 */
+	if ( ! gasf_crm_photo_in_library( $id ) ) {
+		return new WP_Error(
+			'gasf_crm_403',
+			'That is not a photo in the club collection, so it cannot be edited here.',
+			array( 'status' => 403 )
+		);
 	}
 	if ( ! gasf_crm_photos_available() ) {
 		return new WP_Error( 'gasf_crm_nocatalog', 'The Photo Catalogue module is switched off, so there is nowhere to record this.', array( 'status' => 503 ) );
@@ -608,6 +651,100 @@ add_action( 'rest_api_init', function () {
 			usort( $out, function ( $a, $b ) { return $b['n'] - $a['n'] ?: strnatcasecmp( $a['label'], $b['label'] ); } );
 
 			return array( 'people' => $out );
+		},
+	) );
+
+	/*
+	 * Correcting a person, rather than a photo.
+	 *
+	 * Retyping a name in a photo's edit form only ever changes THAT photo: the
+	 * misspelling stays on every other one, and the collection quietly gains a
+	 * second person. Fixing "Nichaolas Freiburg" on one picture is not what
+	 * anybody means by fixing it.
+	 *
+	 * Two operations, because they are two different mistakes:
+	 *   rename — one person, spelled wrong. Changes the name everywhere at once,
+	 *            because a term IS shared; nothing is re-tagged.
+	 *   merge  — one person entered twice under different names ("Erna" and
+	 *            "Erna Wirtz"). Every photo of the first is moved onto the
+	 *            second and the first is retired.
+	 */
+	register_rest_route( 'gasf/v1', '/crm/photos/person', array(
+		'methods'             => 'POST',
+		'permission_callback' => $lib_guard,
+		'callback'            => function ( WP_REST_Request $req ) {
+			if ( ! gasf_crm_photos_available() ) {
+				return new WP_Error( 'gasf_crm_nocatalog', 'The Photo Catalogue module is switched off.', array( 'status' => 503 ) );
+			}
+
+			$action = (string) $req->get_param( 'action' );
+			$name   = trim( (string) $req->get_param( 'name' ) );
+			$term   = $name ? get_term_by( 'name', $name, 'gasf_photo_person' ) : null;
+
+			if ( ! $term || is_wp_error( $term ) ) {
+				return new WP_Error( 'gasf_crm_404', 'No such person in the collection.', array( 'status' => 404 ) );
+			}
+
+			if ( 'rename' === $action ) {
+				$to = trim( sanitize_text_field( (string) $req->get_param( 'into' ) ) );
+				if ( '' === $to ) { return new WP_Error( 'gasf_crm_bad', 'A new spelling is needed.', array( 'status' => 400 ) ); }
+
+				// Already somebody else? Then this is a merge wearing the wrong
+				// hat, and doing it as a rename would fail on the duplicate slug
+				// and leave the volunteer with an error they cannot act on.
+				$clash = get_term_by( 'name', $to, 'gasf_photo_person' );
+				if ( $clash && ! is_wp_error( $clash ) && (int) $clash->term_id !== (int) $term->term_id ) {
+					return new WP_Error(
+						'gasf_crm_exists',
+						sprintf( '“%s” is already in the collection. Merge them instead — that keeps both sets of photos.', $to ),
+						array( 'status' => 409 )
+					);
+				}
+
+				$res = wp_update_term( (int) $term->term_id, 'gasf_photo_person', array(
+					'name' => $to,
+					// The slug follows the name, or a corrected spelling keeps
+					// answering to the old one in URLs and exports forever.
+					'slug' => sanitize_title( gasf_photo_translit( $to ) ),
+				) );
+				if ( is_wp_error( $res ) ) { return $res; }
+
+				gasf_mec_log( sprintf( 'Photo library: renamed “%s” to “%s” across %d photo(s) — user %d',
+					$term->name, $to, (int) $term->count, get_current_user_id() ) );
+
+				return array( 'ok' => true, 'action' => 'rename', 'from' => $term->name, 'to' => $to, 'photos' => (int) $term->count );
+			}
+
+			if ( 'merge' === $action ) {
+				$into = trim( (string) $req->get_param( 'into' ) );
+				$dest = $into ? get_term_by( 'name', $into, 'gasf_photo_person' ) : null;
+				if ( ! $dest || is_wp_error( $dest ) ) {
+					return new WP_Error( 'gasf_crm_404', 'No such person to merge into.', array( 'status' => 404 ) );
+				}
+				if ( (int) $dest->term_id === (int) $term->term_id ) {
+					return new WP_Error( 'gasf_crm_bad', 'Those are the same person already.', array( 'status' => 400 ) );
+				}
+
+				$posts = get_objects_in_term( array( (int) $term->term_id ), 'gasf_photo_person' );
+				$posts = is_wp_error( $posts ) ? array() : array_map( 'intval', $posts );
+
+				// Appended, never replacing: a photo may well have four other
+				// people on it, and merging one of them must not clear the rest.
+				foreach ( $posts as $pid ) {
+					wp_set_object_terms( $pid, array( (int) $dest->term_id ), 'gasf_photo_person', true );
+					wp_remove_object_terms( $pid, array( (int) $term->term_id ), 'gasf_photo_person' );
+					if ( function_exists( 'gasf_photo_apply_names' ) ) { gasf_photo_apply_names( $pid ); }
+				}
+
+				wp_delete_term( (int) $term->term_id, 'gasf_photo_person' );
+
+				gasf_mec_log( sprintf( 'Photo library: merged “%s” into “%s” across %d photo(s) — user %d',
+					$term->name, $dest->name, count( $posts ), get_current_user_id() ) );
+
+				return array( 'ok' => true, 'action' => 'merge', 'from' => $term->name, 'to' => $dest->name, 'photos' => count( $posts ) );
+			}
+
+			return new WP_Error( 'gasf_crm_bad', 'Unknown action.', array( 'status' => 400 ) );
 		},
 	) );
 

@@ -357,6 +357,13 @@ textarea{width:100%;min-height:150px;padding:10px;border:1px solid var(--gasf-bo
 	border:0;padding:7px 9px;font:inherit;font-size:13px;color:var(--gasf-text);cursor:pointer}
 .psugi.on,.psugi:hover{background:var(--s-tint,#eee)}
 .psugn{color:var(--gasf-muted);font-size:11px;flex:0 0 auto}
+.nameslist{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:8px}
+.nrow{display:flex;gap:6px;align-items:center;border:1px solid var(--gasf-border);border-radius:4px;padding:6px 8px}
+.nrow input{flex:1 1 auto;min-width:0;padding:5px 7px;border:1px solid var(--gasf-border);border-radius:4px;
+	font:inherit;font-size:13px;background:var(--gasf-surface);color:var(--gasf-text)}
+.nrow .nct{color:var(--gasf-muted);font-size:11px;flex:0 0 auto}
+.nrow button{font-size:12px;padding:4px 8px}
+.nmsg{font-size:12px;margin:6px 0 0}
 .addp{background:none;border:0;padding:2px 0;margin:4px 0 0;font:inherit;font-size:12px;color:var(--s-accent);cursor:pointer}
 .addp:hover{text-decoration:underline}
 .prow{display:flex;gap:8px;flex-wrap:wrap}
@@ -771,7 +778,25 @@ function gasf_crm_render_inbox() {
 			<label class="lf"><span>Occasion</span><select id="levent"><option value="">Any</option></select></label>
 			<label class="lf"><span>Year</span><select id="lyear"><option value="">Any</option></select></label>
 			<button class="btn sec" id="lclear" type="button">Clear</button>
+			<button class="btn sec" id="lnames" type="button">Fix names</button>
 		</div>
+	</div>
+
+	<?php
+	/*
+	 * Correcting a PERSON rather than a photo.
+	 *
+	 * Retyping a name in one photo's form changes that photo and nothing else —
+	 * the misspelling stays on every other one and the collection gains a second
+	 * person. This is where "he is spelled wrong" and "she is in here twice" get
+	 * fixed, which is not the same job as tagging and does not belong in the
+	 * same place.
+	 */
+	?>
+	<div class="card pad lnamespanel" id="lnamespanel" hidden>
+		<h3 style="margin:0 0 4px">Names in the collection</h3>
+		<p class="muted" style="margin:0 0 10px">Correct a spelling and it changes on every photo at once. If the same person is in here twice, merge them &mdash; both sets of photos are kept.</p>
+		<div id="lnameslist" class="nameslist"><span class="muted">Loading&hellip;</span></div>
 	</div>
 
 	<div class="card pad libbar" id="libbar" hidden>
@@ -1531,8 +1556,12 @@ function gasf_crm_render_inbox() {
 				});
 			}
 
-			items = peopleMatch(q, taken);
+			// Close BEFORE matching, never after. close() resets items, so
+			// computing them first and closing second wiped the results on every
+			// keystroke after the one that opened the list: type "Mü" and you got
+			// suggestions, type "Mül" and they vanished and never came back.
 			close();
+			items = peopleMatch(q, taken);
 			if (!items.length) { return; }
 
 			var box = document.createElement('div');
@@ -2331,6 +2360,69 @@ function gasf_crm_render_inbox() {
 			});
 			lrefilter();
 		};
+	}
+
+	/* The names panel. Rename changes a person everywhere; merge folds one into
+	   another. Both act on the PERSON, which is why they are not in the photo
+	   form — editing a photo should never quietly rewrite the collection. */
+	var lnamesBtn = document.getElementById('lnames');
+	if (lnamesBtn) {
+		lnamesBtn.onclick = function(){
+			var panel = document.getElementById('lnamespanel');
+			panel.hidden = !panel.hidden;
+			if (!panel.hidden) { paintNames(); }
+		};
+	}
+
+	function paintNames(){
+		var box = document.getElementById('lnameslist');
+		loadPeople(true).then(function(list){
+			if (!list.length) { box.innerHTML = '<span class="muted">Nobody has been named in a photo yet.</span>'; return; }
+
+			box.innerHTML = list.map(function(p){
+				return '<div class="nrow" data-name="' + esc(p.value) + '">' +
+					'<input type="text" value="' + esc(p.label) + '" aria-label="Name">' +
+					'<span class="nct">' + p.n + '</span>' +
+					'<button class="btn sec nsave" type="button">Save</button>' +
+					'<button class="btn sec nmerge" type="button" title="Merge this person into another">Merge…</button>' +
+					'</div>';
+			}).join('');
+
+			Array.prototype.forEach.call(box.querySelectorAll('.nrow'), function(row){
+				var from  = row.dataset.name;
+				var input = row.querySelector('input');
+
+				row.querySelector('.nsave').onclick = function(){
+					var to = input.value.trim();
+					if (!to || to === from) { return; }
+					if (!confirm('Rename “' + from + '” to “' + to + '” on every photo?')) { return; }
+					person('rename', from, to);
+				};
+
+				row.querySelector('.nmerge').onclick = function(){
+					// A plain prompt on purpose: merging is rare, and a bespoke
+					// picker for it would be more machinery than the job needs.
+					var to = window.prompt('Merge “' + from + '” INTO which name?\n\nEvery photo of ' + from +
+						' will be tagged with the name you type instead, and ' + from + ' is removed.', '');
+					if (!to || !to.trim()) { return; }
+					person('merge', from, to.trim());
+				};
+			});
+		});
+	}
+
+	function person(action, name, into){
+		var box = document.getElementById('lnameslist');
+		api('/photos/person', { method:'POST', body: JSON.stringify({ action: action, name: name, into: into }) })
+			.then(function(r){
+				box.insertAdjacentHTML('beforebegin',
+					'<p class="nmsg ok">' + esc(r.from) + ' → ' + esc(r.to) + ' on ' + r.photos + ' photo(s).</p>');
+				paintNames();
+				loadLib();   // names on the tiles are now stale
+			})
+			.catch(function(e){
+				box.insertAdjacentHTML('beforebegin', '<p class="nmsg err">' + esc(e.message) + '</p>');
+			});
 	}
 
 	var lprev = document.getElementById('lprev'), lnext = document.getElementById('lnext');
