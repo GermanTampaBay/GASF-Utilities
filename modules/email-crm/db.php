@@ -287,7 +287,20 @@ function gasf_crm_upsert_thread( $conversation_id, $subject, $from_name, $from_a
 	// the site's UTC offset, sorting our own replies before the mail they answer.
 	$now = current_time( 'mysql', true );
 
-	$row = $wpdb->get_row( $wpdb->prepare( "SELECT id, status FROM {$t} WHERE conversation_id = %s", $conversation_id ), ARRAY_A );
+	/*
+	 * Looked up by (stream, conversation_id), which is what the unique key is.
+	 *
+	 * Matching on conversation_id alone was left over from when there was one
+	 * mailbox. With two, a conversation delivered to both — anyone who writes to
+	 * the club address and copies photos@, or a list both are on — matches the
+	 * FIRST mailbox's thread during the second mailbox's sync, and that message
+	 * is filed under the wrong stream. Nothing downstream can recover from it:
+	 * REST authorisation trusts the stream stored on the thread, so the message
+	 * becomes readable by volunteers who hold the other mailbox and invisible to
+	 * the ones who actually own it.
+	 */
+
+	$row = $wpdb->get_row( $wpdb->prepare( "SELECT id, status FROM {$t} WHERE stream = %s AND conversation_id = %s", $stream, $conversation_id ), ARRAY_A );
 
 	if ( ! $row ) {
 		$inserted = $wpdb->insert( $t, array(
@@ -312,7 +325,7 @@ function gasf_crm_upsert_thread( $conversation_id, $subject, $from_name, $from_a
 		// failure the re-read misses too: return id 0 and let the caller skip
 		// the message rather than file it under a thread that does not exist.
 		// (Unchecked, insert_id 0 flowed straight into messages.thread_id.)
-		$row = $wpdb->get_row( $wpdb->prepare( "SELECT id, status FROM {$t} WHERE conversation_id = %s", $conversation_id ), ARRAY_A );
+		$row = $wpdb->get_row( $wpdb->prepare( "SELECT id, status FROM {$t} WHERE stream = %s AND conversation_id = %s", $stream, $conversation_id ), ARRAY_A );
 		if ( ! $row ) {
 			gasf_mec_log( 'CRM: thread insert failed for conversation ' . substr( $conversation_id, 0, 24 ) . '… — ' . $wpdb->last_error );
 			return array( 'id' => 0, 'reopened' => false, 'created' => false );

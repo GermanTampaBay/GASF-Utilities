@@ -32,13 +32,28 @@ function gasf_crm_photo_page( $state, $invite = null, $notice = '' ) {
 	echo '<header class="bar"><div class="wrap"><h1>' . esc_html( get_bloginfo( 'name' ) ) . '</h1></div></header>';
 	echo '<div class="wrap main">';
 
-	if ( 'unknown' === $state || 'expired' === $state ) {
+	if ( in_array( $state, array( 'unknown', 'expired', 'used' ), true ) ) {
+		// 'used' is its own message rather than being folded into 'expired'.
+		// Somebody who filled the form in and clicked their own link again has
+		// done nothing wrong, and telling them it expired would be a small lie
+		// that invites them to ask for a replacement they do not need.
+		$head = array(
+			'expired' => 'That link has expired',
+			'used'    => 'You have already told us about these',
+			'unknown' => 'That link does not work',
+		);
+		$body = array(
+			'expired' => esc_html( sprintf( 'Tagging links last %d days. Your photos are safe and still with us — nothing has been lost.', GASF_CRM_PHOTO_INVITE_DAYS ) ),
+			'used'    => 'Thank you — your answers reached us, and the link closes once it has been used. Your photos are safe with us.',
+			'unknown' => 'It may have been mistyped, or it may have already been used. Your photos are safe and still with us either way.',
+		);
+
 		echo '<div class="card pad">';
-		echo '<h2>' . ( 'expired' === $state ? 'That link has expired' : 'That link does not work' ) . '</h2>';
-		echo '<p>' . ( 'expired' === $state
-			? esc_html( sprintf( 'Tagging links last %d days. Your photos are safe and still with us — nothing has been lost.', GASF_CRM_PHOTO_INVITE_DAYS ) )
-			: 'It may have been mistyped, or it may have already been used. Your photos are safe and still with us either way.' ) . '</p>';
-		echo '<p>If you would still like to tell us about them, just reply to the email you had from us and we will send a fresh link.</p>';
+		echo '<h2>' . esc_html( $head[ $state ] ) . '</h2>';
+		echo '<p>' . $body[ $state ] . '</p>';
+		echo '<p>' . ( 'used' === $state
+			? 'If you spotted a mistake or remembered another name, just reply to the email you had from us and we will put it right.'
+			: 'If you would still like to tell us about them, just reply to the email you had from us and we will send a fresh link.' ) . '</p>';
 		echo '</div></div></body></html>';
 		return;
 	}

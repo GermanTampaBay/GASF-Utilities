@@ -96,6 +96,45 @@ function gasf_crm_photo_private_root() {
 }
 
 /**
+ * Prove the private root is unreachable over HTTP, rather than assume it.
+ *
+ * "Above the document root" was an inference from one host's layout — true here,
+ * but a filter, a symlinked home, a different install or a docroot pointed at
+ * ABSPATH's parent could all make it false, and the failure is silent: photos
+ * keep being written and are simply servable. A claim that quietly stops
+ * holding is worse than no claim.
+ *
+ * Checked against the real paths, and against the web server's own idea of its
+ * root where there is one, since ABSPATH and DOCUMENT_ROOT are not always the
+ * same directory.
+ *
+ * @return true|WP_Error
+ */
+function gasf_crm_photo_root_is_safe( $root ) {
+	$rp = realpath( $root );
+	if ( ! $rp ) { return new WP_Error( 'gasf_crm_root', 'The private photo folder does not exist yet.' ); }
+	$rp = wp_normalize_path( $rp );
+
+	$roots = array( realpath( ABSPATH ) );
+	$up    = wp_upload_dir();
+	if ( empty( $up['error'] ) ) { $roots[] = realpath( $up['basedir'] ); }
+	if ( ! empty( $_SERVER['DOCUMENT_ROOT'] ) ) {
+		$roots[] = realpath( sanitize_text_field( wp_unslash( $_SERVER['DOCUMENT_ROOT'] ) ) );
+	}
+
+	foreach ( array_filter( $roots ) as $web ) {
+		$web = trailingslashit( wp_normalize_path( $web ) );
+		if ( 0 === strpos( trailingslashit( $rp ), $web ) ) {
+			return new WP_Error(
+				'gasf_crm_root',
+				sprintf( 'The private photo folder (%s) is inside a web-served directory (%s).', $rp, untrailingslashit( $web ) )
+			);
+		}
+	}
+	return true;
+}
+
+/**
  * Is this attachment's file in the private root?
  *
  * Decided from the stored relative path rather than from the filesystem, so it
@@ -159,6 +198,15 @@ function gasf_crm_photo_review_dir() {
 
 	if ( ! is_dir( $path ) && ! wp_mkdir_p( $path ) ) {
 		return new WP_Error( 'gasf_crm_dir', 'Could not create the private review folder.' );
+	}
+
+	// Refuse to use it if it turns out to be servable. Every path into the
+	// private store runs through this function, so failing here stops intake
+	// rather than letting unreviewed photos accumulate somewhere reachable.
+	$safe = gasf_crm_photo_root_is_safe( $path );
+	if ( is_wp_error( $safe ) ) {
+		gasf_mec_log( 'CRM photos: REFUSING to store photos — ' . $safe->get_error_message() );
+		return $safe;
 	}
 
 	// Belt and braces only. The directory is above the document root, so the
@@ -231,6 +279,10 @@ function gasf_crm_photo_publish( $attachment_id ) {
 		wp_update_attachment_metadata( $id, $meta );
 	}
 
+	// Public only now the bytes are, and only in this order. A status flipped
+	// before the move would advertise a file still sitting behind the boundary.
+	wp_update_post( array( 'ID' => $id, 'post_status' => 'inherit' ) );
+
 	gasf_mec_log( 'CRM photos: media #' . $id . ' published to ' . $new_rel );
 	return true;
 }
@@ -247,6 +299,15 @@ function gasf_crm_photo_publish( $attachment_id ) {
  */
 function gasf_crm_photo_unpublish( $attachment_id ) {
 	$id = (int) $attachment_id;
+
+	// Status first on the way back, bytes second — the mirror of publish, and
+	// for the same reason: whichever end is public last must be closed first.
+	// Applied even when the file is already private, because an attachment can
+	// have been moved by an older version that knew nothing about post_status.
+	if ( 'private' !== get_post_status( $id ) ) {
+		wp_update_post( array( 'ID' => $id, 'post_status' => 'private' ) );
+	}
+
 	if ( gasf_crm_photo_is_private( $id ) ) { return true; }
 
 	$review = gasf_crm_photo_review_dir();
@@ -414,10 +475,28 @@ function gasf_crm_photo_approve( array $thread, $graph_message_id, $graph_attach
 		if ( $item_id > 0 ) { update_post_meta( $new_id, '_gasf_photo_item', (int) $item_id ); }
 	};
 
+	// Created private, not inherit.
+	//
+	// Keeping the bytes out of the webroot was only half of it: the ATTACHMENT
+	// was an ordinary public post, so /wp-json/wp/v2/media returned an
+	// unreviewed submission's title, dimensions, every generated size and its
+	// gasf-photo-review/... path to anybody who asked, and its attachment page
+	// answered 200. Verified against the live site before this line existed.
+	//
+	// post_status is the lever core already understands, so REST collections,
+	// single reads, feeds, sitemaps, search and attachment pages all start
+	// refusing at once — rather than each needing its own filter to remember.
+	$hide = function ( $data ) {
+		$data['post_status'] = 'private';
+		return $data;
+	};
+
 	add_filter( 'upload_dir', $to_review, 99 );
+	add_filter( 'wp_insert_attachment_data', $hide, 99 );
 	add_action( 'add_attachment', $claim, 1 );
 	$id = media_handle_sideload( array( 'name' => $name, 'tmp_name' => $tmp ), 0 );
 	remove_action( 'add_attachment', $claim, 1 );
+	remove_filter( 'wp_insert_attachment_data', $hide, 99 );
 	remove_filter( 'upload_dir', $to_review, 99 );
 
 	if ( is_wp_error( $id ) ) {
@@ -529,7 +608,10 @@ function gasf_crm_photo_already_kept( $graph_message_id, $graph_attachment_id ) 
 function gasf_crm_photo_for_thread( $thread_id ) {
 	$q = new WP_Query( array(
 		'post_type'      => 'attachment',
-		'post_status'    => 'inherit',
+		// Pending photos are 'private' so core keeps them out of REST, feeds,
+		// sitemaps and attachment pages. The CRM is the one caller that must
+		// still see them, so it asks for both.
+		'post_status'    => array( 'inherit', 'private' ),
 		'posts_per_page' => 100,
 		'orderby'        => 'ID',
 		'order'          => 'ASC',
@@ -643,6 +725,13 @@ function gasf_crm_photo_invite_by_token( $token ) {
 	if ( ! $row ) { return null; }
 
 	if ( strtotime( $row['expires_at'] . ' UTC' ) < time() ) { return 'expired'; }
+
+	// Already answered. Consuming the invitation stopped a SECOND set of answers
+	// being submitted, but left the link readable for the rest of its 30 days —
+	// so a forwarded email, a shared screen, a proxy log or a mailbox opened by
+	// somebody else still handed over every photo it covered, long after its one
+	// use. Single-use has to cover the reading too, or it does not mean much.
+	if ( ! empty( $row['submitted_at'] ) ) { return 'used'; }
 
 	$row['ids'] = array_map( 'intval', (array) json_decode( (string) $row['attachment_ids'], true ) );
 	// Handed back so the page can build image URLs with it. Not a leak: the
@@ -847,10 +936,14 @@ add_action( 'template_redirect', function () {
 	// Wrong or stale tokens are throttled per IP. Not because the token is
 	// guessable — 32 random bytes are not — but because an endpoint that does a
 	// database lookup for any string handed to it should not do so unboundedly.
+	// 'used' is refused here as firmly as an expired or unknown token. The image
+	// route above needs no change for it: anything that is not the invite row
+	// itself already 404s there, so a consumed token stops opening photos the
+	// moment this function starts returning a string for one.
 	$invite = gasf_crm_photo_invite_by_token( $token );
-	if ( null === $invite || 'expired' === $invite ) {
+	if ( ! is_array( $invite ) ) {
 		gasf_crm_photo_throttle();
-		gasf_crm_photo_page( 'expired' === $invite ? 'expired' : 'unknown' );
+		gasf_crm_photo_page( in_array( $invite, array( 'expired', 'used' ), true ) ? $invite : 'unknown' );
 		exit;
 	}
 
@@ -1435,7 +1528,7 @@ function gasf_crm_photo_sweep_orphans() {
 function gasf_crm_photo_backfill() {
 	global $wpdb;
 
-	$done = array( 'submissions' => 0, 'items' => 0, 'invites' => 0 );
+	$done = array( 'submissions' => 0, 'items' => 0, 'invites' => 0, 'withdrawn' => 0, 'hidden' => 0 );
 
 	$ids = $wpdb->get_col(
 		"SELECT DISTINCT p.post_id FROM {$wpdb->postmeta} p
@@ -1505,6 +1598,48 @@ function gasf_crm_photo_backfill() {
 		if ( $item ) { update_post_meta( $aid, '_gasf_photo_item', (int) $item['id'] ); }
 	}
 
+	/*
+	 * Bring every unapproved photo behind the boundary — both halves of it.
+	 *
+	 * A separate pass over ALL submitted photos, not a branch inside the loop
+	 * above: that loop only visits attachments with no item row, so photos
+	 * backfilled by an earlier run would have been skipped by exactly the
+	 * correction they need.
+	 *
+	 * Two historical gaps meet here:
+	 *   - Photos taken in before the private root existed are still in public
+	 *     uploads. unpublish() moves the bytes; until this call it had no caller
+	 *     at all, so the correction it was written for had never run.
+	 *   - Photos taken in before this change are ordinary 'inherit' attachments,
+	 *     so /wp-json/wp/v2/media served their title, dimensions, every generated
+	 *     size and their private path to anybody who asked.
+	 *
+	 * Confirmed photos are deliberately untouched. Approval is what makes a photo
+	 * public, and re-hiding one a volunteer has already published would be this
+	 * function overruling a person.
+	 */
+	$all = $wpdb->get_col(
+		"SELECT DISTINCT post_id FROM {$wpdb->postmeta} WHERE meta_key = '_gasf_photo_source'"
+	);
+	foreach ( $all as $aid ) {
+		$aid = (int) $aid;
+		if ( get_post_meta( $aid, '_gasf_photo_confirmed', true ) ) { continue; }
+
+		if ( ! gasf_crm_photo_is_private( $aid ) ) {
+			$moved = gasf_crm_photo_unpublish( $aid );
+			if ( is_wp_error( $moved ) ) {
+				gasf_mec_log( 'CRM photos: could not withdraw #' . $aid . ' from public uploads — ' . $moved->get_error_message() );
+				continue;
+			}
+			$done['withdrawn']++;
+			continue; // unpublish() sets the status itself
+		}
+		if ( 'private' !== get_post_status( $aid ) ) {
+			wp_update_post( array( 'ID' => $aid, 'post_status' => 'private' ) );
+			$done['hidden']++;
+		}
+	}
+
 	// Invitation membership, from the JSON column the join table replaces, plus
 	// the invited/released state that membership implies.
 	$invites = $wpdb->get_results(
@@ -1538,8 +1673,8 @@ function gasf_crm_photo_backfill() {
 	}
 
 	gasf_mec_log( sprintf(
-		'CRM photos: backfilled %d submission(s), %d item(s), %d invitation link(s)',
-		$done['submissions'], $done['items'], $done['invites']
+		'CRM photos: backfilled %d submission(s), %d item(s), %d invitation link(s); withdrew %d from public uploads, hid %d from public queries',
+		$done['submissions'], $done['items'], $done['invites'], $done['withdrawn'], $done['hidden']
 	) );
 	return $done;
 }
@@ -1967,7 +2102,10 @@ function gasf_crm_photo_actionable_threads() {
 function gasf_crm_photo_untagged_ids() {
 	$q = new WP_Query( array(
 		'post_type'      => 'attachment',
-		'post_status'    => 'inherit',
+		// Pending photos are 'private' so core keeps them out of REST, feeds,
+		// sitemaps and attachment pages. The CRM is the one caller that must
+		// still see them, so it asks for both.
+		'post_status'    => array( 'inherit', 'private' ),
 		'posts_per_page' => 200,
 		'fields'         => 'ids',
 		'no_found_rows'  => true,
@@ -2007,7 +2145,10 @@ function gasf_crm_photo_clean_date( $raw ) {
 function gasf_crm_photo_pending_ids() {
 	$q = new WP_Query( array(
 		'post_type'      => 'attachment',
-		'post_status'    => 'inherit',
+		// Pending photos are 'private' so core keeps them out of REST, feeds,
+		// sitemaps and attachment pages. The CRM is the one caller that must
+		// still see them, so it asks for both.
+		'post_status'    => array( 'inherit', 'private' ),
 		'posts_per_page' => 200,
 		'fields'         => 'ids',
 		'no_found_rows'  => true,
@@ -2479,7 +2620,10 @@ function gasf_crm_photo_sender_known( $email ) {
 function gasf_crm_photo_gallery( $state = '' ) {
 	$q = new WP_Query( array(
 		'post_type'      => 'attachment',
-		'post_status'    => 'inherit',
+		// Pending photos are 'private' so core keeps them out of REST, feeds,
+		// sitemaps and attachment pages. The CRM is the one caller that must
+		// still see them, so it asks for both.
+		'post_status'    => array( 'inherit', 'private' ),
 		'posts_per_page' => 300,
 		'orderby'        => 'ID',
 		'order'          => 'DESC',
