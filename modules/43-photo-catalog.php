@@ -886,16 +886,60 @@ JS;
 		if ( mb_strlen( $q ) < 2 ) { return array(); }
 
 		global $wpdb;
-		$rows = $wpdb->get_results( $wpdb->prepare(
-			"SELECT p.ID, p.post_title, CAST(m.meta_value AS UNSIGNED) AS ts
-			   FROM {$wpdb->posts} p
-			   JOIN {$wpdb->postmeta} m ON m.post_id = p.ID AND m.meta_key = '_gasf_start_ts'
-			  WHERE p.post_type = %s AND p.post_status = 'publish' AND p.post_title LIKE %s
-			  ORDER BY ts DESC LIMIT %d",
-			GASF_EVENTS_CPT, '%' . $wpdb->esc_like( $q ) . '%', (int) $limit
-		), ARRAY_A );
 
-		return array_map( 'gasf_photo_event_shape', (array) $rows );
+		/*
+		 * Every word has to appear, in any order.
+		 *
+		 * One LIKE across the whole phrase requires the words to be adjacent and
+		 * in the order they were typed, so "germany paraguay" found nothing while
+		 * the event sat in the calendar called "World Cup Watch Party: Germany v
+		 * Paraguay". Nobody remembers a title the way the calendar spells it, and
+		 * a search that only matches the exact phrase is a search you have to
+		 * already know the answer to.
+		 */
+		$words = preg_split( '~\s+~u', $q, -1, PREG_SPLIT_NO_EMPTY );
+		$words = array_slice( $words, 0, 6 ); // a search box, not a query language
+
+		$where = array();
+		$args  = array( GASF_EVENTS_CPT );
+		foreach ( $words as $w ) {
+			$where[] = 'p.post_title LIKE %s';
+			$args[]  = '%' . $wpdb->esc_like( $w ) . '%';
+		}
+		$args[] = (int) $limit;
+
+		$rows = $wpdb->get_results(
+			$wpdb->prepare(
+				// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- $where is placeholders only; every value is bound.
+				"SELECT p.ID, p.post_title, CAST(m.meta_value AS UNSIGNED) AS ts
+				   FROM {$wpdb->posts} p
+				   JOIN {$wpdb->postmeta} m ON m.post_id = p.ID AND m.meta_key = '_gasf_start_ts'
+				  WHERE p.post_type = %s AND p.post_status = 'publish' AND " . implode( ' AND ', $where ) . "
+				  ORDER BY ts DESC LIMIT %d",
+				$args
+			),
+			ARRAY_A
+		);
+
+		/*
+		 * Collapse exact duplicates, same as the by-date lookup does — the
+		 * calendar carries a few events posted twice on the same minute.
+		 *
+		 * It matters more here than there. The upload form fills the date in by
+		 * itself when a search matches exactly ONE event, and two identical rows
+		 * for one event look like two events, so the one case this is all for
+		 * would quietly stop working.
+		 */
+		$seen = array();
+		$out  = array();
+		foreach ( (array) $rows as $r ) {
+			$key = strtolower( (string) $r['post_title'] ) . '|' . (int) $r['ts'];
+			if ( isset( $seen[ $key ] ) ) { continue; }
+			$seen[ $key ] = true;
+			$out[]        = gasf_photo_event_shape( $r );
+		}
+
+		return $out;
 	}
 
 	/**

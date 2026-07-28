@@ -610,6 +610,16 @@ input:focus,select:focus,textarea:focus,.edbody:focus{
 .dropzone:hover,.dropzone:focus-visible{border-color:var(--s-accent);background:var(--s-tint);outline:none}
 .dropzone.over{border-color:var(--s-ink);background:var(--s-tint);border-style:solid}
 
+/* The event box needs somewhere to hang its suggestions — .pwrap is
+   position:relative only inside .p-people elsewhere in this sheet. */
+.lf .pwrap{display:block;position:relative}
+.lf-ev{flex:1 1 300px;min-width:0}
+.lf-ev input{width:100%}
+/* What the calendar just did, said out loud. Filling a date field silently is
+   how a whole evening ends up filed under the wrong day unnoticed. */
+.evnote{margin:10px 0 0;font-size:13px;color:var(--gasf-muted)}
+.evnote.ok{color:var(--ok);font-weight:600}
+
 .uplist{margin-top:12px}
 .uprow{
 	display:flex;align-items:center;gap:10px;padding:7px 10px;
@@ -1238,9 +1248,23 @@ function gasf_crm_render_inbox() {
 		<div class="lfrow">
 			<label class="lf"><span>Date</span><input type="date" id="update"></label>
 			<label class="lf"><span>Where</span><select id="upplace"><option value="">&mdash; not sure &mdash;</option></select></label>
-			<label class="lf"><span>Occasion</span><input type="text" id="upevent" list="upevents" autocomplete="off" placeholder="Search the club calendar"></label>
+			<?php
+			/*
+			 * The event finds the date, not the other way round.
+			 *
+			 * It used to need a date before it would offer anything, which is
+			 * backwards for the way these uploads actually happen: somebody
+			 * remembers the match they watched, not the Tuesday it fell on. Type
+			 * enough of the name to land on one event and the day fills itself in
+			 * from the calendar.
+			 */
+			?>
+			<label class="lf lf-ev"><span>Event</span>
+				<span class="pwrap"><input type="text" id="upevent" autocomplete="off" spellcheck="false" placeholder="Type part of the name"></span>
+			</label>
 		</div>
-		<datalist id="upevents"></datalist>
+		<input type="hidden" id="upeventid" value="">
+		<p class="evnote" id="upevmsg" hidden></p>
 		<p class="muted" style="margin:10px 0 0">A photo that carries its own date from the camera keeps it &mdash; the date here fills in the ones that do not.</p>
 	</div>
 
@@ -1259,7 +1283,18 @@ function gasf_crm_render_inbox() {
 		<h3>May we use them?</h3>
 		<label class="cbox"><input type="checkbox" id="upconsent"> <span><?php echo esc_html( gasf_crm_photo_consent_text() ); ?></span></label>
 		<label class="pf" style="margin-top:12px"><span>How permission was given</span>
-			<input type="text" id="upnote" maxlength="200" value="Photographed by a club volunteer at a club event.">
+			<?php
+			/*
+			 * Named, because it is nearly always true and a record that says who
+			 * is worth more than one that says "a volunteer". Still editable —
+			 * the other 10% of the time somebody is uploading a batch a friend
+			 * handed them, and that is exactly when the note has to be corrected
+			 * rather than accepted.
+			 */
+			?>
+			<input type="text" id="upnote" maxlength="200" value="<?php
+				echo esc_attr( sprintf( 'Photographed by %s at a club event.', gasf_crm_display_name( get_current_user_id() ) ) );
+			?>">
 		</label>
 		<p class="muted" style="margin:8px 0 0">Recorded against every photo in this batch, and shown to whoever looks at them later.</p>
 	</div>
@@ -2564,7 +2599,7 @@ function gasf_crm_render_inbox() {
 	 * Sequential rather than parallel on purpose: these are phone photos over a
 	 * club's broadband, and six at once is how a browser starts timing them out.
 	 */
-	var upQueue = [], upBusy = false, upEvents = [];
+	var upQueue = [], upBusy = false;
 
 	function upEl(id){ return document.getElementById(id); }
 
@@ -2581,29 +2616,109 @@ function gasf_crm_render_inbox() {
 				sel.appendChild(o);
 			});
 		}
-		upEvents2();
+		upEvSearch();
 	}
 
-	// The club's calendar for whatever day is in the box, offered as a datalist
-	// so it is a suggestion rather than a cage — an occasion the calendar never
-	// knew about can still be typed.
-	function upEvents2(){
-		var d = upEl('update'), dl = upEl('upevents');
-		if (!d || !dl) { return; }
-		if (!d.value) { dl.innerHTML = ''; upEvents = []; return; }
-		api('/photos/events?_=1&date=' + encodeURIComponent(d.value)).then(function(r){
-			upEvents = (r && r.events) || [];
-			dl.innerHTML = upEvents.map(function(e){
-				return '<option value="' + esc(e.title) + '">' + esc(e.when || '') + '</option>';
-			}).join('');
-		}).catch(function(){ /* the calendar is a convenience; typing still works */ });
+	/* The event box searches the calendar, and the calendar answers with a date.
+	 *
+	 * This used to be a datalist that only filled once a date was set, which had
+	 * it backwards: somebody uploading an evening's photos remembers the match
+	 * they watched, not the Tuesday it fell on. Now typing enough of a name to
+	 * land on exactly one event sets the day from the calendar.
+	 *
+	 * Free text still works. An event the calendar never knew about is a real
+	 * thing to have photographed, and a picker that refuses to accept one is a
+	 * picker people route around.
+	 */
+	var upSeq = 0, upTimer = null;
+
+	function upEvSay(msg, kind){
+		var el = upEl('upevmsg');
+		el.textContent = msg || '';
+		el.className = 'evnote' + (kind ? ' ' + kind : '');
+		el.hidden = !msg;
 	}
 
-	function upEventId(){
-		var name = (upEl('upevent').value || '').trim().toLowerCase();
-		var hit = upEvents.filter(function(e){ return String(e.title).toLowerCase() === name; })[0];
-		return hit ? hit.id : 0;
+	function upEvClose(){
+		var open = upEl('upevent').parentNode.querySelector('.psug');
+		if (open) { open.remove(); }
 	}
+
+	// Adopt an event wholesale: its title, its id, and — the point of all this —
+	// its date.
+	function upEvChoose(ev, quiet){
+		upEl('upevent').value = ev.title;
+		upEl('upeventid').value = ev.id;
+		if (ev.date) {
+			upEl('update').value = ev.date;
+			upEvSay('Date set to ' + (ev.when || ev.date) + ', from the calendar.', 'ok');
+		} else {
+			upEvSay('');
+		}
+		upEvClose();
+		if (!quiet) { upEl('upevent').focus(); }
+	}
+
+	function upEvPaint(list, q){
+		upEvClose();
+		if (!list.length) {
+			upEvSay(q ? 'Nothing in the calendar matches that — it will be saved as typed.' : '');
+			return;
+		}
+
+		/*
+		 * Exactly one match is the whole feature: that is an unambiguous answer,
+		 * so take it. Several is a question only the person uploading can settle,
+		 * and guessing at one of three would be worse than asking.
+		 */
+		if (list.length === 1 && q) { upEvChoose(list[0], true); return; }
+
+		upEvSay(list.length + ' events match — pick one to set the date.');
+
+		var d = document.createElement('div');
+		d.className = 'psug';
+		d.innerHTML = list.map(function(e, i){
+			return '<button type="button" class="psugi" data-i="' + i + '">' +
+				esc(e.title) + '<span class="psugn">' + esc(e.when || e.date || '') + '</span></button>';
+		}).join('');
+		// mousedown, not click: blur lands first on a click and would take the
+		// list away from under the finger.
+		d.addEventListener('mousedown', function(ev){
+			var b = ev.target.closest('.psugi');
+			if (!b) { return; }
+			ev.preventDefault();
+			upEvChoose(list[parseInt(b.dataset.i, 10)]);
+		});
+		upEl('upevent').parentNode.appendChild(d);
+	}
+
+	function upEvSearch(){
+		var q = (upEl('upevent').value || '').trim();
+		var d = upEl('update');
+
+		// Typing a name by hand means it is no longer one of the calendar's.
+		upEl('upeventid').value = '';
+
+		// Nothing typed: offer whatever is on the chosen day, if there is one.
+		var url = q.length >= 2
+			? '/photos/events?_=1&q=' + encodeURIComponent(q)
+			: ( d.value ? '/photos/events?_=1&date=' + encodeURIComponent(d.value) : '' );
+
+		if (!url) { upEvClose(); upEvSay(''); return; }
+
+		var mine = ++upSeq;
+		api(url).then(function(r){
+			// Ignore a reply overtaken by a newer one — typing fires several and
+			// they do not always land in order.
+			if (mine !== upSeq) { return; }
+			if (!r.calendar) { upEvSay(''); return; }
+			upEvPaint((r.events || []), q.length >= 2 ? q : '');
+		}).catch(function(){
+			if (mine === upSeq) { upEvSay('Could not reach the calendar — the event will be saved as typed.'); }
+		});
+	}
+
+	function upEventId(){ return parseInt(upEl('upeventid').value, 10) || 0; }
 
 	function upAdd(files){
 		Array.prototype.forEach.call(files, function(f){
@@ -2746,7 +2861,13 @@ function gasf_crm_render_inbox() {
 
 		upEl('upgo').onclick = upRun;
 		upEl('upclear').onclick = function(){ upQueue = []; upEl('upstatus').textContent = ''; upPaint(); };
-		upEl('update').onchange = upEvents2;
+		upEl('update').onchange = function(){ if (!upEl('upevent').value.trim()) { upEvSearch(); } };
+
+		var evbox = upEl('upevent');
+		evbox.oninput = function(){ clearTimeout(upTimer); upTimer = setTimeout(upEvSearch, 220); };
+		evbox.onfocus = function(){ if (!evbox.value.trim()) { upEvSearch(); } };
+		// A moment, so a click on a suggestion lands before the list goes.
+		evbox.onblur  = function(){ setTimeout(upEvClose, 150); };
 
 		// Leaving mid-upload loses the rest of the batch, so say so.
 		window.addEventListener('beforeunload', function(e){
