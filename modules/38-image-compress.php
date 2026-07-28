@@ -435,6 +435,23 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 		$s    = gasf_imgc_settings();
 		$list = array();
 		foreach ( $ids as $id ) {
+			/*
+			 * Never touch a photo still awaiting review.
+			 *
+			 * post_status 'any' picks up the CRM's private submissions, and
+			 * compressing one rewrites the file, the mime and the whole
+			 * thumbnail set underneath a workflow holding its own record of
+			 * exactly those things — the item's private_path, the metadata the
+			 * publish step reads to know which files to move and strip. It also
+			 * silently destroys the EXIF the catalogue has not necessarily
+			 * finished reading.
+			 *
+			 * Skipped WITHOUT marking done, so it becomes a candidate again the
+			 * moment it is approved and genuinely is an ordinary media item.
+			 */
+			if ( function_exists( 'gasf_crm_photo_is_private' ) && gasf_crm_photo_is_private( $id ) ) { continue; }
+			if ( get_post_meta( $id, '_gasf_photo_source', true ) && ! get_post_meta( $id, '_gasf_photo_confirmed', true ) ) { continue; }
+
 			$f = get_attached_file( $id );
 			if ( ! $f || ! file_exists( $f ) ) {
 				update_post_meta( $id, GASF_IMGC_META, array( 'status' => 'missing-file', 'ts' => time() ) );

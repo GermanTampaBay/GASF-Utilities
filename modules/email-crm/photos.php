@@ -729,15 +729,19 @@ function gasf_crm_photo_keep( array $thread, $graph_message_id, $graph_attachmen
 
 	$id = gasf_crm_photo_approve( $thread, $graph_message_id, $graph_attachment_id, $item );
 	if ( is_wp_error( $id ) ) {
-		gasf_crm_photo_item_move( $item, 'pending_import', 'failed', array(
+		gasf_crm_photo_item_move( $item, 'importing', 'failed', array(
 			'fail_reason' => substr( $id->get_error_message(), 0, 191 ),
+			'lease_owner' => null,
+			'lease_until' => null,
 		) );
 		return $id;
 	}
 
-	gasf_crm_photo_item_move( $item, 'pending_import', 'imported', array(
+	gasf_crm_photo_item_move( $item, 'importing', 'imported', array(
 		'wp_attachment_id' => (int) $id,
 		'private_path'     => (string) get_post_meta( (int) $id, '_wp_attached_file', true ),
+		'lease_owner'      => null,
+		'lease_until'      => null,
 	) );
 
 	return (int) $id;
@@ -1339,6 +1343,34 @@ function gasf_crm_photo_submission_open( array $msg, array $thread ) {
 }
 
 /**
+ * Record a submission that can never run, so it leaves the runnable queue.
+ *
+ * Used when the message cannot even be opened — no usable sender, most often —
+ * where there is no submission row yet to move into a terminal state. Written
+ * with whatever the message itself claims, which may be nothing; the row exists
+ * to say "this was seen, this is why it stopped", not to be correct about a
+ * sender that could not be established.
+ */
+function gasf_crm_photo_submission_fail( array $msg, array $thread, $reason ) {
+	global $wpdb;
+
+	$now = current_time( 'mysql', true );
+
+	return (bool) $wpdb->query( $wpdb->prepare(
+		'INSERT INTO ' . gasf_crm_table( 'photo_submissions' ) . '
+		  (thread_id, stream, graph_message_id, sender_email, sender_name, subject,
+		   state, fail_reason, revision, attempt_count, created_at, updated_at)
+		 VALUES (%d, %s, %s, %s, %s, %s, \'failed\', %s, 0, 1, %s, %s)
+		 ON DUPLICATE KEY UPDATE
+		   state = \'failed\', fail_reason = VALUES(fail_reason), updated_at = VALUES(updated_at)',
+		(int) $thread['id'], (string) $thread['stream'], (string) $msg['graph_message_id'],
+		sanitize_email( (string) ( $msg['from_addr'] ?? '' ) ),
+		sanitize_text_field( (string) ( $msg['from_name'] ?? '' ) ),
+		(string) $thread['subject'], substr( (string) $reason, 0, 191 ), $now, $now
+	) );
+}
+
+/**
  * Take a lease on a submission, or fail.
  *
  * The WHERE clause carries every condition, so the database decides the winner.
@@ -1428,6 +1460,7 @@ function gasf_crm_photo_item_claim( $submission_id, $graph_attachment_id, $filen
 	$t   = gasf_crm_table( 'photo_items' );
 	$now = current_time( 'mysql', true );
 
+	// The row first — INSERT IGNORE, so concurrent workers produce exactly one.
 	$wpdb->query( $wpdb->prepare(
 		"INSERT IGNORE INTO {$t}
 		  (submission_id, graph_attachment_id, state, revision, filename, mime, bytes, created_at, updated_at)
@@ -1436,14 +1469,36 @@ function gasf_crm_photo_item_claim( $submission_id, $graph_attachment_id, $filen
 		substr( (string) $filename, 0, 191 ), substr( (string) $mime, 0, 64 ), (int) $bytes, $now, $now
 	) );
 
-	$row = $wpdb->get_row( $wpdb->prepare(
-		"SELECT id, state FROM {$t} WHERE submission_id = %d AND graph_attachment_id = %s LIMIT 1",
-		(int) $submission_id, (string) $graph_attachment_id
-	), ARRAY_A );
-	if ( ! $row ) { return 0; }
+	/*
+	 * Then TAKE it, with a conditional update that only one worker can win.
+	 *
+	 * The row's existence was never the claim, though the first version of this
+	 * treated it as one: both racers ran INSERT IGNORE, both then read the row
+	 * back, both saw 'pending_import', and both downloaded. The unique key made
+	 * exactly one row and stopped none of the work — which is the bug the whole
+	 * table was added to prevent, reintroduced one statement later.
+	 *
+	 * A lease rather than a permanent flag, because a worker killed while
+	 * holding a claim must not lock the photo out forever. The state moves to
+	 * 'importing' so a crash is distinguishable from 'nobody has started'.
+	 */
+	$owner = bin2hex( random_bytes( 8 ) );
+	$won   = (int) $wpdb->query( $wpdb->prepare(
+		"UPDATE {$t}
+		    SET state = 'importing', lease_owner = %s, lease_until = %s,
+		        attempt_count = attempt_count + 1, revision = revision + 1, updated_at = %s
+		  WHERE submission_id = %d AND graph_attachment_id = %s
+		    AND state IN ('pending_import','importing')
+		    AND (lease_until IS NULL OR lease_until <= %s)",
+		$owner, gmdate( 'Y-m-d H:i:s', time() + GASF_CRM_PHOTO_LEASE ), $now,
+		(int) $submission_id, (string) $graph_attachment_id, $now
+	) );
+	if ( 1 !== $won ) { return 0; } // somebody else holds it, or it is already past import
 
-	// Anything past pending_import has already been fetched by somebody.
-	return ( 'pending_import' === $row['state'] ) ? (int) $row['id'] : 0;
+	return (int) $wpdb->get_var( $wpdb->prepare(
+		"SELECT id FROM {$t} WHERE submission_id = %d AND graph_attachment_id = %s AND lease_owner = %s LIMIT 1",
+		(int) $submission_id, (string) $graph_attachment_id, $owner
+	) );
 }
 
 /** Advance an item, compare-and-swapping on the state we believe it is in. */
@@ -1662,6 +1717,39 @@ function gasf_crm_photo_sweep_orphans() {
 		gasf_mec_log( 'CRM photos: ' . $reopened . ' item(s) lost their attachment — reopened for another attempt' );
 	}
 
+	// Half three: claims abandoned mid-download.
+	//
+	// 'importing' means a worker took the item and has not come back. If its
+	// lease has run out that worker is gone, and the photo is owed to nobody —
+	// it would sit in importing forever, because every later claim attempt is
+	// refused by exactly the condition that makes the claim exclusive.
+	//
+	// Given up on after MAX_ATTEMPTS rather than retried without limit: a
+	// photo that kills the worker every time is a thing to look at, not a loop
+	// to run. Half one above removes whatever bytes the dead run left behind.
+	$now = current_time( 'mysql', true );
+
+	$stuck = (int) $wpdb->query( $wpdb->prepare(
+		"UPDATE {$items}
+		    SET state = 'pending_import', lease_owner = NULL, lease_until = NULL,
+		        updated_at = %s, revision = revision + 1
+		  WHERE state = 'importing' AND lease_until IS NOT NULL AND lease_until <= %s
+		    AND attempt_count < %d",
+		$now, $now, GASF_CRM_PHOTO_MAX_ATTEMPTS
+	) );
+
+	$dead = (int) $wpdb->query( $wpdb->prepare(
+		"UPDATE {$items}
+		    SET state = 'failed', fail_reason = %s, lease_owner = NULL, lease_until = NULL,
+		        updated_at = %s, revision = revision + 1
+		  WHERE state = 'importing' AND lease_until IS NOT NULL AND lease_until <= %s
+		    AND attempt_count >= %d",
+		'abandoned after ' . GASF_CRM_PHOTO_MAX_ATTEMPTS . ' attempts', $now, $now, GASF_CRM_PHOTO_MAX_ATTEMPTS
+	) );
+
+	if ( $stuck ) { gasf_mec_log( 'CRM photos: ' . $stuck . ' item(s) abandoned mid-import — released for another attempt' ); }
+	if ( $dead )  { gasf_mec_log( 'CRM photos: ' . $dead . ' item(s) gave up after ' . GASF_CRM_PHOTO_MAX_ATTEMPTS . ' import attempts — need a volunteer' ); }
+
 	return count( $rows );
 }
 
@@ -1878,9 +1966,21 @@ function gasf_crm_photo_autoprocess_run() {
 
 		$sub = gasf_crm_photo_submission_open( $row, $thread );
 		if ( is_wp_error( $sub ) ) {
-			// No usable sender. An unattributable photo is worse than a missing
-			// one, so this is terminal rather than retried forever.
+			/*
+			 * No usable sender. An unattributable photo is worse than a missing
+			 * one, so this is terminal — but it has to be RECORDED as terminal,
+			 * not merely skipped.
+			 *
+			 * Skipping left the message with no submission row at all, which is
+			 * exactly what the candidate query selects for. So it came back on
+			 * every single run, failed the same way, and occupied one of the ten
+			 * slots forever: a handful of them would have starved the intake
+			 * while reporting nothing wrong. A terminal row is what takes it out
+			 * of the queue and puts it somewhere a person can see it.
+			 */
+			gasf_crm_photo_submission_fail( $row, $thread, $sub->get_error_message() );
 			gasf_mec_log( 'CRM photos: message ' . (int) $row['id'] . ' — ' . $sub->get_error_message() );
+			gasf_crm_log_event( (int) $thread['id'], 'photo_failed', $sub->get_error_message() );
 			continue;
 		}
 
@@ -1953,17 +2053,21 @@ function gasf_crm_photo_autoprocess_run() {
 
 			$id = gasf_crm_photo_approve( $thread, (string) $row['graph_message_id'], $att, $item );
 			if ( is_wp_error( $id ) ) {
-				gasf_crm_photo_item_move( $item, 'pending_import', 'failed', array(
+				gasf_crm_photo_item_move( $item, 'importing', 'failed', array(
 					'fail_reason' => substr( $id->get_error_message(), 0, 191 ),
+					'lease_owner' => null,
+					'lease_until' => null,
 				) );
 				gasf_mec_log( 'CRM photos: auto-keep failed for ' . ( $a['name'] ?? '?' ) . ' — ' . $id->get_error_message() );
 				$stuck = $id->get_error_message();
 				continue;
 			}
 
-			gasf_crm_photo_item_move( $item, 'pending_import', 'imported', array(
+			gasf_crm_photo_item_move( $item, 'importing', 'imported', array(
 				'wp_attachment_id' => (int) $id,
 				'private_path'     => (string) get_post_meta( (int) $id, '_wp_attached_file', true ),
+				'lease_owner'      => null,
+				'lease_until'      => null,
 			) );
 
 			$kept[] = (int) $id;
@@ -2016,11 +2120,44 @@ function gasf_crm_photo_autoprocess_run() {
 			continue;
 		}
 
-		gasf_crm_photo_invite_send( array(
+		$sent = gasf_crm_photo_invite_send( array(
 			'thread_id' => (int) $thread['id'],
 			'email'     => $sub['sender_email'],
 			'name'      => $sub['sender_name'],
 		), $inv['token'], (string) $thread['stream'] );
+
+		/*
+		 * A send that failed is not a submission that completed.
+		 *
+		 * The return value was discarded and 'complete' written regardless, so a
+		 * Graph outage or a rejected recipient produced a submission that looked
+		 * finished, photos nobody would ever be asked about, and no trace of the
+		 * failure anywhere. That is the same class of bug as every other one in
+		 * this file: the failure reported success.
+		 *
+		 * Left in retry, and the items stay 'imported' rather than moving to
+		 * 'invited' — so the next pass finds a live invitation on the thread,
+		 * skips minting a second one, and tries the send again. Nothing is
+		 * re-downloaded: the claims already hold every photo.
+		 */
+		if ( is_wp_error( $sent ) ) {
+			// The undelivered invitation is removed, not left lying about.
+			//
+			// Leaving it would be worse than the original bug: the next pass
+			// sees a live invitation on the thread, takes that as the ask
+			// already having happened, and marks the submission complete —
+			// so the retry would guarantee the email is never sent, which is
+			// precisely what this branch exists to prevent. Nobody holds this
+			// token, because delivering it is what just failed.
+			$wpdb->delete( gasf_crm_table( 'photo_invite_items' ), array( 'invite_id' => (int) $inv['id'] ), array( '%d' ) );
+			$wpdb->delete( gasf_crm_table( 'photo_invites' ), array( 'id' => (int) $inv['id'] ), array( '%d' ) );
+
+			gasf_crm_photo_submission_finish( $sub['id'], $owner, 'retry', 'invitation not delivered: ' . $sent->get_error_message(), gasf_crm_photo_backoff( $sub ) );
+			gasf_mec_log( 'CRM photos: took in ' . count( $kept ) . ' photo(s) from thread ' . (int) $thread['id']
+				. ' but the tagging link did NOT go out — ' . $sent->get_error_message() );
+			gasf_crm_log_event( (int) $thread['id'], 'photo_invite_failed', 'link not delivered to ' . $sub['sender_email'] );
+			continue;
+		}
 
 		// Everything on this message is in and the sender has been asked.
 		foreach ( $kept as $aid ) {
