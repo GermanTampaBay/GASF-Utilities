@@ -99,6 +99,7 @@ function gasf_crm_render_app() {
 
 	echo '<!DOCTYPE html><html ' . get_language_attributes() . '><head><meta charset="' . esc_attr( get_bloginfo( 'charset' ) ) . '">';
 	echo '<meta name="viewport" content="width=device-width, initial-scale=1">';
+	echo '<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Courier+Prime:wght@400;700&amp;family=Fraunces:opsz,wght@9..144,400..700&amp;family=Newsreader:ital,opsz,wght@0,6..72,400..600;1,6..72,400&amp;display=swap">';
 	echo '<meta name="robots" content="noindex, nofollow">';
 	echo '<title>Email — ' . esc_html( get_bloginfo( 'name' ) ) . '</title>';
 	gasf_crm_styles();
@@ -128,27 +129,40 @@ function gasf_crm_styles() {
    overlay that ate every click, with a close button that set .hidden and
    changed nothing. Stated once, globally, so it cannot happen again. */
 [hidden]{display:none !important}
-/* Design tokens — the same names and values the rest of germantampabay.com
-   uses (GASF Events' gasf-events.css defines them for the theme side).
+/* Design tokens — the club's archive palette.
+
+   Shared with the tagging page a member fills in (photos-page.php), so a
+   volunteer moving between the form and the queue it lands in stays inside one
+   thing rather than two products. Same paper, same ink, same type registers.
 
    Deliberately NOT the theme's stylesheet: pulling that in would drag the site
    header, hero, menu and cookie banner into a tool whose entire purpose is an
-   uncluttered view of an email. Tokens give us the club's colours without its
-   furniture — and an admin who overrides --gasf-* in the theme moves this page
-   along with everything else, which is what "the site's CSS" should mean. */
+   uncluttered view of an email. The --gasf-* names are kept exactly as they
+   were, so an admin who overrides them in the theme still moves this page along
+   with everything else — which is what "the site's CSS" should mean.
+
+   This is a tool, though, not the members' page. It takes the paper, the ink
+   and the three type registers; it does not take the generosity. Rows stay
+   tight, targets stay dense, nothing is given room it has not earned. */
 :root{
-	--gasf-accent:#b8860b;
-	--gasf-text:#1a1a1a;
-	--gasf-muted:#6b6b6b;
-	--gasf-border:#c9c4ba;
-	--gasf-surface:#fff;
-	--gasf-chip:#f3efe6;
-	--gasf-radius:8px;
-	--gasf-dark:#1a1a1a;
-	--gasf-page:#f7f5f0;
-	--ok:#2c7a3f;
-	--danger:#b32d2e;
-	--hair:#ece9e2;
+	--gasf-accent:#9a7419;
+	--gasf-text:#241d15;
+	--gasf-muted:#665845;
+	--gasf-border:#c9b997;
+	--gasf-surface:#faf6ec;
+	--gasf-chip:#e9dfc9;
+	--gasf-radius:2px;   /* printed forms have square corners */
+	--gasf-dark:#241d15;
+	--gasf-page:#ece3d1;
+	--ok:#3f6b34;
+	--danger:#8f3123;
+	--hair:#e0d5bd;
+
+	--print:#fffdf6;                 /* the white border on a mounted photograph */
+	--shadow:rgba(36,29,21,.5);
+	--display:"Fraunces","Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+	--body:"Newsreader","Iowan Old Style",Georgia,"Times New Roman",serif;
+	--slug:"Courier Prime","Courier New",Courier,monospace;
 }
 
 /* Per-stream palette.
@@ -163,21 +177,27 @@ function gasf_crm_styles() {
    already used by the Bundesliga table and /fcbmc/ — a palette the club owns,
    rather than a third one invented here.
 
+   This is the one thing the retheme does not touch: these colours are load
+   bearing. They are how the page tells you which mailbox you are about to
+   reply from, and the archive palette is not allowed a vote on that. Only the
+   washes and tints moved, because they used to be near-white and now have to
+   sit on paper.
+
    --s-accent is decoration (rules, edges, dots); --s-ink is anything carrying
-   text. They differ for gold because #b8860b on white is 3.3:1, short of the
-   4.5:1 body text needs; #8a6508 is the same hue at 5.3:1. Bayern blue is
-   10.6:1 and needs no such split. */
+   text. They differ for gold because #9a7419 on the paper surface is 3.6:1,
+   short of the 4.5:1 body text needs; #7d5e12 is the same hue at 5.6:1. Bayern
+   blue is 9.8:1 and needs no such split. */
 [data-stream]{ /* unknown / future stream: neutral, never borrowed from a sibling */
-	--s-accent:var(--gasf-muted);--s-ink:#4a473f;--s-wash:#faf9f7;--s-tint:#eeece7;
+	--s-accent:var(--gasf-muted);--s-ink:#4a4034;--s-wash:#f2ecdd;--s-tint:#e4dac4;
 }
 [data-stream=""],[data-stream="general"]{
-	--s-accent:var(--gasf-accent);--s-ink:#8a6508;--s-wash:#fdfaf1;--s-tint:#f6efdd;
+	--s-accent:var(--gasf-accent);--s-ink:#7d5e12;--s-wash:#f6efdc;--s-tint:#ecdfbe;
 }
 [data-stream="photos"]{
-	--s-accent:#0033a0;--s-ink:#0033a0;--s-wash:#f5f8fd;--s-tint:#e6edf9;--s-mark:#dc052d;
+	--s-accent:#0033a0;--s-ink:#0033a0;--s-wash:#eceef4;--s-tint:#dbe2f0;--s-mark:#dc052d;
 }
 
-body{margin:0;font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:var(--gasf-text);background:var(--gasf-page)}
+body{margin:0;font:400 15px/1.55 var(--body);color:var(--gasf-text);background:var(--gasf-page)}
 a{color:var(--s-ink)}
 .wrap{max-width:1200px;margin:0 auto;padding:0 16px}
 /* The bar carries the active mailbox's colour along its bottom edge, so the
@@ -250,7 +270,7 @@ header.bar .hbtn:hover{background:rgba(255,255,255,.26)}
    click shifts every row below it. */
 .item.on{background:var(--s-wash);box-shadow:inset 0 0 0 1px var(--s-tint)}
 .item .who{font-weight:600;font-size:13px;display:flex;justify-content:space-between;gap:8px;color:var(--gasf-text)}
-.item .subj{font-size:13px;margin:2px 0 0;color:#3c3a35}
+.item .subj{font-size:13px;margin:2px 0 0;color:#3d342a}
 .item .meta{font-size:11px;color:var(--gasf-muted);margin-top:4px;font-weight:400}
 .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#d63638;margin-right:6px;vertical-align:middle}
 .pane{padding:20px;min-height:300px}
@@ -289,7 +309,7 @@ textarea{width:100%;min-height:150px;padding:10px;border:1px solid var(--gasf-bo
 .edbar button:hover{background:var(--gasf-surface);border-color:var(--gasf-border)}
 .edbar .sep{width:1px;height:18px;background:var(--gasf-border);margin:0 5px}
 .edbody{min-height:170px;max-height:50vh;overflow:auto;padding:10px;outline:none;font:inherit;overflow-wrap:anywhere}
-.edbody:empty::before{content:attr(data-ph);color:#9a958a}
+.edbody:empty::before{content:attr(data-ph);color:#8d8071}
 .edbody:focus{box-shadow:inset 0 0 0 2px var(--s-accent)}
 .edbody p{margin:0 0 10px}
 .edbody ul,.edbody ol{margin:0 0 10px;padding-left:24px}
@@ -308,7 +328,7 @@ textarea{width:100%;min-height:150px;padding:10px;border:1px solid var(--gasf-bo
 .hist{margin-top:28px;border-top:1px solid var(--gasf-border);padding-top:14px}
 .hist h3{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--gasf-muted);margin:0 0 10px}
 .hist ul{list-style:none;margin:0;padding:0}
-.hist li{font-size:13px;padding:5px 0 5px 16px;border-left:2px solid var(--gasf-border);color:#4a473f}
+.hist li{font-size:13px;padding:5px 0 5px 16px;border-left:2px solid var(--gasf-border);color:#4a4034}
 .hist li b{color:var(--gasf-text)}
 .hist li .t{color:var(--gasf-muted);font-size:12px}
 /* Help wears the club gold in every stream — it is about the whole page, not
@@ -316,7 +336,7 @@ textarea{width:100%;min-height:150px;padding:10px;border:1px solid var(--gasf-bo
 .help{background:var(--gasf-surface);border:1px solid var(--gasf-border);border-top:4px solid var(--gasf-accent);border-radius:var(--gasf-radius);padding:20px 24px;margin:16px 0}
 .help h2{font-size:17px;margin:0 0 4px}
 .help h3{font-size:14px;margin:18px 0 4px}
-.help p,.help li{font-size:14px;color:#3c3a35}
+.help p,.help li{font-size:14px;color:#3d342a}
 .help ul{margin:4px 0;padding-left:20px}
 .help .close{float:right}
 .help .key{display:flex;flex-wrap:wrap;gap:16px;margin:8px 0 0;padding:0;list-style:none}
@@ -477,6 +497,112 @@ header.bar .hbtn.nav.on{background:#fff;color:var(--gasf-ink,#1d1d1b);border-col
 .badge{display:inline-block;font-size:11px;padding:1px 7px;border-radius:9px;background:var(--gasf-chip);color:var(--gasf-muted);vertical-align:middle}
 .badge.ig{background:#fcf0f1;color:var(--danger)}
 .badge.an{background:#edf4ea;color:var(--ok)}
+
+/* ===================== the archive card =====================
+ *
+ * The detailing that makes this the same object as the tagging page: paper
+ * tooth, typed labels, set headings, photographs on mounts.
+ *
+ * Everything here is a re-dressing of rules that already exist above. No
+ * geometry, no layout, no z-index and no behaviour is changed by this block —
+ * it is deliberately confined to type, colour and edges so that a mistake in
+ * it is visible rather than structural. */
+
+/* Paper tooth over the whole sheet. z-index 1 puts it under the sticky filter
+   bar (5), the suggestion list (40) and the lightbox (9999), so it can never
+   cover a control; pointer-events:none so it can never eat a click. */
+body::after{
+	content:''; position:fixed; inset:0; z-index:1; pointer-events:none;
+	opacity:.34; mix-blend-mode:multiply;
+	background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='.42'/%3E%3C/svg%3E");
+}
+
+/* Masthead. The dark ground and the per-stream bottom edge stay exactly as
+   they were — that edge is how the page says which inbox you are in — but the
+   club's name is set rather than defaulted. */
+header.bar h1{font:600 18px/1.2 var(--display);font-variation-settings:'SOFT' 34,'WONK' 1;letter-spacing:-.01em}
+header.bar h1 .box{font:400 11px/1.2 var(--slug);letter-spacing:.12em;text-transform:uppercase;opacity:.7}
+header.bar .hbtn{border-radius:2px;font:700 11px/1 var(--slug);letter-spacing:.1em;text-transform:uppercase;padding:7px 11px}
+header.bar a{font-family:var(--slug);font-size:11px;letter-spacing:.08em;text-transform:uppercase}
+
+/* Slugs. These were already uppercase and letterspaced — they are now typed
+   rather than set in the body face, which is what they always meant. */
+.hist h3,.photos h3,.mailhead,.lib h4{
+	font-family:var(--slug);font-weight:700;letter-spacing:.16em;
+}
+/* The rule that finishes a slug, as on the tagging page's field blocks. */
+.hist h3,.photos h3,.lib h4{display:flex;align-items:center;gap:11px}
+.hist h3::after,.photos h3::after,.lib h4::after{content:'';flex:1;height:1px;background:var(--hair)}
+
+/* Headings are set, not bolded. */
+.libhead h2,.help h2,.center h1,.lbedit h3{
+	font-family:var(--display);font-weight:600;letter-spacing:-.01em;
+	font-variation-settings:'SOFT' 34,'WONK' 1;
+}
+.libhead h2{font-size:19px}
+.help h3{font-family:var(--display);font-weight:600}
+
+/* Field labels are typed, on a dotted rule, exactly as on the form the member
+   filled in. Kept small: this is a dense tool and the labels are scaffolding,
+   not content. */
+.pf>span,.lf>span,.fwd label{
+	font:700 10px/1.4 var(--slug);text-transform:uppercase;letter-spacing:.13em;
+	color:var(--gasf-muted);
+}
+.pf>span{padding-bottom:4px;border-bottom:1px dotted var(--gasf-border);margin-bottom:6px}
+
+/* Controls: square, on a lighter fill than the card, with the bottom rule
+   doing the "write here" work. */
+input[type=text],input[type=email],input[type=search],input[type=date],
+select,textarea,.pf input,.pf select,.lf input,.lf select,.nrow input,.prow2 input,.prow2 select{
+	border-radius:2px;background:var(--print);border-bottom-width:2px;
+}
+input:focus,select:focus,textarea:focus,.edbody:focus{
+	outline:none;border-bottom-color:var(--s-accent);
+	box-shadow:0 0 0 2px var(--s-tint);
+}
+.ed,.card,.lbedit,.help,.fwd,.nrow,.prow2,.pcard,.lcard,.att,.chip,.keep,.copy,.evpick,.btn{border-radius:2px}
+.chip{border-radius:2px}
+
+/* Buttons stay in the reading face. Mono uppercase would have been the obvious
+   match for the tagging page's send button, but that button says four words
+   once; these say "Publish to the website" in a row with three others, and
+   letterspaced caps would have pushed them onto two lines. */
+.btn{font-family:var(--body);font-weight:600}
+.addp,.keep,.copy,.evpick,.nrow button,.prow2 button{font-family:var(--slug);letter-spacing:.04em}
+
+/* Photographs sit on mounts here too, at the density a contact sheet wants
+   rather than the tagging page's single print. */
+.lcard{background:var(--gasf-chip);padding:5px}
+.lcard .lthumb{border:3px solid var(--print);box-shadow:0 1px 3px rgba(36,29,21,.22)}
+.lcard .lmeta{padding:6px 3px 1px;border-top:1px solid var(--gasf-border);margin-top:5px}
+.lcard .lmeta .lsub{font-family:var(--slug);font-size:10px;letter-spacing:.04em}
+.lcard .ltick{top:9px;left:9px}
+.lcard .ldl{top:9px;right:9px;border-radius:2px;font-family:var(--slug);font-size:11px}
+.lcard .lwarn,.lcard .lno{border-radius:2px;font-family:var(--slug);font-size:10px;letter-spacing:.05em}
+.pthumbcard img{border-bottom:1px solid var(--gasf-border)}
+.pthumb{border:2px solid var(--print);box-shadow:0 1px 3px rgba(36,29,21,.2)}
+
+/* Small type that is data rather than prose — counts, timestamps, addresses —
+   is typed. It is the register the whole design uses for "recorded fact". */
+.psugn,.nrow .nct,.prow2 .pct,.item .meta,.msg .hd,.hist li .t,.badge,.streamtag,.phome,.firsttime{
+	font-family:var(--slug);letter-spacing:.03em;
+}
+.msg .addr code,.msg .hd,.frombox code,.copy{font-family:var(--slug)}
+.streamtag,.badge,.firsttime{border-radius:2px;font-weight:700;letter-spacing:.06em}
+
+/* The reading pane's own edge, and the notes, keep their meanings and take the
+   square corners. */
+.note{border-radius:2px}
+.note.warn{background:#f6ecd2;border-left-color:var(--gasf-accent)}
+.note.err{background:#f6e3df;border-left-color:var(--danger)}
+.note.ok{background:#e9efe3;border-left-color:var(--ok)}
+.msg.out{background:#eef2ea;border-radius:2px}
+.badge.ig{background:#f6e3df;color:var(--danger)}
+.badge.an{background:#e9efe3;color:var(--ok)}
+.firsttime{background:#f6ecd2;color:var(--s-ink);border-color:var(--gasf-accent)}
+.lcard .lwarn{background:rgba(143,49,35,.92)}
+.lcard .lno{background:#7a2a1e}
 
 /* Everything below is the phone layout, and it is LAST on purpose.
    These rules and their desktop counterparts have the same specificity, so
