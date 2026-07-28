@@ -985,6 +985,7 @@ function gasf_crm_render_inbox() {
 <datalist id="contacts"></datalist>
 
 <script>
+<?php echo gasf_photo_matcher_js(); // phpcs:ignore WordPress.Security.EscapeOutput ?>
 (function(){
 	var API   = <?php echo wp_json_encode( rest_url( 'gasf/v1/crm' ) ); ?>;
 	var NONCE = <?php echo wp_json_encode( wp_create_nonce( 'wp_rest' ) ); ?>;
@@ -1545,10 +1546,10 @@ function gasf_crm_render_inbox() {
 		if (PEOPLE && !force) { return Promise.resolve(PEOPLE); }
 		if (peopleLoading && !force) { return peopleLoading; }
 		peopleLoading = api('/photos/people').then(function(r){
-			PEOPLE = (r.people || []).map(function(p){
-				return { value: p.value, label: p.label, n: p.n,
-				         a: pnorm(p.label, true), b: pnorm(p.label, false) };
-			});
+			// Prepared by the shared matcher, so the CRM and the public form
+			// normalise names identically. Two copies of this would drift, and
+			// the half that drifted would be the half nobody tests.
+			PEOPLE = gasfPrepare(r.people || []);
 			peopleLoading = null;
 			return PEOPLE;
 		}).catch(function(){ PEOPLE = []; peopleLoading = null; return PEOPLE; });
@@ -1560,76 +1561,17 @@ function gasf_crm_render_inbox() {
 	 * matching somebody who types "Mueller"; expand=false strips the diacritic
 	 * (Müller→muller), matching somebody who types "Muller" — or who cannot
 	 * produce an umlaut on their keyboard at all, which is most people. */
-	function pnorm(s, expand){
-		s = (s || '').toLowerCase();
-		if (expand) {
-			s = s.replace(/ä/g,'ae').replace(/ö/g,'oe').replace(/ü/g,'ue').replace(/ß/g,'ss');
-		}
-		if (s.normalize) { s = s.normalize('NFD').replace(/[̀-ͯ]/g, ''); }
-		return s.replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
-	}
+
 
 	// Levenshtein, capped — beyond the threshold the exact distance is of no
 	// interest, and bailing early keeps this cheap enough to run on every
 	// keystroke against every name.
-	function pdist(a, b, max){
-		if (Math.abs(a.length - b.length) > max) { return max + 1; }
-		var prev = [], cur = [], i, j;
-		for (j = 0; j <= b.length; j++) { prev[j] = j; }
-		for (i = 1; i <= a.length; i++) {
-			cur[0] = i;
-			var best = cur[0];
-			for (j = 1; j <= b.length; j++) {
-				cur[j] = Math.min(prev[j] + 1, cur[j-1] + 1, prev[j-1] + (a[i-1] === b[j-1] ? 0 : 1));
-				if (cur[j] < best) { best = cur[j]; }
-			}
-			if (best > max) { return max + 1; }
-			prev = cur.slice();
-		}
-		return prev[b.length];
-	}
+
 
 	/* Ranked, best first. The order is deliberate: what somebody has typed the
 	 * beginning of is far more likely to be what they mean than something it is
 	 * merely close to, so every exact-ish match outranks every fuzzy one. */
-	function peopleMatch(q, taken){
-		if (!PEOPLE || !q) { return []; }
-		var qa = pnorm(q, true), qb = pnorm(q, false);
-		if (!qa) { return []; }
 
-		var max = qa.length <= 4 ? 1 : 2;   // one typo in a short name, two in a long one
-		var out = [];
-
-		PEOPLE.forEach(function(p){
-			if (taken && taken.indexOf(p.value) !== -1) { return; } // already on this photo
-			var score = null;
-
-			if (p.a === qa || p.b === qb) { score = 0; }
-			else if (p.a.indexOf(qa) === 0 || p.b.indexOf(qb) === 0) { score = 1; }
-			else {
-				// Any WORD starting with what was typed — "mül" finds "Hans Müller".
-				var words = p.a.split(' ').concat(p.b.split(' '));
-				for (var i = 0; i < words.length; i++) {
-					if (words[i].indexOf(qa) === 0 || words[i].indexOf(qb) === 0) { score = 2; break; }
-				}
-				if (score === null && (p.a.indexOf(qa) !== -1 || p.b.indexOf(qb) !== -1)) { score = 3; }
-				if (score === null) {
-					var d = Math.min(pdist(qa, p.a, max), pdist(qb, p.b, max));
-					// Whole-name distance, or against any single word, so a
-					// mistyped surname still finds the full name.
-					if (d > max) {
-						p.a.split(' ').forEach(function(w){ d = Math.min(d, pdist(qa, w, max)); });
-					}
-					if (d <= max) { score = 4 + d; }
-				}
-			}
-
-			if (score !== null) { out.push({ p: p, s: score }); }
-		});
-
-		out.sort(function(x, y){ return x.s - y.s || y.p.n - x.p.n || x.p.label.localeCompare(y.p.label); });
-		return out.slice(0, 8).map(function(o){ return o.p; });
-	}
 
 	// Every non-empty box, in the order they appear. Trimmed and de-duplicated,
 	// because "Hans" typed twice is one person and the taxonomy would otherwise
@@ -1689,7 +1631,7 @@ function gasf_crm_render_inbox() {
 			// keystroke after the one that opened the list: type "Mü" and you got
 			// suggestions, type "Mül" and they vanished and never came back.
 			close();
-			items = peopleMatch(q, taken);
+			items = gasfPeopleMatch(q, PEOPLE, taken);
 			if (!items.length) { return; }
 
 			var box = document.createElement('div');

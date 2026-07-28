@@ -206,11 +206,30 @@ function gasf_crm_photo_page( $state, $invite = null, $notice = '' ) {
 		);
 	}
 
+	/*
+	 * Names to suggest as the submitter types.
+	 *
+	 * The point is not convenience — it is that "Mike Tressler" and "Michael
+	 * Tressler" are two different people to a taxonomy, and the submitter is the
+	 * one person who cannot be asked to check the existing spelling first. Every
+	 * variation they invent is a redundancy a volunteer has to merge later.
+	 *
+	 * Only names already on a PUBLIC photo, where they are printed in the title
+	 * and alt text anyway. Shipping the whole taxonomy here would hand anyone
+	 * holding a photo link a roster of club members — the same mistake the place
+	 * picker made before it was scoped.
+	 */
+	$people = function_exists( 'gasf_photo_public_people' ) ? gasf_photo_public_people() : array();
+
 	printf(
-		'<script>var GASF_EVENTS=%s,GASF_PLACES=%s;</script>',
+		'<script>var GASF_EVENTS=%s,GASF_PLACES=%s,GASF_PEOPLE=%s;</script>',
 		wp_json_encode( $ev_list ),
-		wp_json_encode( $pl_list )
+		wp_json_encode( $pl_list ),
+		wp_json_encode( $people )
 	);
+
+	// The shared matcher, so this form and the volunteers' behave identically.
+	echo '<script>' . gasf_photo_matcher_js() . '</script>'; // phpcs:ignore WordPress.Security.EscapeOutput
 
 	/*
 	 * One set of fields per photo, not one for the batch.
@@ -330,7 +349,7 @@ function gasf_crm_photo_page( $state, $invite = null, $notice = '' ) {
 
 		echo '<div class="f"><span>Who is in it?</span>';
 		echo '<div class="people" data-id="' . (int) $id . '">';
-		printf( '<input type="text" name="photo[%d][people][]" maxlength="80" placeholder="Name" autocomplete="off">', (int) $id );
+		printf( '<span class="pwrap"><input type="text" name="photo[%d][people][]" maxlength="80" placeholder="Name" autocomplete="off" spellcheck="false"></span>', (int) $id );
 		echo '</div>';
 		echo '<button type="button" class="addp" data-id="' . (int) $id . '">+ Add another person</button>';
 		echo '<em>One name per box. Leave blank if you would rather not say, or if it is a picture of the building.</em></div>';
@@ -402,7 +421,16 @@ input[type=text],input[type=date],select,textarea{
 	font:inherit;font-size:16px;background:#fff;color:var(--text)} /* 16px: anything smaller makes iOS zoom on focus */
 textarea{resize:vertical}
 input:focus,select:focus,textarea:focus{outline:2px solid var(--gasf-accent);outline-offset:1px;border-color:var(--gasf-accent)}
-.people input{margin-bottom:8px}
+.people .pwrap{display:block;position:relative;margin-bottom:8px}
+.people input{width:100%;margin:0}
+/* Suggestions. Sized for a thumb, because this form is mostly used on a phone
+   by somebody standing up. */
+.psug{position:absolute;top:100%;left:0;right:0;z-index:40;background:#fff;border:1px solid var(--border);
+	border-top:0;border-radius:0 0 6px 6px;box-shadow:0 8px 22px rgba(0,0,0,.16);max-height:240px;overflow:auto}
+.psugi{display:flex;justify-content:space-between;gap:10px;width:100%;text-align:left;background:none;border:0;
+	padding:12px 12px;font:inherit;font-size:16px;color:var(--ink);cursor:pointer;min-height:44px;align-items:center}
+.psugi.on,.psugi:hover{background:var(--chip)}
+.psugn{color:var(--muted);font-size:12px;flex:0 0 auto}
 .hint{font-size:14px;color:var(--muted);margin:0 0 10px;background:var(--chip);border-radius:6px;padding:9px 11px}
 .places{margin:0 0 10px}
 /* Rows, not a dropdown: a phone renders a <select> as a modal wheel, which
@@ -481,11 +509,102 @@ function gasf_crm_photo_script() {
 		if(!box) return;
 		var inputs = box.querySelectorAll('input');
 		if(inputs.length >= <?php echo (int) GASF_CRM_PHOTO_MAX_PEOPLE; ?>) { b.disabled = true; return; }
-		var n = inputs[inputs.length - 1].cloneNode(true);
+		// Clone the WRAPPER, so the new box keeps somewhere to hang its
+		// suggestion list.
+		var w = inputs[inputs.length - 1].closest('.pwrap').cloneNode(true);
+		var n = w.querySelector('input');
 		n.value = '';
-		box.appendChild(n);
+		var sug = w.querySelector('.psug'); if (sug) { sug.remove(); }
+		box.appendChild(w);
 		n.focus();
 	});
+
+	/* ============ name suggestions ============
+	 *
+	 * The reason this is here and not only on the volunteers' side: "Mike
+	 * Tressler" and "Michael Tressler" are two different people to a taxonomy,
+	 * and the submitter is the one person who cannot be asked to check the
+	 * existing spelling first. Every variation invented here is a redundancy
+	 * somebody has to merge later.
+	 *
+	 * Only names already printed on public photos are offered — see
+	 * gasf_photo_public_people. Matching is the shared implementation, so this
+	 * form and the CRM behave identically rather than drifting apart.
+	 */
+	(function(){
+		var PEOPLE = gasfPrepare(window.GASF_PEOPLE || []);
+		var open = null, items = [], sel = -1;
+
+		function close(){ if (open) { open.remove(); open = null; items = []; sel = -1; } }
+
+		function paint(input){
+			// close FIRST — it resets items, and computing them before closing
+			// wipes the results on every keystroke after the one that opened it.
+			close();
+			var q = input.value.trim();
+			if (q.length < 2) { return; }
+
+			var taken = [];
+			var box = input.closest('.people');
+			if (box) {
+				Array.prototype.forEach.call(box.querySelectorAll('input'), function(o){
+					if (o !== input && o.value.trim()) { taken.push(o.value.trim()); }
+				});
+			}
+
+			items = gasfPeopleMatch(q, PEOPLE, taken);
+			if (!items.length) { return; }
+
+			var d = document.createElement('div');
+			d.className = 'psug';
+            d.innerHTML = items.map(function(p, i){
+				return '<button type="button" class="psugi' + (i === 0 ? ' on' : '') + '" data-i="' + i + '">' +
+					p.label.replace(/[<>&]/g, '') + '</button>';
+			}).join('');
+			input.parentNode.appendChild(d);
+			open = d; sel = 0;
+
+			// mousedown, not click: blur fires first on click and would close the
+			// list out from under the finger.
+			d.addEventListener('mousedown', function(ev){
+				var b = ev.target.closest('.psugi');
+				if (!b) { return; }
+				ev.preventDefault();
+				choose(input, items[parseInt(b.dataset.i, 10)]);
+			});
+		}
+
+		function choose(input, p){
+			if (!p) { return; }
+			input.value = p.value;   // the stored spelling, not the typed one
+			close();
+		}
+
+		function move(step){
+			if (!open || !items.length) { return; }
+			sel = (sel + step + items.length) % items.length;
+			Array.prototype.forEach.call(open.querySelectorAll('.psugi'), function(b, i){
+				b.classList.toggle('on', i === sel);
+			});
+		}
+
+		document.addEventListener('input', function(ev){
+			if (ev.target.closest && ev.target.closest('.people')) { paint(ev.target); }
+		});
+
+		document.addEventListener('keydown', function(ev){
+			if (!ev.target.closest || !ev.target.closest('.people')) { return; }
+			if (!open) { return; }
+			if (ev.key === 'ArrowDown') { move(1); ev.preventDefault(); }
+			else if (ev.key === 'ArrowUp') { move(-1); ev.preventDefault(); }
+			else if (ev.key === 'Enter') { if (sel >= 0) { choose(ev.target, items[sel]); ev.preventDefault(); ev.stopPropagation(); } }
+			else if (ev.key === 'Escape') { close(); ev.stopPropagation(); }
+		}, true);
+
+		document.addEventListener('focusout', function(ev){
+			if (ev.target.closest && ev.target.closest('.people')) { setTimeout(close, 150); }
+		});
+	}());
 
 	// Enter must never submit this.
 	//

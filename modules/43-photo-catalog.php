@@ -362,6 +362,126 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 	 * @param int[] $candidates term ids the invitation's photos geofenced to
 	 * @param int   $first      branch to lift to the top
 	 */
+
+	/* ---------------------------------------------------------------------
+	 * Name matching — ONE implementation, used by both forms
+	 *
+	 * The volunteer's editor and the public tagging page both need to suggest
+	 * an existing spelling as somebody types. Writing that twice guarantees the
+	 * two drift, and the half that drifts is the half nobody tests — so it is
+	 * emitted from here and included by both.
+	 *
+	 * Why it matters more than convenience: a club archive is only searchable
+	 * if the same person is spelled the same way every time. "Michael Tressler",
+	 * "Mike Tressler" and "Michael Tressler " are three different people to a
+	 * taxonomy, and the submitter is the ONE person who cannot be asked to check
+	 * the existing list first.
+	 * ------------------------------------------------------------------- */
+	function gasf_photo_matcher_js() {
+		return <<<'JS'
+/* Two normalised forms per name, because German has two conventions and people
+   use both. expand=true spells the umlaut out (Müller→mueller), matching
+   somebody who types "Mueller"; expand=false strips it (Müller→muller),
+   matching "Muller" — or anyone whose keyboard has no umlaut, which is most. */
+function gasfPnorm(s, expand){
+	s = (s || '').toLowerCase();
+	if (expand) { s = s.replace(/ä/g,'ae').replace(/ö/g,'oe').replace(/ü/g,'ue').replace(/ß/g,'ss'); }
+	if (s.normalize) { s = s.normalize('NFD').replace(/[\u0300-\u036f]/g, ''); }
+	return s.replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+/* Levenshtein, capped — past the threshold the exact distance is of no
+   interest, and bailing early keeps this cheap enough for every keystroke. */
+function gasfPdist(a, b, max){
+	if (Math.abs(a.length - b.length) > max) { return max + 1; }
+	var prev = [], cur = [], i, j;
+	for (j = 0; j <= b.length; j++) { prev[j] = j; }
+	for (i = 1; i <= a.length; i++) {
+		cur[0] = i;
+		var best = cur[0];
+		for (j = 1; j <= b.length; j++) {
+			cur[j] = Math.min(prev[j] + 1, cur[j-1] + 1, prev[j-1] + (a[i-1] === b[j-1] ? 0 : 1));
+			if (cur[j] < best) { best = cur[j]; }
+		}
+		if (best > max) { return max + 1; }
+		prev = cur.slice();
+	}
+	return prev[b.length];
+}
+/* Prepare a list once: [{value,label,n}] gains its two normalised forms. */
+function gasfPrepare(list){
+	return (list || []).map(function(p){
+		return { value: p.value, label: p.label, n: p.n || 0,
+		         a: gasfPnorm(p.label, true), b: gasfPnorm(p.label, false) };
+	});
+}
+/* Ranked best first. Exact-ish always outranks fuzzy: what somebody has typed
+   the beginning of is far likelier to be what they mean than something it is
+   merely close to. */
+function gasfPeopleMatch(q, list, taken){
+	if (!list || !q) { return []; }
+	var qa = gasfPnorm(q, true), qb = gasfPnorm(q, false);
+	if (!qa) { return []; }
+	var max = qa.length <= 4 ? 1 : 2;
+	var out = [];
+	list.forEach(function(p){
+		if (taken && taken.indexOf(p.value) !== -1) { return; }
+		var score = null;
+		if (p.a === qa || p.b === qb) { score = 0; }
+		else if (p.a.indexOf(qa) === 0 || p.b.indexOf(qb) === 0) { score = 1; }
+		else {
+			var words = p.a.split(' ').concat(p.b.split(' '));
+			for (var i = 0; i < words.length; i++) {
+				if (words[i].indexOf(qa) === 0 || words[i].indexOf(qb) === 0) { score = 2; break; }
+			}
+			if (score === null && (p.a.indexOf(qa) !== -1 || p.b.indexOf(qb) !== -1)) { score = 3; }
+			if (score === null) {
+				var d = Math.min(gasfPdist(qa, p.a, max), gasfPdist(qb, p.b, max));
+				if (d > max) { p.a.split(' ').forEach(function(w){ d = Math.min(d, gasfPdist(qa, w, max)); }); }
+				if (d <= max) { score = 4 + d; }
+			}
+		}
+		if (score !== null) { out.push({ p: p, s: score }); }
+	});
+	out.sort(function(x, y){ return x.s - y.s || y.p.n - x.p.n || x.p.label.localeCompare(y.p.label); });
+	return out.slice(0, 8).map(function(o){ return o.p; });
+}
+JS;
+	}
+
+	/**
+	 * Names it is safe to suggest on the PUBLIC tagging page.
+	 *
+	 * Only people who already appear on a photo the public can see — where the
+	 * name is printed in the title and alt text of a published image anyway.
+	 * Suggesting those discloses nothing new; shipping the whole taxonomy to an
+	 * unauthenticated page would hand anyone holding a photo link a roster of
+	 * club members, which is the same mistake the place picker made.
+	 *
+	 * Here that is 48 of 51 names. The three held back appear only on photos
+	 * still awaiting review.
+	 */
+	function gasf_photo_public_people() {
+		$terms = get_terms( array( 'taxonomy' => 'gasf_photo_person', 'hide_empty' => true ) );
+		if ( is_wp_error( $terms ) ) { return array(); }
+
+		$out = array();
+		foreach ( $terms as $t ) {
+			$ids = get_objects_in_term( array( $t->term_id ), 'gasf_photo_person' );
+			foreach ( (array) $ids as $pid ) {
+				if ( 'attachment' !== get_post_type( $pid ) ) { continue; }
+				if ( function_exists( 'gasf_crm_photo_is_private' ) && gasf_crm_photo_is_private( $pid ) ) { continue; }
+				$out[] = array(
+					'value' => $t->name,
+					'label' => gasf_photo_label( $t->name ),
+					'n'     => (int) $t->count,
+				);
+				break;
+			}
+		}
+		usort( $out, function ( $a, $b ) { return $b['n'] - $a['n'] ?: strnatcasecmp( $a['label'], $b['label'] ); } );
+		return $out;
+	}
+
 	function gasf_photo_place_tree_public( array $candidates, $first = 0 ) {
 		$allow = array();
 
