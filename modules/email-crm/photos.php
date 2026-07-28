@@ -851,11 +851,43 @@ function gasf_crm_photo_approve( array $thread, $graph_message_id, $graph_attach
 		return $review;
 	}
 
-	// Make the name unique against where it will EVENTUALLY live, not against
-	// the review folder. Approving then moves the set without a single rename,
-	// and no generated size ever has to be renumbered.
+	/*
+	 * Unique in BOTH places: the review folder it lands in now, and the uploads
+	 * folder it will eventually move to.
+	 *
+	 * Checking only the public destination was the bug. Two pending photos with
+	 * the same camera filename — IMG_1234.jpg from two different phones, or the
+	 * same photo sent twice — both found the name free in uploads, because
+	 * neither was there yet, and both were written into the review folder under
+	 * it. The second overwrote the first, and two attachment rows ended up
+	 * pointing at one image. That is not hypothetical: it is what stripped the
+	 * files off #19429 earlier in this build, and it presents as a photo
+	 * silently becoming a different photo.
+	 *
+	 * Both checks in one loop, because satisfying one can break the other:
+	 * stepping the name past a review-folder clash can land it on a name already
+	 * taken in uploads.
+	 */
 	$public = wp_upload_dir();
-	if ( empty( $public['error'] ) ) { $name = wp_unique_filename( $public['path'], $name ); }
+	$pubdir = empty( $public['error'] ) ? $public['path'] : '';
+
+	$stem = pathinfo( $name, PATHINFO_FILENAME );
+	$ext  = pathinfo( $name, PATHINFO_EXTENSION );
+	$n    = 1;
+
+	while ( true ) {
+		if ( $pubdir ) { $name = wp_unique_filename( $pubdir, $name ); }
+		if ( ! file_exists( trailingslashit( $review ) . $name ) ) { break; }
+
+		// Taken in the review folder. Step and re-check both — bounded, because
+		// a loop that cannot terminate is worse than a collision.
+		$n++;
+		$name = $stem . '-' . $n . ( $ext ? '.' . $ext : '' );
+		if ( $n > 200 ) {
+			@unlink( $tmp ); // phpcs:ignore WordPress.PHP.NoSilencedErrors -- fetched bytes, now unusable
+			return new WP_Error( 'gasf_crm_name', 'Could not find a free filename for ' . $stem . ' — too many photos share that name.' );
+		}
+	}
 
 	// basedir moves too, not just path. WordPress derives _wp_attached_file by
 	// stripping basedir from the absolute path, and a file outside the real
@@ -1481,6 +1513,33 @@ function gasf_crm_photo_save_pending( array $invite ) {
 	$per = isset( $_POST['photo'] ) && is_array( $_POST['photo'] ) ? wp_unslash( $_POST['photo'] ) : array();
 
 	foreach ( $invite['ids'] as $aid ) {
+		/*
+		 * A photo a volunteer has already approved is not reopened.
+		 *
+		 * The sender's link stays live for thirty days, and a volunteer may well
+		 * label and publish a photo before the sender gets round to answering.
+		 * If that answer then wrote _gasf_photo_pending, the photo would report
+		 * itself as 'described' again — because pending is checked first — and a
+		 * finished, published picture would reappear at the top of the review
+		 * queue as though nothing had been done to it.
+		 *
+		 * The answer is not thrown away: it is kept beside the photo as what the
+		 * sender said, so a volunteer can compare it against what they wrote and
+		 * correct themselves if the sender knew better. It simply does not
+		 * change the photo's state.
+		 */
+		if ( get_post_meta( $aid, '_gasf_photo_confirmed', true ) ) {
+			$late = (array) get_post_meta( $aid, '_gasf_photo_late_answer', true );
+			$late = $late ?: array();
+			$late['at']   = current_time( 'mysql', true );
+			$late['by']   = (string) $invite['email'];
+			$late['said'] = isset( $per[ $aid ] ) && is_array( $per[ $aid ] ) ? $per[ $aid ] : array();
+			update_post_meta( $aid, '_gasf_photo_late_answer', $late );
+			gasf_mec_log( 'CRM photos: ' . $invite['email'] . ' answered about media #' . (int) $aid
+				. ' after it was already approved — kept as a note, not reopened.' );
+			continue;
+		}
+
 		$row    = isset( $per[ $aid ] ) && is_array( $per[ $aid ] ) ? $per[ $aid ] : array();
 		$people = array();
 		foreach ( (array) ( $row['people'] ?? array() ) as $p ) {
@@ -2657,9 +2716,17 @@ function gasf_crm_photo_chase() {
 		$ids = array_map( 'intval', (array) json_decode( (string) $row['attachment_ids'], true ) );
 		$ids = array_values( array_filter( $ids, function ( $id ) {
 			// A photo deleted since the ask is not worth chasing about.
-			return 'attachment' === get_post_type( $id );
+			if ( 'attachment' !== get_post_type( $id ) ) { return false; }
+			// Nor is one a volunteer has already described and approved. Asking
+			// the sender to label a photo that is finished and published is a
+			// waste of their goodwill, and worse, their answer would drag it
+			// back into the review queue — see gasf_crm_photo_save_pending.
+			if ( get_post_meta( $id, '_gasf_photo_confirmed', true ) ) { return false; }
+			return true;
 		} ) );
-		if ( ! $ids ) { continue; } // every photo gone: nothing to chase, claim stands
+		// Everything gone or already dealt with: nothing to chase, claim stands
+		// so no reminder is sent about it later either.
+		if ( ! $ids ) { continue; }
 
 		// The reminder inherits the ORIGINAL invitation's binding — same sender,
 		// same message, same mailbox — rather than re-deriving any of it from a

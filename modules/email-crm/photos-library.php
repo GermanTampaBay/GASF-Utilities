@@ -744,6 +744,33 @@ add_action( 'rest_api_init', function () {
 				return array( 'ok' => true, 'action' => 'merge', 'from' => $term->name, 'to' => $dest->name, 'photos' => count( $posts ) );
 			}
 
+			if ( 'delete' === $action ) {
+				/*
+				 * Removes the NAME, not the photos.
+				 *
+				 * For somebody entered by mistake, or a name that turned out to
+				 * be nobody — "Unknown", a caption fragment somebody typed into
+				 * the wrong box. The pictures stay exactly where they are and
+				 * keep every other person on them; they simply stop claiming
+				 * this one is in them.
+				 */
+				$posts = get_objects_in_term( array( (int) $term->term_id ), 'gasf_photo_person' );
+				$posts = is_wp_error( $posts ) ? array() : array_map( 'intval', $posts );
+
+				wp_delete_term( (int) $term->term_id, 'gasf_photo_person' );
+
+				// Titles and download names are built from the people on a photo,
+				// so they are now wrong on every one of these until rebuilt.
+				foreach ( $posts as $pid ) {
+					if ( function_exists( 'gasf_photo_apply_names' ) ) { gasf_photo_apply_names( $pid ); }
+				}
+
+				gasf_mec_log( sprintf( 'Photo library: removed the name “%s” from %d photo(s) — user %d',
+					$term->name, count( $posts ), get_current_user_id() ) );
+
+				return array( 'ok' => true, 'action' => 'delete', 'from' => $term->name, 'to' => '(removed)', 'photos' => count( $posts ) );
+			}
+
 			return new WP_Error( 'gasf_crm_bad', 'Unknown action.', array( 'status' => 400 ) );
 		},
 	) );

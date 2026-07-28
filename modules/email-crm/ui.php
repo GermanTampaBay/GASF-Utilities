@@ -358,9 +358,13 @@ textarea{width:100%;min-height:150px;padding:10px;border:1px solid var(--gasf-bo
 .psugi.on,.psugi:hover{background:var(--s-tint,#eee)}
 .psugn{color:var(--gasf-muted);font-size:11px;flex:0 0 auto}
 .nameslist{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:8px}
-.nrow{display:flex;gap:6px;align-items:center;border:1px solid var(--gasf-border);border-radius:4px;padding:6px 8px}
-.nrow input{flex:1 1 auto;min-width:0;padding:5px 7px;border:1px solid var(--gasf-border);border-radius:4px;
+.nrow{border:1px solid var(--gasf-border);border-radius:4px;padding:6px 8px}
+.nmain,.nmerge-row{display:flex;gap:6px;align-items:center}
+.nmerge-row{margin-top:6px}
+.nmerge-row .pwrap{flex:1 1 auto;position:relative;min-width:0}
+.nrow input{flex:1 1 auto;min-width:0;width:100%;padding:5px 7px;border:1px solid var(--gasf-border);border-radius:4px;
 	font:inherit;font-size:13px;background:var(--gasf-surface);color:var(--gasf-text)}
+.nrow .ndel{color:#b02d2e}
 .nrow .nct{color:var(--gasf-muted);font-size:11px;flex:0 0 auto}
 .nrow button{font-size:12px;padding:4px 8px}
 .nmsg{font-size:12px;margin:6px 0 0}
@@ -2381,16 +2385,30 @@ function gasf_crm_render_inbox() {
 
 			box.innerHTML = list.map(function(p){
 				return '<div class="nrow" data-name="' + esc(p.value) + '">' +
-					'<input type="text" value="' + esc(p.label) + '" aria-label="Name">' +
-					'<span class="nct">' + p.n + '</span>' +
-					'<button class="btn sec nsave" type="button">Save</button>' +
-					'<button class="btn sec nmerge" type="button" title="Merge this person into another">Merge…</button>' +
+					'<div class="nmain">' +
+						'<input type="text" class="nname" value="' + esc(p.label) + '" aria-label="Name">' +
+						'<span class="nct">' + p.n + '</span>' +
+						'<button class="btn sec nsave" type="button">Save</button>' +
+						'<button class="btn sec nmerge" type="button" title="Merge this person into another">Merge…</button>' +
+						'<button class="btn sec ndel" type="button" title="Remove this name from every photo">Remove</button>' +
+					'</div>' +
+					// The merge target box carries class p-person on purpose: the
+					// name suggestions are wired by delegation on that class, so
+					// merging gets the same umlaut- and typo-tolerant picker as
+					// tagging does, with no second implementation to drift.
+					'<div class="nmerge-row" hidden>' +
+						'<span class="pwrap"><input type="text" class="p-person nminto" placeholder="Merge into which name?" autocomplete="off" spellcheck="false"></span>' +
+						'<button class="btn nmgo" type="button">Merge</button>' +
+						'<button class="btn sec nmcancel" type="button">Cancel</button>' +
+					'</div>' +
 					'</div>';
 			}).join('');
 
 			Array.prototype.forEach.call(box.querySelectorAll('.nrow'), function(row){
 				var from  = row.dataset.name;
-				var input = row.querySelector('input');
+				var input = row.querySelector('.nname');
+				var mrow  = row.querySelector('.nmerge-row');
+				var minto = row.querySelector('.nminto');
 
 				row.querySelector('.nsave').onclick = function(){
 					var to = input.value.trim();
@@ -2400,12 +2418,28 @@ function gasf_crm_render_inbox() {
 				};
 
 				row.querySelector('.nmerge').onclick = function(){
-					// A plain prompt on purpose: merging is rare, and a bespoke
-					// picker for it would be more machinery than the job needs.
-					var to = window.prompt('Merge “' + from + '” INTO which name?\n\nEvery photo of ' + from +
-						' will be tagged with the name you type instead, and ' + from + ' is removed.', '');
-					if (!to || !to.trim()) { return; }
-					person('merge', from, to.trim());
+					mrow.hidden = !mrow.hidden;
+					if (!mrow.hidden) { minto.value = ''; minto.focus(); }
+				};
+				row.querySelector('.nmcancel').onclick = function(){ mrow.hidden = true; };
+
+				var doMerge = function(){
+					var to = minto.value.trim();
+					if (!to || to === from) { return; }
+					if (!confirm('Merge “' + from + '” into “' + to + '”?\n\nEvery photo of ' + from +
+						' will be tagged ' + to + ' instead, and ' + from + ' is removed.')) { return; }
+					person('merge', from, to);
+				};
+				row.querySelector('.nmgo').onclick = doMerge;
+				minto.addEventListener('keydown', function(ev){
+					// Enter merges — but not while a suggestion is highlighted,
+					// where Enter means "take that name" and the picker owns it.
+					if (ev.key === 'Enter' && !document.querySelector('.psug')) { ev.preventDefault(); doMerge(); }
+				});
+
+				row.querySelector('.ndel').onclick = function(){
+					if (!confirm('Remove the name “' + from + '” from every photo?\n\nThe photos themselves are not deleted and keep everyone else on them — they just stop saying ' + from + ' is in them.')) { return; }
+					person('delete', from, '');
 				};
 			});
 		});
