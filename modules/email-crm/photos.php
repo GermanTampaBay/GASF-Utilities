@@ -40,6 +40,16 @@ define( 'GASF_CRM_PHOTO_REMIND_DAYS', 2 );
 define( 'GASF_CRM_PHOTO_RELEASE_DAYS', 5 );
 
 /**
+ * How many times a reminder SEND may be attempted before it is written off.
+ *
+ * This bounds retries of a delivery that failed, not nudges received: a person
+ * still gets at most one reminder. Three is enough to ride out a Graph outage
+ * and few enough that a permanently undeliverable address stops being retried
+ * every hour forever.
+ */
+define( 'GASF_CRM_PHOTO_REMIND_TRIES', 3 );
+
+/**
  * How long a finished invitation is kept after it stops working.
  *
  * Counted from expiry or from the moment it was answered, whichever applies —
@@ -2356,17 +2366,49 @@ function gasf_crm_photo_chase() {
 
 	$sent = 0;
 	foreach ( $due as $row ) {
-		// Mark first. A send that throws must not leave the row eligible to be
-		// chased again on the next run — one reminder is a nudge, four is
-		// nagging somebody who did us a favour.
-		$wpdb->update( $t, array( 'reminded_at' => $now ), array( 'id' => (int) $row['id'] ), array( '%s' ), array( '%d' ) );
+		/*
+		 * Claim it, rather than mark it.
+		 *
+		 * Marking first was right about the danger and wrong about the mechanism.
+		 * A plain UPDATE is not a claim: two runs that both SELECTed this row
+		 * before either wrote would both proceed, and the person who did us a
+		 * favour gets two identical nudges. Putting reminded_at IS NULL in the
+		 * WHERE makes the database pick the winner, and exactly one row is
+		 * affected however many workers arrive together.
+		 *
+		 * The other half was worse. Marked-then-failed meant a Graph hiccup
+		 * consumed the one reminder that invitation would ever get — silently,
+		 * and permanently, because nothing afterwards could tell that row from
+		 * one that had been delivered. The claim is released below when a send
+		 * fails, and remind_attempts is what keeps releasing from becoming a
+		 * loop: one reminder is a nudge, four is nagging.
+		 */
+		$claimed = (int) $wpdb->query( $wpdb->prepare(
+			"UPDATE {$t}
+			    SET reminded_at = %s, remind_attempts = remind_attempts + 1
+			  WHERE id = %d AND reminded_at IS NULL AND submitted_at IS NULL AND expires_at > %s",
+			$now, (int) $row['id'], $now
+		) );
+		if ( 1 !== $claimed ) { continue; } // another run has it, or it was answered meanwhile
+
+		// Release the claim so a later run can try again — unless we have tried
+		// enough times that the problem is not going to clear by itself.
+		$release = function ( $why ) use ( $wpdb, $t, $row ) {
+			$tries = (int) $row['remind_attempts'] + 1;
+			if ( $tries >= GASF_CRM_PHOTO_REMIND_TRIES ) {
+				gasf_mec_log( 'CRM photos: giving up on the reminder for invite ' . (int) $row['id'] . ' after ' . $tries . ' attempts — ' . $why );
+				return;
+			}
+			$wpdb->update( $t, array( 'reminded_at' => null ), array( 'id' => (int) $row['id'] ), array( '%s' ), array( '%d' ) );
+			gasf_mec_log( 'CRM photos: reminder for invite ' . (int) $row['id'] . ' not sent (' . $why . ') — released for another attempt' );
+		};
 
 		$ids = array_map( 'intval', (array) json_decode( (string) $row['attachment_ids'], true ) );
 		$ids = array_values( array_filter( $ids, function ( $id ) {
 			// A photo deleted since the ask is not worth chasing about.
 			return 'attachment' === get_post_type( $id );
 		} ) );
-		if ( ! $ids ) { continue; }
+		if ( ! $ids ) { continue; } // every photo gone: nothing to chase, claim stands
 
 		// The reminder inherits the ORIGINAL invitation's binding — same sender,
 		// same message, same mailbox — rather than re-deriving any of it from a
@@ -2376,7 +2418,7 @@ function gasf_crm_photo_chase() {
 			(string) ( $row['stream'] ?? '' ), (string) ( $row['graph_message_id'] ?? '' )
 		);
 		if ( is_wp_error( $fresh ) ) {
-			gasf_mec_log( 'CRM photos: reminder for invite ' . (int) $row['id'] . ' could not be minted — ' . $fresh->get_error_message() );
+			$release( 'could not mint a link: ' . $fresh->get_error_message() );
 			continue;
 		}
 		// The fresh row is the reminder, so it never earns one of its own.
@@ -2397,7 +2439,14 @@ function gasf_crm_photo_chase() {
 
 		$ok = gasf_crm_graph_send( $row['email'], 'A gentle nudge about your photos', $body, 'photos' );
 		if ( is_wp_error( $ok ) ) {
+			// The link that never went is deleted, exactly as in the intake: left
+			// alive it is an unused credential sitting in the database, and the
+			// retry mints its own anyway.
+			$wpdb->delete( gasf_crm_table( 'photo_invite_items' ), array( 'invite_id' => (int) $fresh['id'] ), array( '%d' ) );
+			$wpdb->delete( $t, array( 'id' => (int) $fresh['id'] ), array( '%d' ) );
+
 			gasf_mec_log( 'CRM photos: reminder to ' . $row['email'] . ' FAILED — ' . $ok->get_error_message() );
+			$release( $ok->get_error_message() );
 			continue;
 		}
 
@@ -3093,6 +3142,30 @@ function gasf_crm_photo_card( $attachment_id ) {
 		'events'  => $info['events'] ?? array(),
 		'caption' => $info['caption'] ?? '',
 		'pending'   => is_array( $pending ) ? $pending : null,
+		/*
+		 * What is already ON the photo, shaped exactly like 'pending' so the
+		 * editor can fall back to it.
+		 *
+		 * A confirmed photo has no pending record — confirming deletes it — so
+		 * the edit form initialised blank, and saving that blank form called
+		 * wp_set_object_terms with empty arrays, which is how you erase every
+		 * person, place and event from a photo by opening it and pressing the
+		 * button that says approve.
+		 *
+		 * RAW term names, not the decoded labels in 'people'/'places' above.
+		 * The picker's options carry raw names, and writes match on them: hand
+		 * it "Welton Brewing Co & Oyster Bar" where the term is stored with
+		 * &amp; and it matches nothing, falls through to "Somewhere else", and
+		 * saving mints a duplicate term that looks identical on screen.
+		 */
+		'saved'     => array(
+			'people'   => array_map( 'strval', (array) wp_get_object_terms( $id, 'gasf_photo_person', array( 'fields' => 'names' ) ) ),
+			'place'    => (string) ( wp_get_object_terms( $id, 'gasf_photo_place', array( 'fields' => 'names' ) )[0] ?? '' ),
+			'event'    => (string) ( wp_get_object_terms( $id, 'gasf_photo_event', array( 'fields' => 'names' ) )[0] ?? '' ),
+			'event_id' => (int) get_post_meta( $id, '_gasf_photo_event_id', true ),
+			'caption'  => (string) get_post_field( 'post_excerpt', $id ),
+			'taken'    => (string) get_post_meta( $id, '_gasf_photo_taken', true ),
+		),
 		// Sent out with the card and required back with the decision, so a
 		// volunteer acting on a stale screen is told rather than obeyed.
 		'revision'  => gasf_crm_photo_revision( $id ),

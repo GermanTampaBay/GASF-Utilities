@@ -212,6 +212,11 @@ function gasf_crm_install_tables() {
 	// can tag those photos — and it travels by email to a member of the public,
 	// so the database should not hold anything replayable if it ever leaked.
 	// Same reasoning WordPress applies to password-reset keys.
+	//
+	// remind_attempts is counted because reminded_at alone cannot tell "sent"
+	// from "claimed by a worker whose send then failed". Releasing the claim on
+	// failure is what stops a transient Graph error losing a reminder for good;
+	// counting it is what stops that release turning into a nag.
 	dbDelta( "CREATE TABLE " . gasf_crm_table( 'photo_invites' ) . " (
 		id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
 		token_hash CHAR(64) NOT NULL,
@@ -226,6 +231,7 @@ function gasf_crm_install_tables() {
 		opened_at DATETIME NULL,
 		submitted_at DATETIME NULL,
 		reminded_at DATETIME NULL,
+		remind_attempts INT UNSIGNED NOT NULL DEFAULT 0,
 		PRIMARY KEY  (id),
 		UNIQUE KEY token_hash (token_hash),
 		KEY thread_id (thread_id),

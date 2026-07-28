@@ -1348,17 +1348,17 @@ function gasf_crm_render_inbox() {
 					// Never blocked, only un-nagged. Somebody who happens to know
 					// should not have to wait five days to say so.
 					'<div class="actions"><button class="btn sec p-early">I know what this is — label it now</button></div>' +
-					'<div class="pedit" hidden>' + photoForm(p, {}) + '</div>';
+					'<div class="pedit" hidden>' + photoForm(p, p.saved || {}) + '</div>';
 
 			} else if (p.pending) {
 				s += '<div class="pfrom">The sender says:</div>' + photoForm(p, p.pending);
 
 			} else if (p.state === 'released') {
 				s += '<div class="pfrom">The sender never replied &mdash; label it from what you can see:</div>' +
-					photoForm(p, {});
+					photoForm(p, p.saved || {});
 
 			} else {
-				s += '<div class="pfrom">Nobody has been asked about this one:</div>' + photoForm(p, {});
+				s += '<div class="pfrom">Nobody has been asked about this one:</div>' + photoForm(p, p.saved || {});
 			}
 
 			return s + '</div></div>';
@@ -1754,7 +1754,10 @@ function gasf_crm_render_inbox() {
 		pcur = id;
 		ppane.innerHTML = '<p class="muted">Loading…</p>';
 		api('/photos/detail?photo=' + id).then(function(p){
-			var q = p.pending || {};
+			// The sender's answers if they gave any, otherwise whatever is already
+			// ON the photo. Never {} — a blank form saved over a confirmed photo
+			// erases every tag it had, and the button is labelled approve.
+			var q = p.pending || p.saved || {};
 			var h = p.missing
 				// Named, not rendered as a broken image: "the file is gone" and
 				// "the page is broken" look identical otherwise, and only one of
