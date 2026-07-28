@@ -2394,7 +2394,7 @@ function gasf_crm_render_inbox() {
 		var card = btn.closest('.pcard');
 		var id   = card ? parseInt(card.dataset.photo, 10) : (pcur || 0);
 		var p    = (window._crmPhotoCards && window._crmPhotoCards[id]) || null;
-		if (p) { lbOpen(id, null, p); }
+		if (p) { lbOpen(id, btn, p); }   // btn is where focus goes back to
 	});
 
 	/* ======================= the photo library =======================
@@ -2755,7 +2755,11 @@ function gasf_crm_render_inbox() {
 		// to do the same thing that behave differently.
 		if (p.saved) { bits.push('<button class="btn" id="lbeditbtn" type="button" style="margin-top:8px">Edit details</button>'); }
 
-		if (fromCard) { lbReturn = fromCard.querySelector('.lopen'); }
+		// The library passes the CARD (whose .lopen is the button); the review
+		// screens pass the button itself. Either way, focus has somewhere to
+		// return to — otherwise closing the viewer strands a keyboard user at
+		// the top of the document.
+		if (fromCard) { lbReturn = fromCard.querySelector('.lopen') || fromCard; }
 
 		document.getElementById('lbinfo').innerHTML = bits.join('<br>');
 		document.getElementById('lbinfo').hidden = false;
