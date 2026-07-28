@@ -97,15 +97,40 @@ function gasf_crm_photo_library_ids( array $f = array() ) {
 	$all = array_values( array_unique( array_map( 'intval', array_merge( $ids, $tagged ) ) ) );
 	if ( ! $all ) { return array(); }
 
-	$all = gasf_crm_photo_library_filter( $all, $f );
+	/*
+	 * Prime the caches once, for the whole set.
+	 *
+	 * Everything below — filtering, sorting, then building each card — asks per
+	 * photo for its terms and its meta. Uncached that is a query apiece and it
+	 * multiplies: filter, sort comparator, facets, card. Two bulk loads turn all
+	 * of it into array lookups.
+	 *
+	 * This is why the listing is not a hand-written JOIN. WordPress will fetch
+	 * these in bulk if asked; the expensive version was never the ORM, it was
+	 * asking one row at a time.
+	 */
+	_prime_post_caches( $all, false, true );
+	update_object_term_cache( $all, 'attachment' );
 
-	// Newest first by when the photo was TAKEN, falling back to when it reached
-	// us. A collection sorted by upload date puts a 1974 Fasching scan between
-	// last week's two, which is not how anybody looks for a picture.
-	usort( $all, function ( $a, $b ) {
-		$ta = get_post_meta( $a, '_gasf_photo_taken', true ) ?: get_post_field( 'post_date', $a );
-		$tb = get_post_meta( $b, '_gasf_photo_taken', true ) ?: get_post_field( 'post_date', $b );
-		return strcmp( (string) $tb, (string) $ta ) ?: ( $b - $a );
+	$all = gasf_crm_photo_library_filter( $all, $f );
+	if ( ! $all ) { return array(); }
+
+	/*
+	 * Newest first by when the photo was TAKEN, falling back to when it reached
+	 * us. A collection sorted by upload date puts a 1974 Fasching scan between
+	 * last week's two, which is not how anybody looks for a picture.
+	 *
+	 * Keys computed ONCE, not inside the comparator. usort calls its callback
+	 * O(n log n) times, so reading two meta values in there meant thousands of
+	 * lookups to order a few hundred photos — and get_post_field is not cached
+	 * the way get_post_meta is, so a good share of them were real queries.
+	 */
+	$key = array();
+	foreach ( $all as $id ) {
+		$key[ $id ] = (string) ( get_post_meta( $id, '_gasf_photo_taken', true ) ?: get_post_field( 'post_date', $id ) );
+	}
+	usort( $all, function ( $a, $b ) use ( $key ) {
+		return strcmp( $key[ $b ], $key[ $a ] ) ?: ( $b - $a );
 	} );
 
 	return $all;

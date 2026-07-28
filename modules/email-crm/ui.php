@@ -399,7 +399,9 @@ header.bar .hbtn.nav.on{background:#fff;color:var(--gasf-ink,#1d1d1b);border-col
 .lgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px;padding:10px}
 .lcard{position:relative;border:1px solid var(--gasf-border);border-radius:5px;overflow:hidden;background:var(--gasf-surface)}
 .lcard.sel{outline:3px solid var(--s-accent);outline-offset:-3px}
-.lcard .lthumb{display:block;width:100%;aspect-ratio:4/3;object-fit:cover;cursor:zoom-in;background:var(--s-wash)}
+.lcard .lopen{display:block;width:100%;padding:0;border:0;background:none;cursor:zoom-in}
+.lcard .lopen:focus-visible{outline:3px solid var(--s-accent);outline-offset:-3px}
+.lcard .lthumb{display:block;width:100%;aspect-ratio:4/3;object-fit:cover;background:var(--s-wash)}
 .lcard .lmeta{padding:6px 8px;font-size:12px;line-height:1.35}
 .lcard .lmeta .lt{font-weight:600;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .lcard .lmeta .lsub{color:var(--gasf-muted);display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -823,7 +825,7 @@ function gasf_crm_render_inbox() {
 	</div>
 </div>
 
-<div class="lightbox" id="lbox" hidden>
+<div class="lightbox" id="lbox" role="dialog" aria-modal="true" aria-label="Photo" hidden>
 	<button class="lbclose" id="lbclose" type="button" aria-label="Close">&times;</button>
 	<img id="lbimg" src="" alt="">
 	<div class="lbinfo" id="lbinfo"></div>
@@ -2280,13 +2282,22 @@ function gasf_crm_render_inbox() {
 		if (sel.value !== keep) { sel.value = ''; } // the choice no longer exists
 	}
 
+	// Every request carries a generation. Typing quickly fires several, and they
+	// do not come back in order — a slow response for "mül" landing after the
+	// quick one for "müller" would repaint the grid with results for a filter
+	// that is no longer on screen, and the counts would disagree with the boxes.
+	// Only the newest request is allowed to paint.
+	var lgen = 0;
+
 	function loadLib(){
 		if (!lgrid) { return; }
 		var f = lfilters();
 		var qs = Object.keys(f).map(function(k){ return k + '=' + encodeURIComponent(f[k]); }).join('&');
+		var gen = ++lgen;
 
 		document.getElementById('lcount').textContent = 'Loading…';
 		return api('/photos/library?page=' + lpage + '&' + qs).then(function(r){
+			if (gen !== lgen) { return; }   // superseded while in flight
 			lids    = r.ids || [];
 			lfacets = r.facets;
 
@@ -2319,7 +2330,9 @@ function gasf_crm_render_inbox() {
 					(p.consent && p.consent.state === 'unknown'
 						? '<span class="lwarn" title="Sent in before we started asking for permission — check before publishing">no permission on record</span>'
 						: '') +
-					'<img class="lthumb" src="' + esc(p.thumb || p.url) + '" alt="' + esc(p.title) + '" loading="lazy">' +
+					'<button type="button" class="lopen" aria-label="Open ' + esc(p.title || 'photo') + '">' +
+						'<img class="lthumb" src="' + esc(p.thumb || p.url) + '" alt="' + esc(p.title) + '" loading="lazy">' +
+					'</button>' +
 					'<div class="lmeta">' +
 						'<span class="lt">' + esc(who || p.title) + '</span>' +
 						'<span class="lsub">' + esc(sub || '—') + '</span>' +
@@ -2340,6 +2353,7 @@ function gasf_crm_render_inbox() {
 			document.getElementById('lzip').textContent = 'Download as a zip';
 			lsyncBar();
 		}).catch(function(e){
+			if (gen !== lgen) { return; }   // a stale failure must not overwrite a live result
 			document.getElementById('lcount').textContent = e.message;
 		});
 	}
@@ -2477,7 +2491,9 @@ function gasf_crm_render_inbox() {
 			}
 			// The download link is a real anchor; let the browser have it.
 			if (ev.target.classList.contains('ldl')) { return; }
-			if (ev.target.classList.contains('lthumb')) { lbOpen(id); }
+			// closest, not the target itself: the click lands on the img inside
+			// the button, and a keyboard Enter lands on the button.
+			if (ev.target.closest('.lopen')) { lbOpen(id, ev.target.closest('.lcard')); }
 		});
 	}
 
@@ -2537,7 +2553,9 @@ function gasf_crm_render_inbox() {
 
 	/* The lightbox. Escape and a click on the backdrop both close it — a
 	   full-screen overlay with only a small × is a trap on a phone. */
-	function lbOpen(id){
+	var lbReturn = null;   // where focus came from, so it can go back
+
+	function lbOpen(id, fromCard){
 		var p = lgrid._photos ? lgrid._photos[id] : null;
 		if (!p) { return; }
 		var box = document.getElementById('lbox');
@@ -2572,6 +2590,8 @@ function gasf_crm_render_inbox() {
 		if (p.auto) { bits.push('<em class="muted">Tagged automatically from the camera data — please correct anything that looks wrong.</em>'); }
 		bits.push('<button class="btn" id="lbeditbtn" type="button" style="margin-top:8px">Edit details</button>');
 
+		if (fromCard) { lbReturn = fromCard.querySelector('.lopen'); }
+
 		document.getElementById('lbinfo').innerHTML = bits.join('<br>');
 		document.getElementById('lbinfo').hidden = false;
 		document.getElementById('lbedit').hidden = true;
@@ -2581,6 +2601,13 @@ function gasf_crm_render_inbox() {
 		if (eb) { eb.onclick = function(){ lbEdit(p); }; }
 
 		box.hidden = false;
+
+		// Focus follows the eye. Without this a keyboard user opens the photo
+		// and their focus is still on the tile behind an overlay they cannot
+		// see past — every subsequent Tab moves through a grid that is no
+		// longer reachable.
+		var first = box.querySelector('#lbclose');
+		if (first) { first.focus(); }
 	}
 
 	/* The editor: the same form used everywhere else, on a light card. Its
@@ -2638,17 +2665,35 @@ function gasf_crm_render_inbox() {
 
 	function lbClose(){
 		var b = document.getElementById('lbox');
-		if (b) {
-			b.hidden = true;
-			b.classList.remove('editing');
-			document.getElementById('lbimg').src = '';
-		}
+		if (!b) { return; }
+		b.hidden = true;
+		b.classList.remove('editing');
+		document.getElementById('lbimg').src = '';
+
+		// Back to the photo they opened, not to the top of the page. Losing your
+		// place in a wall of two hundred thumbnails is the whole cost of getting
+		// this wrong.
+		if (lbReturn && document.body.contains(lbReturn)) { lbReturn.focus(); }
+		lbReturn = null;
 	}
 	var lbox = document.getElementById('lbox');
 	if (lbox) {
 		lbox.addEventListener('click', function(ev){
 			if (ev.target === lbox || ev.target.id === 'lbclose') { lbClose(); }
 		});
+		// Tab stays inside the open dialog. A focus ring wandering off into the
+		// page behind a full-screen overlay is indistinguishable from the
+		// keyboard having stopped working.
+		lbox.addEventListener('keydown', function(ev){
+			if (ev.key !== 'Tab' || lbox.hidden) { return; }
+			var f = lbox.querySelectorAll('button, [href], input, select, textarea');
+			f = Array.prototype.filter.call(f, function(el){ return el.offsetParent !== null; });
+			if (!f.length) { return; }
+			var first = f[0], last = f[f.length - 1];
+			if (ev.shiftKey && document.activeElement === first) { ev.preventDefault(); last.focus(); }
+			else if (!ev.shiftKey && document.activeElement === last) { ev.preventDefault(); first.focus(); }
+		});
+
 		document.addEventListener('keydown', function(ev){
 			if (ev.key !== 'Escape' || lbox.hidden) { return; }
 			// While editing, Escape steps back to the details rather than closing.
