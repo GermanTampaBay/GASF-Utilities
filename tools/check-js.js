@@ -85,9 +85,58 @@ for (const rel of TARGETS) {
 	});
 }
 
+/*
+ * The same blind spot, one language over.
+ *
+ * CSS recovers from a bad declaration, but not from an unbalanced brace: the
+ * parser swallows everything after it as part of the broken rule, so one typo
+ * silently drops the rest of the sheet. On these pages that is most of the
+ * layout, and PHP lint sees a valid string either way.
+ *
+ * Balance is all this checks — it is the failure that cascades. A misspelled
+ * property affects one line and shows up the moment you look at the page.
+ */
+let cssChecked = 0;
+
+for (const rel of TARGETS) {
+	const abs = path.join(ROOT, rel);
+	if (!fs.existsSync(abs)) { continue; }
+
+	const src = fs.readFileSync(abs, 'utf8');
+	const blocks = src.match(/<style(?:\s[^>]*)?>([\s\S]*?)<\/style>/g) || [];
+
+	blocks.forEach((raw, i) => {
+		let css = raw.replace(/^<style(?:\s[^>]*)?>/i, '').replace(/<\/style>$/i, '');
+		css = stripPhp(css)
+			.replace(/\/\*[\s\S]*?\*\//g, '')          /* comments */
+			.replace(/"[^"]*"|'[^']*'/g, '""');        /* strings and data URIs */
+		if (!css.trim()) { return; }
+
+		cssChecked++;
+		let depth = 0, line = 1, opened = 0;
+		for (const ch of css) {
+			if (ch === '\n') { line++; }
+			else if (ch === '{') { if (depth === 0) { opened = line; } depth++; }
+			else if (ch === '}') {
+				depth--;
+				if (depth < 0) {
+					failed++;
+					console.error(`\n  ✗ ${rel} — style block ${i + 1}: stray } at line ~${line}`);
+					depth = 0;
+				}
+			}
+		}
+		if (depth > 0) {
+			failed++;
+			console.error(`\n  ✗ ${rel} — style block ${i + 1}: ${depth} unclosed rule(s); last opened near line ~${opened}`);
+		}
+	});
+}
+
 if (failed) {
-	console.error(`\n${failed} of ${checked} script block(s) failed to parse.\n`);
+	console.error(`\n${failed} failure(s) across ${checked} script and ${cssChecked} style block(s).\n`);
 	process.exit(1);
 }
 
 console.log(`  ✓ ${checked} inline script block(s) parse cleanly`);
+console.log(`  ✓ ${cssChecked} style block(s) balance`);
