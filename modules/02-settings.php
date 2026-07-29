@@ -61,12 +61,6 @@ function gasf_settings_registry() {
 		'Calendars' => array(
 			array( 'gate' => 'gasf_site_enable_gcalprint', 'label' => 'Internal Calendar (print)', 'desc' => 'Secret-link printable month view of the internal Google Calendar. (The ICS&rarr;Google sync itself lives in GASF-Events &rarr; Feeds.)', 'tab' => 'gcal-print' ),
 		),
-		'Email' => array(
-			array( 'gate' => 'gasf_site_enable_emailcrm', 'label' => 'Email CRM', 'desc' => 'Shared inbox for <code>info@germantampabay.com</code> at the unlinked <code>/email</code> page — approved volunteers sign in with Google or Microsoft, reply from a web form, and get a Claude draft to start from. Graph credentials and the approval queue live on the Email CRM tab.', 'tab' => 'emailcrm' ),
-		),
-		'Photos' => array(
-			array( 'gate' => 'gasf_site_enable_photocatalog', 'label' => 'Photo catalogue', 'desc' => 'Records who, where and when for images in the Media Library. <strong>People</strong>, <strong>Places</strong> and <strong>Events</strong> become proper tags, and the date, GPS and camera are read out of the file as it is uploaded &mdash; before the WebP conversion discards them. Give a Place coordinates and a photo carrying GPS is matched to the venue it was taken at, with no geocoding service involved. Turning this off leaves existing tags in the database but stops collecting or showing them.' ),
-		),
 		'Social & reputation' => array(
 			array( 'gate' => 'gasf_site_enable_instagram', 'label' => 'Instagram feed', 'desc' => 'The native <code>[gasf_instagram]</code> feed. The source account/token and display defaults live on the Instagram tab.', 'tab' => 'instagram' ),
 			array( 'gate' => 'gasf_site_enable_reviews', 'label' => 'Reviews wall', 'desc' => 'The <code>[gasf_reviews]</code> Google + TripAdvisor + curated reviews wall. API keys live on the Reviews tab.', 'tab' => 'reviews' ),
