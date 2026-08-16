@@ -307,11 +307,12 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 		// the featured image on single posts): one image block, or a gallery block
 		// when there are several. The featured image still powers archive cards
 		// and OpenGraph previews.
-		if ( 1 === count( $att_ids ) ) {
-			$content .= '<!-- wp:image {"id":' . (int) $att_ids[0] . ',"sizeSlug":"large","linkDestination":"media"} --><figure class="wp-block-image size-large">' . wp_get_attachment_image( $att_ids[0], 'large' ) . '</figure><!-- /wp:image -->' . "\n";
-		} elseif ( count( $att_ids ) > 1 ) {
+		$cids = get_option( 'gasf_fbs_skip_featured' ) ? array_slice( $att_ids, 1 ) : $att_ids; // themes that render the featured image on single posts (e.g. Krampus/popularfx) set this so it isn't repeated
+		if ( 1 === count( $cids ) ) {
+			$content .= '<!-- wp:image {"id":' . (int) $cids[0] . ',"sizeSlug":"large","linkDestination":"media"} --><figure class="wp-block-image size-large">' . wp_get_attachment_image( $cids[0], 'large' ) . '</figure><!-- /wp:image -->' . "\n";
+		} elseif ( count( $cids ) > 1 ) {
 			$content .= '<!-- wp:gallery {"linkTo":"media"} --><figure class="wp-block-gallery has-nested-images columns-default is-cropped">';
-			foreach ( $att_ids as $gid ) {
+			foreach ( $cids as $gid ) {
 				$content .= '<!-- wp:image {"id":' . (int) $gid . ',"sizeSlug":"large","linkDestination":"media"} --><figure class="wp-block-image size-large">' . wp_get_attachment_image( $gid, 'large' ) . '</figure><!-- /wp:image -->';
 			}
 			$content .= '</figure><!-- /wp:gallery -->' . "\n";
