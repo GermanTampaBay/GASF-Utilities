@@ -8,6 +8,9 @@
  * mostly arrive via the FB → Blog importer (module 40), so this is the
  * home-page surface for those.
  *
+ * Pass layout="scroll" for a horizontal snap rail instead of the vertical
+ * column — ~2 cards visible, swipe/scroll for the rest.
+ *
  * Styled to match the rail buttons block: same gradient container, gold
  * heading, white cards with the post's featured image, title, and date.
  *
@@ -23,9 +26,12 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 	add_shortcode( 'gasf_recent_posts', 'gasf_rp_shortcode' );
 	function gasf_rp_shortcode( $atts ) {
 		$a = shortcode_atts( array(
-			'count' => 3,
-			'title' => 'Latest News',
+			'count'  => 3,
+			'title'  => 'Latest News',
+			'layout' => 'list', // 'list' = vertical rail; 'scroll' = horizontal snap rail
 		), $atts, 'gasf_recent_posts' );
+
+		$scroll = ( 'scroll' === strtolower( (string) $a['layout'] ) );
 
 		$q = new WP_Query( array(
 			'post_type'           => 'post',
@@ -51,12 +57,23 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 		$all_url = '';
 		$blog    = (int) get_option( 'page_for_posts' );
 		if ( $blog ) { $all_url = get_permalink( $blog ); }
+		$all_link = $all_url ? '<a class="gasf-rp__all" href="' . esc_url( $all_url ) . '">All posts &rarr;</a>' : '';
+
+		if ( $scroll ) {
+			// Horizontal snap rail: ~2 cards visible, swipe/scroll for the rest.
+			return '<div class="gasf-rp-wrap is-scroll">' . gasf_rp_css()
+				. '<div class="gasf-rp gasf-rp--scroll">'
+				. '<h3 class="gasf-rp__h">' . esc_html( $a['title'] ) . '</h3>'
+				. '<div class="gasf-rp__track">' . $cards . '</div>'
+				. $all_link
+				. '</div></div>';
+		}
 
 		return '<div class="gasf-rp-wrap">' . gasf_rp_css()
 			. '<div class="gasf-rp">'
 			. '<h3 class="gasf-rp__h">' . esc_html( $a['title'] ) . '</h3>'
 			. $cards
-			. ( $all_url ? '<a class="gasf-rp__all" href="' . esc_url( $all_url ) . '">All posts &rarr;</a>' : '' )
+			. $all_link
 			. '</div></div>';
 	}
 
@@ -76,6 +93,16 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 			. '.gasf-rp__d{display:block;color:#666;font-size:.82em;margin-top:4px}'
 			. '.gasf-rp__all{display:block;text-align:center;color:var(--gasf-gold,#EF9F27);font-weight:700;text-decoration:none}'
 			. '.gasf-rp__all:hover{text-decoration:underline}'
+			. '.gasf-rp-wrap.is-scroll{display:block;padding:1.75rem 2rem}'
+			. '.gasf-rp--scroll{width:auto}'
+			. '.gasf-rp--scroll .gasf-rp__h{text-align:left;margin-bottom:16px}'
+			. '.gasf-rp__track{display:flex;gap:18px;overflow-x:auto;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch;padding:6px 2px 12px;scrollbar-width:thin;scrollbar-color:var(--gasf-gold,#EF9F27) transparent}'
+			. '.gasf-rp__track::-webkit-scrollbar{height:8px}'
+			. '.gasf-rp__track::-webkit-scrollbar-thumb{background:var(--gasf-gold,#EF9F27);border-radius:8px}'
+			. '.gasf-rp--scroll .gasf-rp__card{flex:0 0 44%;scroll-snap-align:start}'
+			. '.gasf-rp--scroll .gasf-rp__img{height:160px}'
+			. '.gasf-rp--scroll .gasf-rp__all{text-align:right;margin-top:12px}'
+			. '@media(max-width:640px){.gasf-rp-wrap.is-scroll{padding:1.25rem 1rem;margin:1.25rem 0}.gasf-rp--scroll .gasf-rp__card{flex:0 0 80%}.gasf-rp--scroll .gasf-rp__img{height:150px}}'
 			. '</style>';
 	}
 
