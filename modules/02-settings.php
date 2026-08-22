@@ -51,6 +51,7 @@ function gasf_settings_registry() {
 		),
 		'Sports shortcodes' => array(
 			array( 'gate' => 'gasf_site_enable_bundesliga', 'label' => 'Bundesliga tables &amp; scorers', 'desc' => 'One gate for <code>[bundesliga_table]</code>, <code>[bundesliga_scorers]</code> and <code>[bundesliga_top_scorers]</code> (OpenLigaDB, no key needed).' ),
+			array( 'gate' => 'gasf_site_enable_gametv', 'label' => 'Game TV (kiosk tiles)', 'desc' => 'Pinned game tiles for the Bierstube tablet: keyword searches over upcoming events with a default HDMI input + channel/app, per-game overrides, and the <code>/gasf-util/v1/pinned-games</code> feed the kiosk reads.', 'tab' => 'gametv' ),
 		),
 		'Search & links' => array(
 			array( 'gate' => 'gasf_site_enable_seo', 'label' => 'SEO engine', 'desc' => 'Titles, meta descriptions, canonical/robots, OpenGraph/Twitter, JSON-LD, per-page SEO box — the Yoast replacement.', 'tab' => 'seo' ),
