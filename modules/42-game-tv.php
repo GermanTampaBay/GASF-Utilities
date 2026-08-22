@@ -76,6 +76,20 @@ if ( gasf_mec_enabled( 'gasf_site_enable_gametv' ) ) {
 			);
 			update_option( 'gasf_gametv_tiles', $tiles, false );
 		}
+		foreach ( $tiles as &$t ) { $t['priority'] = (int) ( $t['priority'] ?? 0 ); }
+		unset( $t );
+		return $tiles;
+	}
+
+	/**
+	 * Tiles in claim order: highest priority first; ties keep list order.
+	 * This is the order the tablet receives, and the order games are claimed
+	 * in — a game that matches several tiles belongs to the FIRST one here,
+	 * so the kiosk never shows two tiles for the same match.
+	 */
+	function gasf_gametv_tiles_by_priority() {
+		$tiles = gasf_gametv_tiles();
+		usort( $tiles, function ( $a, $b ) { return $b['priority'] <=> $a['priority']; } ); // stable in PHP 8
 		return $tiles;
 	}
 
@@ -115,6 +129,7 @@ if ( gasf_mec_enabled( 'gasf_site_enable_gametv' ) ) {
 			'match_min'      => max( 30, (int) ( $row['match_min'] ?? 120 ) ),
 			'rollover_min'   => max( 0, (int) ( $row['rollover_min'] ?? 15 ) ),
 			'lookahead_days' => max( 1, (int) ( $row['lookahead_days'] ?? 30 ) ),
+			'priority'       => (int) ( $row['priority'] ?? 0 ),
 			'rules'          => $rules,
 		);
 	}
@@ -164,7 +179,7 @@ if ( gasf_mec_enabled( 'gasf_site_enable_gametv' ) ) {
 			'methods'             => 'GET',
 			'permission_callback' => '__return_true',
 			'callback'            => function () {
-				$resp = new WP_REST_Response( array( 'tiles' => array_values( gasf_gametv_tiles() ) ) );
+				$resp = new WP_REST_Response( array( 'tiles' => array_values( gasf_gametv_tiles_by_priority() ) ) );
 				$resp->header( 'Cache-Control', 'public, max-age=120' );
 				return $resp;
 			},
@@ -260,6 +275,7 @@ if ( gasf_mec_enabled( 'gasf_site_enable_gametv' ) ) {
 			<table class="widefat striped" style="max-width:1200px">
 				<thead><tr>
 					<th style="width:36px">Del</th><th>Label</th><th style="width:52px">Icon</th><th>Color</th><th>Title keyword</th>
+					<th style="width:58px" title="When a game matches several tiles, the highest priority claims it (ties: the one listed first). Never two tiles for one game.">Priority</th>
 					<th>Default input</th><th>Default channel/app</th>
 					<th style="width:64px" title="Show tile this many minutes before kickoff">Show (min)</th>
 					<th style="width:64px" title="Scheduled game length, minutes">Game (min)</th>
@@ -287,6 +303,7 @@ if ( gasf_mec_enabled( 'gasf_site_enable_gametv' ) ) {
 							<?php foreach ( $styles as $sk => $sl ) : ?><option value="<?php echo esc_attr( $sk ); ?>" <?php selected( $t['style'] ?? 'gold', $sk ); ?>><?php echo esc_html( $sl ); ?></option><?php endforeach; ?>
 						</select></td>
 						<td><input type="text" name="tile[<?php echo (int) $i; ?>][keyword]" value="<?php echo $v( 'keyword' ); ?>" style="width:110px" placeholder="e.g. bayern"></td>
+						<td><input type="number" name="tile[<?php echo (int) $i; ?>][priority]" value="<?php echo $v( 'priority', 0 ); ?>" style="width:52px"></td>
 						<td><select name="tile[<?php echo (int) $i; ?>][input]">
 							<?php foreach ( $inputs as $ik => $il ) : ?><option value="<?php echo esc_attr( $ik ); ?>" <?php selected( $t['input'] ?? 'directv', $ik ); ?>><?php echo esc_html( $il ); ?></option><?php endforeach; ?>
 						</select></td>
@@ -311,20 +328,39 @@ if ( gasf_mec_enabled( 'gasf_site_enable_gametv' ) ) {
 			<?php wp_nonce_field( 'gasf_gametv' ); ?>
 			<?php
 			$any = false;
-			foreach ( $tiles as $t ) :
-				$ids = gasf_gametv_upcoming( $t['keyword'] );
+			// Claim pass — same rule as the tablet: walk tiles in priority order,
+			// the first tile to match a game owns it.
+			$ordered = gasf_gametv_tiles_by_priority();
+			$claimed = array(); // post id → owning tile id
+			$matches = array(); // tile id → its matching post ids
+			foreach ( $ordered as $t ) {
+				$matches[ $t['id'] ] = gasf_gametv_upcoming( $t['keyword'] );
+				foreach ( $matches[ $t['id'] ] as $pid ) { $claimed[ $pid ] = $claimed[ $pid ] ?? $t['id']; }
+			}
+			$by_id = array_column( $ordered, null, 'id' );
+			foreach ( $ordered as $t ) :
+				$ids = $matches[ $t['id'] ];
 				if ( ! $ids ) { continue; }
 				$any = true;
 				$default_desc = ( $inputs[ $t['input'] ] ?? $t['input'] ) . ( '' !== $t['channel'] ? ' · ' . $t['channel'] : '' );
 			?>
 				<h4 style="margin:16px 0 6px"><?php echo esc_html( $t['icon'] . ' ' . $t['label'] ); ?>
-					<span style="font-weight:400;color:#646970">— default: <?php echo esc_html( $default_desc ); ?></span></h4>
+					<span style="font-weight:400;color:#646970">— default: <?php echo esc_html( $default_desc ); ?> · priority <?php echo (int) $t['priority']; ?></span></h4>
 				<table class="widefat striped" style="max-width:1180px">
 					<thead><tr><th style="width:170px">Kickoff</th><th>Game</th><th style="width:190px">Input override</th><th style="width:150px">Channel/app</th><th style="width:230px">Resolves to</th></tr></thead>
 					<tbody>
 					<?php foreach ( $ids as $pid ) :
 						$start = get_post_meta( $pid, '_gasf_start', true );
 						$dt    = $start ? date_create_immutable_from_format( 'Y-m-d H:i:s', $start, wp_timezone() ) : false;
+						if ( $claimed[ $pid ] !== $t['id'] ) :
+							$owner = $by_id[ $claimed[ $pid ] ];
+					?>
+						<tr style="opacity:.55">
+							<td><?php echo $dt ? esc_html( $dt->format( 'D, M j — g:i A' ) ) : '—'; ?></td>
+							<td><?php echo esc_html( get_the_title( $pid ) ); ?></td>
+							<td colspan="3"><em>→ claimed by <?php echo esc_html( $owner['icon'] . ' ' . $owner['label'] ); ?> (priority <?php echo (int) $owner['priority']; ?>) — set this tile's priority higher to take it</em></td>
+						</tr>
+					<?php continue; endif;
 						$cur_in = (string) get_post_meta( $pid, '_gasf_tv_input', true );
 						$cur_ch = (string) get_post_meta( $pid, '_gasf_tv_channel', true );
 						$res    = gasf_gametv_resolve( $t, get_the_title( $pid ), $cur_in, $cur_ch );
