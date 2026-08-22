@@ -123,6 +123,24 @@ if ( gasf_mec_enabled( 'gasf_site_enable_gametv' ) ) {
 	 * Upcoming published gasf_event posts whose title contains the keyword,
 	 * soonest first. Same query shape as [world_cup_schedule].
 	 */
+	/**
+	 * What the tablet will actually do for one game — same order it uses:
+	 * per-event override → first matching tile rule → tile default.
+	 * Returns input, channel, and a human 'via' so the admin can see WHY.
+	 */
+	function gasf_gametv_resolve( $tile, $title, $ov_input, $ov_channel ) {
+		if ( '' !== $ov_input ) {
+			return array( 'input' => $ov_input, 'channel' => $ov_channel, 'via' => 'override' );
+		}
+		$t = strtolower( html_entity_decode( $title, ENT_QUOTES ) );
+		foreach ( (array) ( $tile['rules'] ?? array() ) as $r ) {
+			if ( '' !== $r['match'] && false !== strpos( $t, $r['match'] ) ) {
+				return array( 'input' => $r['input'], 'channel' => $r['channel'], 'via' => 'rule "' . $r['match'] . '"' );
+			}
+		}
+		return array( 'input' => $tile['input'], 'channel' => $tile['channel'], 'via' => 'tile default' );
+	}
+
 	function gasf_gametv_upcoming( $keyword, $limit = 15 ) {
 		if ( '' === $keyword ) { return array(); }
 		global $wpdb;
@@ -301,14 +319,17 @@ if ( gasf_mec_enabled( 'gasf_site_enable_gametv' ) ) {
 			?>
 				<h4 style="margin:16px 0 6px"><?php echo esc_html( $t['icon'] . ' ' . $t['label'] ); ?>
 					<span style="font-weight:400;color:#646970">— default: <?php echo esc_html( $default_desc ); ?></span></h4>
-				<table class="widefat striped" style="max-width:960px">
-					<thead><tr><th style="width:170px">Kickoff</th><th>Game</th><th style="width:190px">Input override</th><th style="width:150px">Channel/app</th></tr></thead>
+				<table class="widefat striped" style="max-width:1180px">
+					<thead><tr><th style="width:170px">Kickoff</th><th>Game</th><th style="width:190px">Input override</th><th style="width:150px">Channel/app</th><th style="width:230px">Resolves to</th></tr></thead>
 					<tbody>
 					<?php foreach ( $ids as $pid ) :
 						$start = get_post_meta( $pid, '_gasf_start', true );
 						$dt    = $start ? date_create_immutable_from_format( 'Y-m-d H:i:s', $start, wp_timezone() ) : false;
 						$cur_in = (string) get_post_meta( $pid, '_gasf_tv_input', true );
 						$cur_ch = (string) get_post_meta( $pid, '_gasf_tv_channel', true );
+						$res    = gasf_gametv_resolve( $t, get_the_title( $pid ), $cur_in, $cur_ch );
+						$res_label = ( $inputs[ $res['input'] ] ?? $res['input'] ) . ( '' !== $res['channel'] ? ' · ' . $res['channel'] : '' );
+						$res_color = 'override' === $res['via'] ? '#d63638' : ( 'tile default' === $res['via'] ? '#646970' : '#2271b1' );
 					?>
 						<tr>
 							<td><?php echo $dt ? esc_html( $dt->format( 'D, M j — g:i A' ) ) : '—'; ?></td>
@@ -317,7 +338,9 @@ if ( gasf_mec_enabled( 'gasf_site_enable_gametv' ) ) {
 								<option value="">— default —</option>
 								<?php foreach ( $inputs as $ik => $il ) : ?><option value="<?php echo esc_attr( $ik ); ?>" <?php selected( $cur_in, $ik ); ?>><?php echo esc_html( $il ); ?></option><?php endforeach; ?>
 							</select></td>
-							<td><input type="text" name="ov[<?php echo (int) $pid; ?>][channel]" value="<?php echo esc_attr( $cur_ch ); ?>" style="width:130px" placeholder="242 / paramount"></td>
+							<td><input type="text" name="ov[<?php echo (int) $pid; ?>][channel]" value="<?php echo esc_attr( $cur_ch ); ?>" style="width:130px" placeholder="<?php echo esc_attr( $res['channel'] ); ?>"></td>
+							<td style="color:<?php echo $res_color; ?>"><strong><?php echo esc_html( $res_label ); ?></strong>
+								<span style="display:block;font-size:11px;opacity:.8">via <?php echo esc_html( $res['via'] ); ?></span></td>
 						</tr>
 					<?php endforeach; ?>
 					</tbody>
