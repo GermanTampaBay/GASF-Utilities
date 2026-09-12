@@ -16,6 +16,23 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 	if ( ! defined( 'GASF_PDF2PNG_MAX_PAGES' ) ) { define( 'GASF_PDF2PNG_MAX_PAGES', 40 ); }
 	if ( ! defined( 'GASF_PDF2PNG_MAX_BYTES' ) ) { define( 'GASF_PDF2PNG_MAX_BYTES', 30 * 1024 * 1024 ); }
 
+	/*
+	 * The most pixels one page may become, whatever DPI was asked for.
+	 *
+	 * This is the cap that was missing, and it is the only one that matters for
+	 * staying alive. The page-count and file-size limits above both look like
+	 * they bound the work and neither does: a ONE page, 0.7 MB PDF of an A0
+	 * poster (35 x 49 inches) is 155 megapixels at 300 DPI, which ImageMagick
+	 * holds as roughly 2.3 GB of Q16-HDRI pixels. The host kills the process
+	 * well before that, so the request dies as an Apache 503 with nothing in
+	 * the PHP log -- the failure cannot even be read after the fact.
+	 *
+	 * 30 megapixels leaves ordinary documents completely alone: US Letter at
+	 * 300 DPI is 8.4 MP and tabloid is 16.8 MP, both far below. It only bites
+	 * on oversized pages, which is exactly where the danger is.
+	 */
+	if ( ! defined( 'GASF_PDF2PNG_MAX_PIXELS' ) ) { define( 'GASF_PDF2PNG_MAX_PIXELS', 30000000 ); }
+
 	/**
 	 * Surgically detach/restore the host image optimizers around our inserts.
 	 * Newfold's ImageUploadListener (Bluehost) hooks add_attachment/wp_handle_upload,
@@ -62,6 +79,59 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 	 * $keep_png = true bypasses the host's WebP conversion so the files stay
 	 * genuine .png; false lets the optimizer do its normal (smaller) WebP thing.
 	 */
+	/**
+	 * The highest offered DPI at which this page stays inside the pixel budget.
+	 *
+	 * Pings the page rather than rendering it, which costs almost nothing: a
+	 * ping reports the page size without rasterising a single pixel. PDF pages
+	 * are measured in points, so the geometry a ping returns IS the size in
+	 * seventy-seconds of an inch.
+	 *
+	 * Steps down through the resolutions the form actually offers instead of
+	 * returning an arbitrary number, so what the log says was used is something
+	 * the operator could have picked themselves.
+	 *
+	 * @param string $note Filled with an explanation when the DPI is reduced.
+	 */
+	function gasf_pdf2png_fit_dpi( $path, $page, $dpi, &$note ) {
+		$note = '';
+		try {
+			$p = new Imagick();
+			$p->pingImage( $path . '[' . (int) $page . ']' );
+			$g = $p->getImageGeometry();
+			$p->clear();
+		} catch ( Throwable $e ) {
+			// Cannot measure it, so do not guess. The resource limits set below
+			// are the backstop.
+			return $dpi;
+		}
+
+		$w_in = ( isset( $g['width'] ) ? (float) $g['width'] : 0 ) / 72;
+		$h_in = ( isset( $g['height'] ) ? (float) $g['height'] : 0 ) / 72;
+		if ( $w_in <= 0 || $h_in <= 0 ) { return $dpi; }
+
+		$area = $w_in * $h_in;
+		if ( $area * $dpi * $dpi <= GASF_PDF2PNG_MAX_PIXELS ) { return $dpi; }
+
+		$fits = (int) floor( sqrt( GASF_PDF2PNG_MAX_PIXELS / $area ) );
+		$use  = 72;
+		foreach ( array( 300, 200, 150, 100, 72 ) as $option ) {
+			if ( $option <= $fits ) { $use = $option; break; }
+		}
+
+		$note = sprintf(
+			'Page %d is %.1f x %.1f inches. At %d DPI that is %s megapixels, which is more than this server can render in one go, so it was converted at %d DPI instead.',
+			(int) $page + 1,
+			$w_in,
+			$h_in,
+			$dpi,
+			number_format( $area * $dpi * $dpi / 1000000, 1 ),
+			$use
+		);
+
+		return $use;
+	}
+
 	function gasf_pdf2png_convert( $path, $dpi, $basename, $keep_png = false ) {
 		$out = array( 'pages' => array(), 'errors' => array() );
 		if ( ! class_exists( 'Imagick' ) ) { $out['errors'][] = 'Imagick not available on this server.'; return $out; }
@@ -85,6 +155,23 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 		$slug   = sanitize_file_name( preg_replace( '/\.pdf$/i', '', $basename ) ) ?: 'pdf';
 		$budget = microtime( true ) + 50; // stay under request limits; report what didn't fit
 
+		/*
+		 * Make ImageMagick spill to disk rather than be killed.
+		 *
+		 * Its own limits on this host are effectively infinite -- 94 GB of
+		 * memory, 188 GB mapped -- so it never decides to use its disk cache and
+		 * simply allocates until the host's process cap ends the request. Giving
+		 * it a real ceiling turns "the site returned 503" into "this took a few
+		 * seconds longer", which is a trade worth making every time.
+		 */
+		try {
+			Imagick::setResourceLimit( Imagick::RESOURCETYPE_MEMORY, 256 * 1024 * 1024 );
+			Imagick::setResourceLimit( Imagick::RESOURCETYPE_MAP, 512 * 1024 * 1024 );
+		} catch ( Throwable $e ) {
+			// Older builds may refuse; the pixel budget above is the real guard.
+			$out['errors'][] = 'Could not set image memory limits: ' . $e->getMessage();
+		}
+
 		require_once ABSPATH . 'wp-admin/includes/image.php';
 		if ( $keep_png ) { gasf_pdf2png_optimizer_toggle( true ); }
 		for ( $i = 0; $i < $pages; $i++ ) {
@@ -92,9 +179,13 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 				$out['errors'][] = sprintf( 'Time limit — stopped after page %d of %d. Re-upload with a lower DPI for the rest.', $i, $pages );
 				break;
 			}
+			$page_note = '';
+			$page_dpi  = gasf_pdf2png_fit_dpi( $path, $i, $dpi, $page_note );
+			if ( '' !== $page_note ) { $out['errors'][] = $page_note; }
+
 			try {
 				$im = new Imagick();
-				$im->setResolution( $dpi, $dpi );
+				$im->setResolution( $page_dpi, $page_dpi );
 				$im->readImage( $path . '[' . $i . ']' );
 				$im->setImageBackgroundColor( '#ffffff' );
 				$im->setImageAlphaChannel( Imagick::ALPHACHANNEL_REMOVE );
