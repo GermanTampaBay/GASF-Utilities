@@ -6,7 +6,9 @@
  * Attributes:
  *   mode="full" (default) — festival version: capacity warning, tow list, overflow + map.
  *   mode="simple"         — low-key version: address + free parking + bus only (no warnings).
- *   map="<image url>"      — override the parking/overflow map image (full mode only).
+ *   map="<image url>"      — the overflow map image (full mode only).
+ *   map_fri="<image url>"  — a separate map shown only on Friday. Empty by
+ *                            default, so pages with one map keep one map.
  *   fri="A, B, C"          — neighboring lots this event may use on Friday.
  *   sat="A, B, C, D"       — the same for Saturday.
  *   overflow_days="Saturday"
@@ -42,6 +44,7 @@ if ( gasf_site_enabled( 'gasf_site_enable_parking' ) ) {
 			'fri'  => '',
 			'sat'  => '',
 			'overflow_days' => '',
+			'map_fri'       => '',
 		), $atts, 'gas_parking' );
 		$gmap  = 'https://maps.app.goo.gl/1xSuisW1G7Z6puXLA';
 		$route = 'https://psta.net/routes/route-66/';
@@ -61,6 +64,15 @@ if ( gasf_site_enabled( 'gasf_site_enable_parking' ) ) {
 		$overflow_lead = '' !== $overflow_day
 			? '<strong>' . esc_html( $overflow_day ) . ' only:</strong> for <strong>overflow parking</strong>,'
 			: 'For <strong>overflow parking</strong>,';
+
+		/*
+		 * One lot, one name.
+		 *
+		 * This sentence described the overflow purely by its location while the
+		 * permitted list above named it -- so the page appeared to offer two
+		 * different places, one of which a driver could not find on any sign.
+		 * It is the same lot: Pinellas Professional Center, on that corner.
+		 */
 
 		$permitted = '';
 		$days      = array_filter( array(
@@ -140,8 +152,11 @@ HTML;
   <p>&#128652; <strong>Take the bus:</strong> PSTA <strong>Route 66</strong> runs right along 66th Street North with a <strong>stop directly in front of the club</strong>. It connects Largo Transit Center and downtown St.&nbsp;Petersburg (Grand Central Station), about every 30 minutes on weekdays and Saturdays (hourly on Sundays). <a style="text-decoration:underline" href="<?php echo esc_url( $route ); ?>" target="_blank" rel="noopener">View the Route&nbsp;66 schedule &amp; map &raquo;</a></p>
   <p style="background:#fdf2f2;border-left:4px solid #c0392b;padding:10px 14px;margin:14px 0;color:#2b2b2b"><strong>Do not park</strong> at the Zimring office park (north of the venue), at 8200 66th Street North (Southern Technical Institute / Caf&eacute; on the Bayou), or at the <strong>Shoppes at 66</strong>. <strong>You will be towed.</strong></p>
   <?php echo $permitted; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- built from esc_html'd parts above. ?>
-  <p<?php echo '' !== $overflow_day ? ' data-parking-day="' . esc_attr( $overflow_day ) . '"' : ''; ?>><?php echo $overflow_lead; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- built from an esc_html'd part above. ?> use the medical complex at the corner of <strong>66th Street North &amp; 78th Ave North</strong>.</p>
-  <p<?php echo '' !== $overflow_day ? ' data-parking-day="' . esc_attr( $overflow_day ) . '"' : ''; ?>><img src="<?php echo esc_url( $atts['map'] ); ?>" alt="Parking map" style="max-width:100%;height:auto;border-radius:8px" /></p>
+  <?php if ( '' !== trim( (string) $atts['map_fri'] ) ) : ?>
+    <p data-parking-day="Friday"><img src="<?php echo esc_url( $atts['map_fri'] ); ?>" alt="Friday parking map" style="max-width:100%;height:auto;border-radius:8px" /></p>
+  <?php endif; ?>
+  <p<?php echo '' !== $overflow_day ? ' data-parking-day="' . esc_attr( $overflow_day ) . '"' : ''; ?>><?php echo $overflow_lead; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- built from an esc_html'd part above. ?> use <strong>Pinellas Professional Center</strong> &mdash; the medical complex at the corner of <strong>66th Street North &amp; 78th Ave North</strong>.</p>
+  <p<?php echo '' !== $overflow_day ? ' data-parking-day="' . esc_attr( $overflow_day ) . '"' : ''; ?>><img src="<?php echo esc_url( $atts['map'] ); ?>" alt="Overflow parking map" style="max-width:100%;height:auto;border-radius:8px" /></p>
 </div>
 <?php echo $day_script; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- a fixed literal. ?>
 <?php
