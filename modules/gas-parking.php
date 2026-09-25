@@ -7,12 +7,12 @@
  *   mode="full" (default) — festival version: capacity warning, tow list, overflow + map.
  *   mode="simple"         — low-key version: address + free parking + bus only (no warnings).
  *   map="<image url>"      — override the parking/overflow map image (full mode only).
- *   fri="A, B, C"          — neighbouring lots this event may use on Friday.
+ *   fri="A, B, C"          — neighboring lots this event may use on Friday.
  *   sat="A, B, C, D"       — the same for Saturday.
  *
  * The permitted lots are PER EVENT and deliberately not baked in here. This
  * block is shared by every event page on the site, and permission to park in a
- * neighbour's lot is given for particular days by particular businesses — the
+ * neighbor's lot is given for particular days by particular businesses — the
  * Friday list and the Saturday list are genuinely different, and neither has
  * anything to do with Bock Fest. Pass them and they appear; leave them out and
  * the block is exactly what it was.
@@ -52,7 +52,7 @@ if ( gasf_site_enabled( 'gasf_site_enable_parking' ) ) {
 				$lines[] = '<strong>' . esc_html( $day ) . ':</strong> ' . esc_html( $lots );
 			}
 			$permitted = '<p style="background:#eef7ee;border-left:4px solid #2e7d32;padding:10px 14px;margin:14px 0;color:#2b2b2b">'
-				. '<strong>Nearby lots you may use.</strong> These neighbours have given us permission for this event:<br>'
+				. '<strong>Nearby lots you may use.</strong> These neighbors have given us permission for this event:<br>'
 				. implode( '<br>', $lines )
 				. '</p>';
 		}
