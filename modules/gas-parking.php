@@ -105,6 +105,22 @@ if ( gasf_site_enabled( 'gasf_site_enable_parking' ) ) {
 		 * not know the zone -- leaves every day visible, which is informative
 		 * rather than wrong.
 		 */
+		/*
+		 * The links name their own color.
+		 *
+		 * This block is documented as being for LIGHT page backgrounds, and its
+		 * text and panels all say what color they are -- but its three links
+		 * said nothing and took the theme's, which is built for the dark pages
+		 * everywhere else on the site. On the Oktoberfest page's cream that made
+		 * the venue address white on near-white: the single most important line
+		 * in the whole block, and the one a driver actually needs.
+		 *
+		 * Scoped to the block so it cannot reach the page around it, and set as
+		 * a rule rather than three inline attributes so the next link added here
+		 * is readable without anybody remembering this.
+		 */
+		$css = '<style>.gas-parking-info a{color:#7a4a00}.gas-parking-info a:hover,.gas-parking-info a:focus{color:#5a3600}</style>';
+
 		$day_script = <<<'HTML'
 <script>
 (function () {
@@ -131,7 +147,9 @@ HTML;
 
 		// ---- SIMPLE: low-key events that don't tax parking ----
 		if ( $atts['mode'] === 'simple' ) {
-			ob_start(); ?>
+			ob_start();
+			echo $css; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- a fixed literal.
+			?>
 <div class="gas-parking-info" style="margin:18px 0;line-height:1.5">
   <h2 style="margin-top:0">&#128658; Getting Here &amp; Parking</h2>
   <p><?php echo $addr; ?></p>
@@ -144,7 +162,9 @@ HTML;
 		}
 
 		// ---- FULL: festival/high-attendance events ----
-		ob_start(); ?>
+		ob_start();
+		echo $css; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- a fixed literal.
+		?>
 <div class="gas-parking-info" style="margin:18px 0;line-height:1.5">
   <h2 style="margin-top:0">&#128658; Getting Here, Parking &amp; Transit</h2>
   <p><?php echo $addr; ?></p>
