@@ -175,7 +175,24 @@ HTML;
   <?php if ( '' !== trim( (string) $atts['map_fri'] ) ) : ?>
     <p data-parking-day="Friday"><img src="<?php echo esc_url( $atts['map_fri'] ); ?>" alt="Friday parking map" style="max-width:100%;height:auto;border-radius:8px" /></p>
   <?php endif; ?>
-  <p<?php echo '' !== $overflow_day ? ' data-parking-day="' . esc_attr( $overflow_day ) . '"' : ''; ?>><?php echo $overflow_lead; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- built from an esc_html'd part above. ?> use <strong>Pinellas Professional Center</strong> &mdash; the medical complex at the corner of <strong>66th Street North &amp; 78th Ave North</strong>.</p>
+  <?php
+  /*
+   * Only when nothing above has already said it.
+   *
+   * On a page that lists its permitted lots, this sentence names one of them a
+   * second time, directly under the list, directly above a map showing it --
+   * three tellings of one fact, which reads as three facts.
+   *
+   * It stays for pages that pass no list. There it is the ONLY mention of the
+   * overflow lot, and Sausage Fest, Maifest, Bock Fest, Euchre, and Crafting at
+   * the Club all rely on it. Tying it to $permitted rather than deleting it
+   * means the condition is the redundancy itself, so a page that stops listing
+   * its lots gets the sentence back without anybody noticing it had gone.
+   */
+  if ( '' === $permitted ) :
+    ?>
+    <p<?php echo '' !== $overflow_day ? ' data-parking-day="' . esc_attr( $overflow_day ) . '"' : ''; ?>><?php echo $overflow_lead; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- built from an esc_html'd part above. ?> use <strong>Pinellas Professional Center</strong> &mdash; the medical complex at the corner of <strong>66th Street North &amp; 78th Ave North</strong>.</p>
+  <?php endif; ?>
   <p<?php echo '' !== $overflow_day ? ' data-parking-day="' . esc_attr( $overflow_day ) . '"' : ''; ?>><img src="<?php echo esc_url( $atts['map'] ); ?>" alt="Overflow parking map" style="max-width:100%;height:auto;border-radius:8px" /></p>
 </div>
 <?php echo $day_script; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- a fixed literal. ?>
