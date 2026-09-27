@@ -53,7 +53,7 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 		if ( $code < 200 || $code >= 300 ) {
 			return new WP_Error( 'api', 'Anthropic HTTP ' . $code . ': ' . ( $b['error']['message'] ?? substr( wp_remote_retrieve_body( $r ), 0, 140 ) ) );
 		}
-		return trim( (string) ( $b['content'][0]['text'] ?? '' ) );
+		return gasf_fix_club_name( trim( (string) ( $b['content'][0]['text'] ?? '' ) ) );
 	}
 
 	function gasf_aiseo_prompt( $title, $content ) {
@@ -63,8 +63,9 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 		// Target 150 (not 155) so normal model overshoot still lands under Google's
 		// ~155-char SERP truncation. gasf_seo_clip() is the hard backstop; this just
 		// keeps the model close so the backstop rarely has to cut anything.
-		return "Write ONE compelling SEO meta description for this event page at the German-American Society Friendship of Pinellas County — a German-American cultural club in Pinellas Park, Tampa Bay, Florida.\n\n" .
+		return "Write ONE compelling SEO meta description for this event page at the German-American Society (formally German-American Society Friendship of Pinellas County), a German-American cultural club in Pinellas Park, Florida, in the Tampa Bay area.\n\n" .
 			"Strict rules:\n" .
+			"- If you name the club, call it the German-American Society. Never write German-American Society of Tampa Bay: that is not its name.\n" .
 			"- HARD LIMIT: 150 characters maximum. Aim for 130-150. Shorter is fine; going over is not.\n" .
 			"- Exactly one sentence. Plain text. No quotation marks, line breaks, or emojis.\n" .
 			"- Must end on a complete word with normal end punctuation.\n\n" .

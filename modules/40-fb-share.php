@@ -224,7 +224,8 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 				'model'      => 'claude-haiku-4-5-20251001',
 				'max_tokens' => 100,
 				'messages'   => array( array( 'role' => 'user', 'content' =>
-					"Write a blog-post headline for the German-American Society of Tampa Bay's website, summarizing this Facebook post. " .
+					"Write a blog-post headline for the German-American Society's website, summarizing this Facebook post. " .
+					"If you name the club, call it the German-American Society -- never German-American Society of Tampa Bay, which is not its name. " .
 					"Under 70 characters. Same language as the post (English titles may keep German words like Biergarten or Stammtisch). " .
 					"No hashtags, no quotes, no trailing period. Reply with the headline only.\n\n" .
 					mb_substr( $message, 0, 4000 )
@@ -233,7 +234,7 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 		) );
 		if ( is_wp_error( $r ) || 200 !== (int) wp_remote_retrieve_response_code( $r ) ) { return ''; }
 		$b = json_decode( wp_remote_retrieve_body( $r ), true );
-		$t = trim( (string) ( $b['content'][0]['text'] ?? '' ) );
+		$t = gasf_fix_club_name( trim( (string) ( $b['content'][0]['text'] ?? '' ) ) );
 		$t = trim( $t, "\"'“”‘’ \t\r\n" );
 		if ( '' === $t || mb_strlen( $t ) > 110 || false !== strpos( $t, "\n" ) ) { return ''; } // refuse rambling output
 		return $t;
