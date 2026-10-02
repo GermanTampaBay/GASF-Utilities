@@ -199,13 +199,50 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 
 	/* ============================ reference rewriting ============================ */
 
-	/** Recursive str_replace across arrays/scalars; refuses rows containing objects. */
-	function gasf_imgc_deep_replace( $data, array $pairs, &$ok ) {
+	/**
+	 * One pattern for every old token, matching each only as a WHOLE filename.
+	 *
+	 * str_replace() matched a token anywhere it appeared, including inside a
+	 * longer name. Compressing "2026/08/Oktoberfest-2023-190-Silly-Goose.jpg"
+	 * therefore also rewrote a DIFFERENT photo, stored as "2026/08/Oktoberfest-
+	 * 2023-190-Silly-Goose.jpg-scaled.jpg" (a camera file named x.jpg.jpg, which
+	 * WordPress scales to x.jpg-scaled.jpg), into "...Silly-Goose-compressed.webp-
+	 * scaled.jpg" - a file that has never existed. That photo went blank in the
+	 * gallery while its own file sat untouched on disk.
+	 *
+	 * A filename character on either side means the token is only part of a
+	 * longer name, so it is left alone: a letter, a digit, "_", "-", ".", or any
+	 * byte of a multibyte character. Whatever really ends a path - a quote, a
+	 * space, "?", "#", ")", a comma, a backslash, the end of the text - still
+	 * matches, so URLs in attributes, srcset lists, CSS, and JSON are rewritten
+	 * as before. Erring this way is the safe direction: a reference left alone
+	 * keeps working while originals are kept (the default), and one rewritten
+	 * wrongly breaks.
+	 *
+	 * Longest first, and every token in one pass, so nothing can match inside
+	 * another token's replacement.
+	 */
+	function gasf_imgc_ref_pattern( array $pairs ) {
+		$olds = array_map( 'strval', array_keys( $pairs ) );
+		usort( $olds, function ( $a, $b ) { return strlen( $b ) - strlen( $a ); } );
+		$alts = implode( '|', array_map( function ( $o ) { return preg_quote( $o, '~' ); }, $olds ) );
+		return '~(?<![A-Za-z0-9_.\-\x80-\xFF])(?:' . $alts . ')(?![A-Za-z0-9_.\-\x80-\xFF])~';
+	}
+
+	/** Rewrite whole-filename tokens in one string. A regex failure changes nothing. */
+	function gasf_imgc_swap( $s, $re, array $pairs ) {
+		$s = (string) $s;
+		$n = preg_replace_callback( $re, function ( $m ) use ( $pairs ) { return (string) $pairs[ $m[0] ]; }, $s );
+		return null === $n ? $s : $n;
+	}
+
+	/** Recursive whole-filename rewrite across arrays/scalars; refuses rows containing objects. */
+	function gasf_imgc_deep_replace( $data, $re, array $pairs, &$ok ) {
 		if ( is_string( $data ) ) {
-			return str_replace( array_keys( $pairs ), array_values( $pairs ), $data );
+			return gasf_imgc_swap( $data, $re, $pairs );
 		}
 		if ( is_array( $data ) ) {
-			foreach ( $data as $k => $v ) { $data[ $k ] = gasf_imgc_deep_replace( $v, $pairs, $ok ); }
+			foreach ( $data as $k => $v ) { $data[ $k ] = gasf_imgc_deep_replace( $v, $re, $pairs, $ok ); }
 			return $data;
 		}
 		if ( is_object( $data ) ) { $ok = false; }
@@ -218,79 +255,122 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 	 * match inside absolute URLs, protocol-relative URLs, and Smart Slider's
 	 * "$upload$/..." placeholders alike. Each token is also replaced in its
 	 * JSON-escaped form ("2024\/12\/pic.png") for JSON-in-text columns.
+	 *
+	 * Only whole filenames are rewritten - see gasf_imgc_ref_pattern(). SQL LIKE
+	 * is a substring test, so it only narrows the search: every row it finds is
+	 * re-checked by the pattern before anything is written back.
+	 *
+	 * Other attachments' records of their OWN files - _wp_attached_file,
+	 * _wp_attachment_metadata, _wp_attachment_backup_sizes - are never touched.
+	 * They are not references to this image; they are another photo's identity.
+	 * This attachment's own are already rewritten by the time this runs, so the
+	 * only rows of those keys this could ever reach belong to somebody else, and
+	 * rewriting one is how a photo ends up pointing at a file that is not there.
+	 *
 	 * Returns total rows updated.
 	 */
 	function gasf_imgc_replace_refs( array $map ) {
 		global $wpdb;
 		$pairs = array();
 		foreach ( $map as $old => $new ) {
+			$old = (string) $old;
+			$new = (string) $new;
 			if ( '' === $old || $old === $new ) { continue; }
 			$pairs[ $old ] = $new;
 			$pairs[ str_replace( '/', '\\/', $old ) ] = str_replace( '/', '\\/', $new );
 		}
 		if ( ! $pairs ) { return 0; }
-		$rows = 0;
+		$re           = gasf_imgc_ref_pattern( $pairs );
+		$rows         = 0;
 		$nextend_rows = 0;
 
-		foreach ( $pairs as $old => $new ) {
-			$like = '%' . $wpdb->esc_like( $old ) . '%';
+		$likes = array();
+		foreach ( array_keys( $pairs ) as $old ) { $likes[] = '%' . $wpdb->esc_like( (string) $old ) . '%'; }
+		$any = function ( $col ) use ( $likes ) {
+			return '(' . implode( ' OR ', array_fill( 0, count( $likes ), $col . ' LIKE %s' ) ) . ')';
+		};
 
-			// 1) post_content (pages, posts, revisions — plain text/HTML/JSON blocks).
-			$ids = $wpdb->get_col( $wpdb->prepare( "SELECT ID FROM {$wpdb->posts} WHERE post_content LIKE %s", $like ) );
-			foreach ( $ids as $pid ) {
-				$c = $wpdb->get_var( $wpdb->prepare( "SELECT post_content FROM {$wpdb->posts} WHERE ID = %d", $pid ) );
-				$n = str_replace( $old, $new, (string) $c );
-				if ( $n !== $c ) {
-					$wpdb->update( $wpdb->posts, array( 'post_content' => $n ), array( 'ID' => (int) $pid ) );
-					clean_post_cache( (int) $pid );
-					$rows++;
-				}
+		// 1) post_content (pages, posts, revisions — plain text/HTML/JSON blocks).
+		$ids = $wpdb->get_col( $wpdb->prepare( "SELECT ID FROM {$wpdb->posts} WHERE " . $any( 'post_content' ), $likes ) ); // phpcs:ignore
+		foreach ( $ids as $pid ) {
+			$c = (string) $wpdb->get_var( $wpdb->prepare( "SELECT post_content FROM {$wpdb->posts} WHERE ID = %d", $pid ) );
+			$n = gasf_imgc_swap( $c, $re, $pairs );
+			if ( $n !== $c ) {
+				$wpdb->update( $wpdb->posts, array( 'post_content' => $n ), array( 'ID' => (int) $pid ) );
+				clean_post_cache( (int) $pid );
+				$rows++;
 			}
+		}
 
-			// 2) postmeta — serialized-aware (SiteOrigin panels_data etc.).
-			$metas = $wpdb->get_results( $wpdb->prepare( "SELECT meta_id, meta_value FROM {$wpdb->postmeta} WHERE meta_value LIKE %s", $like ) );
-			foreach ( $metas as $m ) {
-				$v = (string) $m->meta_value;
-				if ( is_serialized( $v ) ) {
-					$data = @unserialize( $v, array( 'allowed_classes' => false ) );
-					if ( false === $data && 'b:0;' !== $v ) { continue; } // undecodable — leave alone
-					$ok   = true;
-					$data = gasf_imgc_deep_replace( $data, array( $old => $new ), $ok );
-					if ( ! $ok ) { continue; } // contains objects — hands off
-					$n = serialize( $data ); // phpcs:ignore -- rewriting existing serialized data
-				} else {
-					$n = str_replace( $old, $new, $v );
-				}
-				if ( $n !== $v ) {
-					$wpdb->update( $wpdb->postmeta, array( 'meta_value' => $n ), array( 'meta_id' => (int) $m->meta_id ) );
-					$rows++;
-				}
+		// 2) postmeta — serialized-aware (SiteOrigin panels_data etc.), minus
+		//    every attachment's record of its own files.
+		$metas = $wpdb->get_results( $wpdb->prepare( // phpcs:ignore
+			"SELECT meta_id, meta_value FROM {$wpdb->postmeta}
+			 WHERE meta_key NOT IN ('_wp_attached_file', '_wp_attachment_metadata', '_wp_attachment_backup_sizes')
+			 AND " . $any( 'meta_value' ),
+			$likes
+		) );
+		foreach ( $metas as $m ) {
+			$v = (string) $m->meta_value;
+			if ( is_serialized( $v ) ) {
+				$data = @unserialize( $v, array( 'allowed_classes' => false ) );
+				if ( false === $data && 'b:0;' !== $v ) { continue; } // undecodable — leave alone
+				$ok   = true;
+				$data = gasf_imgc_deep_replace( $data, $re, $pairs, $ok );
+				if ( ! $ok ) { continue; } // contains objects — hands off
+				$n = serialize( $data ); // phpcs:ignore -- rewriting existing serialized data
+			} else {
+				$n = gasf_imgc_swap( $v, $re, $pairs );
 			}
-
-			// 3) options (widgets etc.) — serialized-aware; transients excluded.
-			$opts = $wpdb->get_col( $wpdb->prepare(
-				"SELECT option_name FROM {$wpdb->options} WHERE option_value LIKE %s AND option_name NOT LIKE %s AND option_name NOT LIKE %s",
-				$like, $wpdb->esc_like( '_transient' ) . '%', $wpdb->esc_like( '_site_transient' ) . '%'
-			) );
-			foreach ( $opts as $name ) {
-				$v  = get_option( $name );
-				$ok = true;
-				$n  = gasf_imgc_deep_replace( $v, array( $old => $new ), $ok );
-				if ( $ok && $n !== $v ) { update_option( $name, $n ); $rows++; }
+			if ( $n !== $v ) {
+				$wpdb->update( $wpdb->postmeta, array( 'meta_value' => $n ), array( 'meta_id' => (int) $m->meta_id ) );
+				$rows++;
 			}
+		}
 
-			// 4) Smart Slider (Nextend) keeps slide params in its own tables.
-			$tables = $wpdb->get_col( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $wpdb->prefix . 'nextend2' ) . '%' ) );
-			foreach ( $tables as $table ) {
-				$cols = $wpdb->get_results( "SHOW COLUMNS FROM `$table`" ); // phpcs:ignore
-				foreach ( $cols as $col ) {
-					if ( ! preg_match( '/text|char/i', (string) $col->Type ) ) { continue; }
-					$field = $col->Field;
-					$done  = $wpdb->query( $wpdb->prepare(
-						"UPDATE `$table` SET `$field` = REPLACE(`$field`, %s, %s) WHERE `$field` LIKE %s", // phpcs:ignore
-						$old, $new, $like
-					) );
-					if ( $done ) { $rows += (int) $done; $nextend_rows += (int) $done; }
+		// 3) options (widgets etc.) — serialized-aware; transients excluded.
+		$opts = $wpdb->get_col( $wpdb->prepare( // phpcs:ignore
+			"SELECT option_name FROM {$wpdb->options} WHERE option_name NOT LIKE %s AND option_name NOT LIKE %s AND " . $any( 'option_value' ),
+			array_merge( array( $wpdb->esc_like( '_transient' ) . '%', $wpdb->esc_like( '_site_transient' ) . '%' ), $likes )
+		) );
+		foreach ( $opts as $name ) {
+			$v  = get_option( $name );
+			$ok = true;
+			$n  = gasf_imgc_deep_replace( $v, $re, $pairs, $ok );
+			if ( $ok && $n !== $v ) { update_option( $name, $n ); $rows++; }
+		}
+
+		// 4) Smart Slider (Nextend) keeps slide params in its own tables. Rows are
+		//    read, re-checked, and written back by primary key: SQL REPLACE() has
+		//    the same substring problem as str_replace(), and MySQL 5.7 here has
+		//    no regular-expression replace to do it in place.
+		$tables = $wpdb->get_col( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $wpdb->prefix . 'nextend2' ) . '%' ) );
+		foreach ( $tables as $table ) {
+			$pk   = $wpdb->get_col( "SHOW KEYS FROM `$table` WHERE Key_name = 'PRIMARY'", 4 ); // phpcs:ignore -- column 4 is Column_name
+			$cols = $wpdb->get_results( "SHOW COLUMNS FROM `$table`" ); // phpcs:ignore
+			foreach ( $cols as $col ) {
+				if ( ! preg_match( '/text|char/i', (string) $col->Type ) ) { continue; }
+				$field = $col->Field;
+				$where = $any( "`$field`" );
+				if ( 1 !== count( $pk ) ) {
+					// No single column to write a row back by. Leave it, and say so:
+					// a reference left alone still works while originals are kept.
+					$hit = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM `$table` WHERE $where", $likes ) ); // phpcs:ignore
+					if ( $hit ) {
+						gasf_imgc_log_add( sprintf( 'Left %d row(s) of %s.%s unrewritten - the table has no single-column primary key', $hit, $table, $field ) );
+					}
+					continue;
+				}
+				$key   = $pk[0];
+				$found = $wpdb->get_results( $wpdb->prepare( "SELECT `$key` AS k, `$field` AS v FROM `$table` WHERE $where", $likes ) ); // phpcs:ignore
+				foreach ( $found as $r ) {
+					$v = (string) $r->v;
+					$n = gasf_imgc_swap( $v, $re, $pairs );
+					if ( $n !== $v ) {
+						$wpdb->update( $table, array( $field => $n ), array( $key => $r->k ) );
+						$rows++;
+						$nextend_rows++;
+					}
 				}
 			}
 		}
