@@ -27,8 +27,8 @@ if ( gasf_site_enabled( 'gasf_mec_enable_wc_schedule' ) ) {
 		global $wpdb;
 		$now = time();
 		$ids = $wpdb->get_col( $wpdb->prepare(
-			"SELECT p.ID FROM {$wpdb->prefix}posts p
-			 JOIN {$wpdb->prefix}postmeta ts ON ts.post_id=p.ID AND ts.meta_key='_gasf_start_ts'
+			"SELECT p.ID FROM {$wpdb->posts} p
+			 JOIN {$wpdb->postmeta} ts ON ts.post_id=p.ID AND ts.meta_key='_gasf_start_ts'
 			 WHERE p.post_type='gasf_event' AND p.post_status='publish'
 			 AND p.post_title LIKE 'World Cup Watch Party%' AND ts.meta_value >= %d
 			 ORDER BY ( ts.meta_value + 0 ) ASC", $now ) );
@@ -38,11 +38,10 @@ if ( gasf_site_enabled( 'gasf_mec_enable_wc_schedule' ) ) {
 			$start = get_post_meta( $id, '_gasf_start', true ); // 'Y-m-d H:i:s' site-local
 			$dt    = $start ? date_create_immutable_from_format( 'Y-m-d H:i:s', $start, wp_timezone() ) : false;
 			if ( ! $dt ) { continue; }
-			$rows[] = array( 'id'=>$id, 'sort'=>$dt->format( 'YmdHis' ), 'dt'=>$dt,
+			$rows[] = array( 'id'=>$id, 'dt'=>$dt,
 				'name'=>trim( preg_replace( '/^World Cup Watch Party:?\s*/i', '', html_entity_decode( get_the_title( $id ), ENT_QUOTES ) ) ),
 				'url'=>get_permalink( $id ) );
 		}
-		usort( $rows, function( $a, $b ) { return strcmp( $a['sort'], $b['sort'] ); } );
 
 		if ( empty( $rows ) ) {
 			$html = '<p style="padding:14px 0"><em>The next watch parties will appear here as soon as the knockout-round matchups are confirmed. Check back soon!</em></p>';

@@ -27,6 +27,40 @@ if ( gasf_site_enabled( 'gasf_site_enable_shortlinks' ) ) {
 	}
 	function gasf_sl_slug( $s ) { return trim( (string) strtok( (string) $s, '?#' ), "/ \t" ); }
 
+	/**
+	 * What a short link at /$slug would shadow, as a short human reason, or ''.
+	 *
+	 * A short link fires at template_redirect before anything renders, so a
+	 * slug that is also a real URL silently replaces it. Checked at save time:
+	 *   - any public post type by path (pages, posts, events, …) — the old
+	 *     check only knew page + post, so /<event-slug> passed;
+	 *   - a post type archive (/events/);
+	 *   - any rewrite rule that would claim the single segment — custom
+	 *     endpoints like /internal-calendar/print/ and core ones like
+	 *     /feed/, /search/, /author/ … The generic "it's a page/post name"
+	 *     rules are skipped (that is what the by-path check is for), as are
+	 *     attachment/embed/comment rules that only match under a real post.
+	 */
+	function gasf_sl_collides( $slug ) {
+		$slug = (string) $slug;
+		if ( '' === $slug ) { return ''; }
+		if ( url_to_postid( home_url( '/' . $slug . '/' ) ) ) { return 'a page or post'; }
+		$types = array_values( get_post_types( array( 'public' => true ), 'names' ) );
+		if ( get_page_by_path( $slug, OBJECT, $types ) ) { return 'a page, post or event'; }
+		foreach ( get_post_types( array( 'public' => true, 'has_archive' => true ), 'objects' ) as $pt ) {
+			$archive = is_string( $pt->has_archive ) ? $pt->has_archive : $pt->rewrite['slug'] ?? $pt->name;
+			if ( 0 === strcasecmp( trim( (string) $archive, '/' ), $slug ) ) { return 'the ' . $pt->labels->name . ' archive'; }
+		}
+		global $wp_rewrite;
+		$rules = $wp_rewrite instanceof WP_Rewrite ? (array) $wp_rewrite->wp_rewrite_rules() : array();
+		foreach ( $rules as $regex => $query ) {
+			if ( preg_match( '/(^|&)(pagename|name|attachment|p|page_id)=/', (string) $query ) ) { continue; } // by-path checks above
+			if ( false !== strpos( (string) $query, 'embed=' ) || false !== strpos( (string) $query, 'cpage=' ) ) { continue; }
+			if ( @preg_match( '#^' . $regex . '#', $slug . '/' ) || @preg_match( '#^' . $regex . '#', $slug ) ) { return 'a URL WordPress already routes (rule: ' . $regex . ')'; }
+		}
+		return '';
+	}
+
 	/* ---- redirect ---- */
 	add_action( 'template_redirect', function () {
 		$req = gasf_sl_slug( $_SERVER['REQUEST_URI'] ?? '' );
@@ -69,20 +103,12 @@ if ( gasf_site_enabled( 'gasf_site_enable_shortlinks' ) ) {
 				$slug = gasf_sl_slug( sanitize_text_field( wp_unslash( $_POST['slug'] ?? '' ) ) );
 				$slug = preg_replace( '/[^A-Za-z0-9_-]/', '', $slug ); // safe path segment, case preserved
 				$url  = esc_url_raw( trim( (string) wp_unslash( $_POST['url'] ?? '' ) ) );
-				$base = esc_url_raw( trim( (string) wp_unslash( $_POST['base'] ?? '' ) ) );
 				$code = in_array( (int) ( $_POST['code'] ?? 307 ), array( 301, 302, 307 ), true ) ? (int) $_POST['code'] : 307;
 				$orig = gasf_sl_slug( sanitize_text_field( wp_unslash( $_POST['orig'] ?? '' ) ) );
-				// A shortlink fires at template_redirect before the page renders,
-				// so a slug that collides with a real page SILENTLY shadows it —
-				// /dinner-night the shortlink would eat /dinner-night the page,
-				// and nothing anywhere would say why the page stopped loading.
-				// Refuse the collision at save time, where it is cheap and visible.
-				$collides = '' !== $slug && (
-					url_to_postid( home_url( '/' . $slug . '/' ) )
-					|| get_page_by_path( $slug, OBJECT, array( 'page', 'post' ) )
-				);
-				if ( $collides ) {
-					echo '<div class="notice notice-error"><p><code>/' . esc_html( $slug ) . '</code> is a real page or post on this site — a short link there would silently replace it. Pick a different slug.</p></div>';
+				// Refuse a slug that is already a real URL — see gasf_sl_collides().
+				$collides = gasf_sl_collides( $slug );
+				if ( '' !== $collides ) {
+					echo '<div class="notice notice-error"><p><code>/' . esc_html( $slug ) . '</code> is already ' . esc_html( $collides ) . ' on this site — a short link there would silently replace it. Pick a different slug.</p></div>';
 				} elseif ( '' !== $slug && '' !== $url ) {
 					$all = gasf_sl_get();
 					// preserve clicks if editing an existing slug
@@ -92,7 +118,7 @@ if ( gasf_site_enabled( 'gasf_site_enable_shortlinks' ) ) {
 						$s = gasf_sl_slug( $l['slug'] ?? '' );
 						return 0 !== strcasecmp( $s, $slug ) && 0 !== strcasecmp( $s, $orig );
 					} ) );
-					$all[] = array( 'slug' => $slug, 'url' => $url, 'base' => $base ?: untrailingslashit( home_url() ), 'code' => $code, 'clicks' => $clicks, 'created' => time() );
+					$all[] = array( 'slug' => $slug, 'url' => $url, 'code' => $code, 'clicks' => $clicks, 'created' => time() );
 					gasf_sl_save( $all );
 					echo '<div class="notice notice-success is-dismissible"><p>Saved <code>/' . esc_html( $slug ) . '</code>.</p></div>';
 				} else {
@@ -126,12 +152,12 @@ if ( gasf_site_enabled( 'gasf_site_enable_shortlinks' ) ) {
 					'Nothing external. Extra domains (like <code>gtbay.club</code>) just need their DNS pointed/301\'d at this site — already true for all three.',
 				),
 				'fields' => array(
-					'Base domain + slug' => 'The short URL. The domain dropdown is <em>display-only</em> (it controls which domain the copy button gives you — pick the shortest for print); the <strong>slug</strong> is the part after the slash, e.g. <code>join</code>. Case-insensitive. Keep it short and human: it will be read off flyers and spoken aloud.',
+					'Slug'               => 'The part after the slash, e.g. <code>join</code>. Case-insensitive. Keep it short and human: it will be read off flyers and spoken aloud. A slug that is already a real URL on the site (a page, an event, an archive, a feed) is refused, because the short link would silently replace it.',
 					'Destination URL'    => 'Where the visitor actually lands — any page on this site or an external URL (membership form, ticket page…). This is the only thing to change when a campaign moves.',
 					'Redirect type'      => '<strong>307 Temporary (recommended)</strong> keeps browsers/Google re-checking, so you can re-point the slug later (e.g. /oktoberfest to each year\'s page). <strong>301 Permanent</strong> gets cached hard by browsers — use only for slugs that will never change destination.',
 					'Clicks'             => 'Lifetime click count per link — a rough gauge of which flyers/QR codes actually get used.',
 					'Copy buttons'       => 'One per base domain — copies the full short URL for that domain to your clipboard.',
-					'Base domains list'  => 'The domains offered on the copy buttons. Add one here after pointing a new domain at the site; removing one never breaks existing links (they work on every domain regardless).',
+					'Base domains list'  => 'The domains offered on the copy buttons — every link gets one button per domain. Add one here after pointing a new domain at the site; removing one never breaks existing links (they work on every domain regardless).',
 				),
 				'notes'  => 'Short links are for <em>outbound sharing</em>. For fixing old/broken URLs coming <em>into</em> the site, use the <strong>Redirects</strong> tab instead.',
 			) );
@@ -142,7 +168,7 @@ if ( gasf_site_enabled( 'gasf_site_enable_shortlinks' ) ) {
 		<form method="post"><?php wp_nonce_field( 'gasf_sl' ); ?>
 			<input type="hidden" name="orig" id="sl_orig" value="">
 			<table class="form-table" role="presentation">
-				<tr><th scope="row">Base domain</th><td><select name="base" id="sl_base"><?php foreach ( $bases as $b ) : ?><option value="<?php echo esc_attr( $b ); ?>"><?php echo esc_html( $b ); ?></option><?php endforeach; ?></select> <span class="description">/</span> <input type="text" name="slug" id="sl_slug" class="regular-text code" placeholder="join" style="width:180px"></td></tr>
+				<tr><th scope="row">Slug</th><td><span class="description"><?php echo esc_html( $here ); ?>/</span><input type="text" name="slug" id="sl_slug" class="regular-text code" placeholder="join" style="width:180px"> <span class="description">— works on every base domain below</span></td></tr>
 				<tr><th scope="row">Destination URL</th><td><input type="url" name="url" id="sl_url" class="large-text code" placeholder="https://…"></td></tr>
 				<tr><th scope="row">Redirect type</th><td><select name="code" id="sl_code"><option value="307">307 Temporary (recommended — re-pointable)</option><option value="302">302 Temporary</option><option value="301">301 Permanent</option></select></td></tr>
 			</table>
@@ -168,7 +194,7 @@ if ( gasf_site_enabled( 'gasf_site_enable_shortlinks' ) ) {
 					<td style="white-space:nowrap">
 						<button type="button" class="button button-small gasf-sl-edit"
 							data-slug="<?php echo esc_attr( $l['slug'] ); ?>" data-url="<?php echo esc_attr( $l['url'] ?? '' ); ?>"
-							data-base="<?php echo esc_attr( $l['base'] ?? '' ); ?>" data-code="<?php echo esc_attr( $l['code'] ?? 307 ); ?>">Edit</button>
+							data-code="<?php echo esc_attr( $l['code'] ?? 307 ); ?>">Edit</button>
 						<form method="post" style="display:inline;margin:0" onsubmit="return confirm('Delete this short link?');"><?php wp_nonce_field( 'gasf_sl' ); ?><input type="hidden" name="slug" value="<?php echo esc_attr( $l['slug'] ); ?>"><button name="gasf_sl_action" value="delete" class="button-link-delete">Delete</button></form>
 					</td>
 				</tr>
@@ -188,7 +214,7 @@ if ( gasf_site_enabled( 'gasf_site_enable_shortlinks' ) ) {
 
 		<script>
 		jQuery(function($){
-			$('.gasf-sl-edit').on('click',function(){var b=$(this);$('#sl_orig').val(b.data('slug'));$('#sl_slug').val(b.data('slug'));$('#sl_url').val(b.attr('data-url'));$('#sl_base').val(b.attr('data-base'));$('#sl_code').val(b.attr('data-code'));$('#sl_reset').show();$('html,body').animate({scrollTop:0},250);});
+			$('.gasf-sl-edit').on('click',function(){var b=$(this);$('#sl_orig').val(b.data('slug'));$('#sl_slug').val(b.data('slug'));$('#sl_url').val(b.attr('data-url'));$('#sl_code').val(b.attr('data-code'));$('#sl_reset').show();$('html,body').animate({scrollTop:0},250);});
 			$('#sl_reset').on('click',function(){$('#sl_orig,#sl_slug,#sl_url').val('');$(this).hide();});
 			$('.gasf-sl-copy').on('click',function(){navigator.clipboard&&navigator.clipboard.writeText($(this).data('u'));});
 		});

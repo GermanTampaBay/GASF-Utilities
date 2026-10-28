@@ -50,10 +50,13 @@ if ( gasf_site_enabled( 'gasf_site_enable_gametv' ) ) {
 	}
 
 	/**
-	 * Saved pinned tiles. Seeds the two historical tiles on first run so
-	 * enabling the module reproduces the kiosk's existing behaviour exactly
-	 * (World Cup → DirecTV ch 13; Bayern → Fandango app, Champions League
-	 * fixtures → Paramount+).
+	 * Saved pinned tiles. Until the option is first saved, the two historical
+	 * tiles are returned (not written — a getter that wrote to the database,
+	 * including from the public REST route, was a side effect nobody asked
+	 * for), so enabling the module reproduces the kiosk's existing behaviour
+	 * exactly (World Cup → DirecTV ch 13; Bayern → Fandango app, Champions
+	 * League fixtures → Paramount+). The first "Save pinned games" persists
+	 * whatever is on screen, defaults included.
 	 */
 	function gasf_gametv_tiles() {
 		$tiles = get_option( 'gasf_gametv_tiles', null );
@@ -74,7 +77,6 @@ if ( gasf_site_enabled( 'gasf_site_enable_gametv' ) ) {
 					),
 				),
 			);
-			update_option( 'gasf_gametv_tiles', $tiles, false );
 		}
 		foreach ( $tiles as &$t ) { $t['priority'] = (int) ( $t['priority'] ?? 0 ); }
 		unset( $t );
@@ -135,10 +137,6 @@ if ( gasf_site_enabled( 'gasf_site_enable_gametv' ) ) {
 	}
 
 	/**
-	 * Upcoming published gasf_event posts whose title contains the keyword,
-	 * soonest first. Same query shape as [world_cup_schedule].
-	 */
-	/**
 	 * What the tablet will actually do for one game — same order it uses:
 	 * per-event override → first matching tile rule → tile default.
 	 * Returns input, channel, and a human 'via' so the admin can see WHY.
@@ -156,12 +154,16 @@ if ( gasf_site_enabled( 'gasf_site_enable_gametv' ) ) {
 		return array( 'input' => $tile['input'], 'channel' => $tile['channel'], 'via' => 'tile default' );
 	}
 
+	/**
+	 * Upcoming published gasf_event posts whose title contains the keyword,
+	 * soonest first. Same query shape as [world_cup_schedule].
+	 */
 	function gasf_gametv_upcoming( $keyword, $limit = 15 ) {
 		if ( '' === $keyword ) { return array(); }
 		global $wpdb;
 		$ids = $wpdb->get_col( $wpdb->prepare(
-			"SELECT p.ID FROM {$wpdb->prefix}posts p
-			 JOIN {$wpdb->prefix}postmeta ts ON ts.post_id=p.ID AND ts.meta_key='_gasf_start_ts'
+			"SELECT p.ID FROM {$wpdb->posts} p
+			 JOIN {$wpdb->postmeta} ts ON ts.post_id=p.ID AND ts.meta_key='_gasf_start_ts'
 			 WHERE p.post_type='gasf_event' AND p.post_status='publish'
 			 AND p.post_title LIKE %s AND ts.meta_value+0 >= %d
 			 ORDER BY ts.meta_value+0 ASC LIMIT %d",

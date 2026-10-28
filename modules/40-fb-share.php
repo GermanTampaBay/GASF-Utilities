@@ -30,20 +30,44 @@ if ( gasf_site_enabled( 'gasf_site_enable_fbshare' ) ) {
 
 	/* ============================ config ============================ */
 
+	/** Settings (option gasf_fbshare). Runtime state lives apart — see gasf_fbs_state(). */
 	function gasf_fbs_cfg() {
-		return wp_parse_args( (array) get_option( 'gasf_fbshare', array() ), array(
-			'tag'      => '#gasfweb',  // trigger hashtag (whole word, case-insensitive)
-			'status'   => 'draft',     // 'draft' | 'publish'
-			'ai_title' => '1',         // Claude writes the post title (needs the site-wide Anthropic key)
-			'category' => 0,           // term_id, 0 = site default
-			'author'   => 0,           // user id, 0 = first admin found at import time
-			'link'     => '1',         // append "Originally posted on Facebook" attribution
-			'last'     => array(),     // last-scan status { ts, ok, msg, seen, imported }
-			'log'      => array(),     // capped ring of recent imports { fb_id, post_id, ts, title }
+		$c = wp_parse_args( (array) get_option( 'gasf_fbshare', array() ), array(
+			'tag'           => '#gasfweb',  // trigger hashtag (whole word, case-insensitive)
+			'status'        => 'draft',     // 'draft' | 'publish'
+			'ai_title'      => '1',         // Claude writes the post title (needs the site-wide Anthropic key)
+			'category'      => 0,           // term_id, 0 = site default
+			'author'        => 0,           // user id, 0 = first admin found at import time
+			'link'          => '1',         // the footer date links back to the Facebook post
+			'skip_featured' => null,        // '1' = leave the featured image out of the body (themes that already render it)
 		) );
+		// Until 2.8 this was a hidden WP-CLI-only option; honour it until the form is saved once.
+		if ( null === $c['skip_featured'] ) { $c['skip_featured'] = get_option( 'gasf_fbs_skip_featured' ) ? '1' : '0'; }
+		return $c;
 	}
 
-	function gasf_fbs_save( $c ) { update_option( 'gasf_fbshare', $c, false ); }
+	/** Save settings only — runtime state (last scan, import log) is never written here. */
+	function gasf_fbs_save( $c ) {
+		unset( $c['last'], $c['log'] );
+		update_option( 'gasf_fbshare', $c, false );
+	}
+
+	/**
+	 * Runtime state (option gasf_fbshare_state): last-scan status and the
+	 * capped import log. Kept apart from the settings so an hourly scan never
+	 * rewrites the settings row and a settings save never rewrites the log —
+	 * until 2.8 both lived in one option. Reads the pre-2.8 keys out of the
+	 * settings row once, until the first state save.
+	 */
+	function gasf_fbs_state() {
+		$st = get_option( 'gasf_fbshare_state', null );
+		if ( ! is_array( $st ) ) {
+			$legacy = (array) get_option( 'gasf_fbshare', array() );
+			$st     = array( 'last' => (array) ( $legacy['last'] ?? array() ), 'log' => (array) ( $legacy['log'] ?? array() ) );
+		}
+		return wp_parse_args( $st, array( 'last' => array(), 'log' => array() ) );
+	}
+	function gasf_fbs_state_save( $st ) { update_option( 'gasf_fbshare_state', $st, false ); }
 
 	/** Page id + Page token, borrowed from the GASF-Events Facebook feed. */
 	function gasf_fbs_creds() {
@@ -151,7 +175,7 @@ if ( gasf_site_enabled( 'gasf_site_enable_fbshare' ) ) {
 				}
 			} else {
 				$src = (string) ( $a['media']['image']['src'] ?? '' );
-				if ( $src && 'photo' === $type || $src && 'album' === $type ) { $images[] = $src; }
+				if ( $src && in_array( $type, array( 'photo', 'album' ), true ) ) { $images[] = $src; }
 			}
 		}
 		return array( array_values( array_unique( $images ) ), $has_video );
@@ -287,7 +311,7 @@ if ( gasf_site_enabled( 'gasf_site_enable_fbshare' ) ) {
 		// the featured image on single posts): one image block, or a gallery block
 		// when there are several. The featured image still powers archive cards
 		// and OpenGraph previews.
-		$cids = get_option( 'gasf_fbs_skip_featured' ) ? array_slice( $att_ids, 1 ) : $att_ids; // themes that render the featured image on single posts (e.g. Krampus/popularfx) set this so it isn't repeated
+		$cids = ( '1' === (string) $c['skip_featured'] ) ? array_slice( $att_ids, 1 ) : $att_ids; // themes that render the featured image on single posts (e.g. Krampus/popularfx) tick this so it isn't repeated
 		if ( 1 === count( $cids ) ) {
 			$content .= '<!-- wp:image {"id":' . (int) $cids[0] . ',"sizeSlug":"large","linkDestination":"media"} --><figure class="wp-block-image size-large">' . wp_get_attachment_image( $cids[0], 'large' ) . '</figure><!-- /wp:image -->' . "\n";
 		} elseif ( count( $cids ) > 1 ) {
@@ -314,8 +338,9 @@ if ( gasf_site_enabled( 'gasf_site_enable_fbshare' ) ) {
 
 	/** Full scan cycle: fetch → match → dedupe → import. Persists status + log. */
 	function gasf_fbs_scan() {
-		$c  = gasf_fbs_cfg();
-		$st = array( 'ts' => time(), 'ok' => false, 'msg' => '', 'seen' => 0, 'imported' => 0 );
+		$c     = gasf_fbs_cfg();
+		$state = gasf_fbs_state();
+		$st    = array( 'ts' => time(), 'ok' => false, 'msg' => '', 'seen' => 0, 'imported' => 0 );
 
 		// One scan at a time. The hourly cron and the admin "Scan now" button
 		// can genuinely overlap, and the dedupe is check-then-insert — two
@@ -333,7 +358,7 @@ if ( gasf_site_enabled( 'gasf_site_enable_fbshare' ) ) {
 			$posts = gasf_fbs_fetch_posts();
 			if ( is_wp_error( $posts ) ) {
 				$st['msg'] = $posts->get_error_message();
-				$c['last'] = $st; gasf_fbs_save( $c );
+				$state['last'] = $st; gasf_fbs_state_save( $state );
 				return $st;
 			}
 
@@ -345,8 +370,8 @@ if ( gasf_site_enabled( 'gasf_site_enable_fbshare' ) ) {
 				$pid = gasf_fbs_import_post( $raw, $c );
 				if ( ! is_wp_error( $pid ) ) {
 					$st['imported']++;
-					array_unshift( $c['log'], array( 'fb_id' => $fb_id, 'post_id' => $pid, 'ts' => time(), 'title' => get_the_title( $pid ) ) );
-					$c['log'] = array_slice( $c['log'], 0, 20 );
+					array_unshift( $state['log'], array( 'fb_id' => $fb_id, 'post_id' => $pid, 'ts' => time(), 'title' => get_the_title( $pid ) ) );
+					$state['log'] = array_slice( $state['log'], 0, 20 );
 					if ( function_exists( 'gasf_mec_log' ) ) { gasf_mec_log( "fbshare: imported FB {$fb_id} → post {$pid}" ); }
 				} elseif ( function_exists( 'gasf_mec_log' ) ) {
 					gasf_mec_log( 'fbshare: import failed for FB ' . $fb_id . ': ' . $pid->get_error_message() );
@@ -354,7 +379,7 @@ if ( gasf_site_enabled( 'gasf_site_enable_fbshare' ) ) {
 			}
 
 			$st['ok'] = true; $st['msg'] = 'ok';
-			$c['last'] = $st; gasf_fbs_save( $c );
+			$state['last'] = $st; gasf_fbs_state_save( $state );
 			return $st;
 		} finally {
 			gasf_util_unlock( 'gasf_fbs_scan_lock', $lock );
@@ -387,8 +412,10 @@ if ( gasf_site_enabled( 'gasf_site_enable_fbshare' ) ) {
 				$c['ai_title'] = empty( $_POST['ai_title'] ) ? '0' : '1';
 				$c['category'] = (int) ( $_POST['category'] ?? 0 );
 				$c['author']   = (int) ( $_POST['author'] ?? 0 );
-				$c['link']     = empty( $_POST['link'] ) ? '0' : '1';
+				$c['link']          = empty( $_POST['link'] ) ? '0' : '1';
+				$c['skip_featured'] = empty( $_POST['skip_featured'] ) ? '0' : '1';
 				gasf_fbs_save( $c );
+				delete_option( 'gasf_fbs_skip_featured' ); // the hidden pre-2.8 switch is superseded by the checkbox
 				echo '<div class="notice notice-success is-dismissible"><p>Saved.</p></div>';
 			} elseif ( 'scan' === $act ) {
 				$st = gasf_fbs_scan();
@@ -397,8 +424,9 @@ if ( gasf_site_enabled( 'gasf_site_enable_fbshare' ) ) {
 			}
 		}
 
-		$c  = gasf_fbs_cfg();
-		$st = (array) $c['last'];
+		$c     = gasf_fbs_cfg();
+		$state = gasf_fbs_state();
+		$st    = (array) $state['last'];
 		?>
 		<h2>Facebook → Blog Importer</h2>
 		<?php
@@ -416,6 +444,7 @@ if ( gasf_site_enabled( 'gasf_site_enable_fbshare' ) ) {
 					'Category'        => 'Category assigned to every imported post.',
 					'Author'          => 'WordPress user shown as the post author.',
 					'Attribution link'=> 'Every imported post ends with a small line showing the original Facebook post date; this toggle controls whether that date links back to the Facebook post.',
+					'Featured image in body' => 'All photos go into the post body (the main site\'s theme does not show the featured image on single posts). On a theme that does (Krampus), tick <em>Leave the featured image out of the body</em> so the first photo isn\'t shown twice.',
 					'Scan now'        => 'Runs the hourly check immediately.',
 				),
 				'notes'  => 'Videos cannot be downloaded through the API — a post with video gets a "Watch on Facebook" link instead. <strong>Re-import:</strong> deleting/trashing the WP copy makes the next scan pull the Facebook post back in fresh (handy after you rework a FB post — the re-import gets the current text, photos, and a new AI title). <strong>Archive:</strong> switch the WP copy to Draft instead — drafts are never re-imported. Don\'t restore the trashed copy after a re-import or you\'ll have two.',
@@ -446,16 +475,17 @@ if ( gasf_site_enabled( 'gasf_site_enable_fbshare' ) ) {
 				<tr><th scope="row">Category</th><td><?php wp_dropdown_categories( array( 'name' => 'category', 'selected' => (int) $c['category'], 'show_option_none' => '— site default —', 'option_none_value' => 0, 'hide_empty' => 0 ) ); ?></td></tr>
 				<tr><th scope="row">Author</th><td><?php wp_dropdown_users( array( 'name' => 'author', 'selected' => (int) $c['author'], 'show_option_none' => '— first administrator —', 'option_none_value' => 0, 'capability' => 'edit_posts' ) ); ?></td></tr>
 				<tr><th scope="row">Date link</th><td><label><input type="checkbox" name="link" value="1" <?php checked( '1', $c['link'] ); ?>> Footer date links back to the original Facebook post</label></td></tr>
+				<tr><th scope="row">Featured image</th><td><label><input type="checkbox" name="skip_featured" value="1" <?php checked( '1', (string) $c['skip_featured'] ); ?>> Leave the featured image out of the post body</label><p class="description">Tick on a theme that already shows the featured image on single posts, so the first photo isn\'t repeated.</p></td></tr>
 			</table>
 			<p><button name="gasf_fbs_action" value="save" class="button button-primary">Save</button></p>
 		</form>
 
-		<?php if ( $c['log'] ) : ?>
+		<?php if ( $state['log'] ) : ?>
 			<h3 class="title">Recent imports</h3>
 			<table class="widefat striped" style="max-width:720px">
 				<thead><tr><th>When</th><th>Blog post</th><th>FB post id</th></tr></thead>
 				<tbody>
-				<?php foreach ( $c['log'] as $row ) : ?>
+				<?php foreach ( $state['log'] as $row ) : ?>
 					<tr>
 						<td><?php echo esc_html( human_time_diff( (int) $row['ts'] ) ); ?> ago</td>
 						<td><a href="<?php echo esc_url( get_edit_post_link( (int) $row['post_id'] ) ); ?>"><?php echo esc_html( $row['title'] ?: '(untitled)' ); ?></a></td>

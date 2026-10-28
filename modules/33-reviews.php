@@ -302,19 +302,30 @@ if ( gasf_site_enabled( 'gasf_site_enable_reviews' ) ) {
 				list( , $status ) = gasf_reviews_refresh();
 				echo '<div class="notice notice-success is-dismissible"><p>Fetched. ' . esc_html( implode( ' · ', array_map( function ( $k, $v ) { return "$k: $v"; }, array_keys( $status ), $status ) ) ) . '</p></div>';
 			} elseif ( 'addm' === $act ) {
+				$m_date = trim( sanitize_text_field( wp_unslash( $_POST['m_date'] ?? '' ) ) );
+				if ( '' !== $m_date && ! strtotime( $m_date ) ) {
+					// Unparsable dates used to be stored as typed and then rendered
+					// as the CURRENT month (date_i18n() treats a false timestamp as
+					// "now"). Refuse here, where the person can fix it.
+					echo '<div class="notice notice-error"><p>Not added — <code>' . esc_html( $m_date ) . '</code> isn\'t a date I can read. Use something like <code>2026-05-01</code> or <code>May 2026</code>, or leave it blank.</p></div>';
+					$act = 'addm-rejected';
+				}
+			}
+			if ( 'addm' === $act ) {
 				$m = gasf_reviews_manual();
 				$m[] = array(
 					'source' => in_array( $_POST['m_source'] ?? 'facebook', array( 'facebook', 'google', 'tripadvisor', 'other' ), true ) ? $_POST['m_source'] : 'facebook',
 					'author' => sanitize_text_field( wp_unslash( $_POST['m_author'] ?? '' ) ),
 					'rating' => max( 1, min( 5, (int) ( $_POST['m_rating'] ?? 5 ) ) ),
 					'text'   => sanitize_textarea_field( wp_unslash( $_POST['m_text'] ?? '' ) ),
-					'date'   => sanitize_text_field( wp_unslash( $_POST['m_date'] ?? '' ) ),
+					'date'   => $m_date,
 					'url'    => esc_url_raw( wp_unslash( $_POST['m_url'] ?? '' ) ),
 				);
 				update_option( 'gasf_reviews_manual', array_values( $m ), false );
 				delete_option( 'gasf_reviews_cache' ); // force rebuild incl. new curated
 				echo '<div class="notice notice-success is-dismissible"><p>Curated review added.</p></div>';
-			} elseif ( 'delm' === $act ) {
+			}
+			if ( 'delm' === $act ) {
 				$i = (int) ( $_POST['idx'] ?? -1 );
 				$m = gasf_reviews_manual(); if ( isset( $m[ $i ] ) ) { unset( $m[ $i ] ); update_option( 'gasf_reviews_manual', array_values( $m ), false ); delete_option( 'gasf_reviews_cache' ); }
 				echo '<div class="notice notice-success is-dismissible"><p>Removed.</p></div>';
@@ -342,7 +353,7 @@ if ( gasf_site_enabled( 'gasf_site_enable_reviews' ) ) {
 					'Columns'                   => 'Card columns in grid layout (ignored by carousel/list).',
 					'Minimum rating'            => 'Hide reviews below this many stars. 4 keeps the wall positive without looking scrubbed; 1 shows everything.',
 					'Fetch reviews now'         => 'Pulls from both live sources immediately (normally the daily cron does this). The status table above shows each source\'s last result — errors surface there.',
-					'Curated reviews'           => 'Hand-entered reviews: source (sets the badge), star rating, date (free text, e.g. "May 2026"), author, text, and an optional link to the original. Use for Facebook recommendations and any review worth keeping visible permanently — curated entries never expire or get rotated out by the API.',
+					'Curated reviews'           => 'Hand-entered reviews: source (sets the badge), star rating, date (anything PHP can parse, e.g. "2026-05-01" or "May 2026"; blank is fine), author, text, and an optional link to the original. Use for Facebook recommendations and any review worth keeping visible permanently — curated entries never expire or get rotated out by the API.',
 				),
 				'notes'  => 'Yelp is deliberately absent — Yelp killed its free API tier ($229/mo now). If a live source errors, the wall keeps serving the last good cache, so the public page never breaks.',
 			) );

@@ -166,6 +166,7 @@ if ( gasf_site_enabled( 'gasf_site_enable_redirects' ) ) {
 			} elseif ( 'dismiss' === $act ) {
 				$p = gasf_redirects_norm( sanitize_text_field( wp_unslash( $_POST['path'] ?? '' ) ) );
 				$log = gasf_404_log_get(); unset( $log[ $p ] ); update_option( 'gasf_404_log', $log, false );
+				echo '<div class="notice notice-success is-dismissible"><p>Dismissed <code>' . esc_html( $p ) . '</code> from the 404 log.</p></div>';
 			}
 		}
 
@@ -184,7 +185,7 @@ if ( gasf_site_enabled( 'gasf_site_enable_redirects' ) ) {
 				'fields' => array(
 					'From (path on this site)' => 'The incoming URL path to catch, starting with <code>/</code> — e.g. <code>/biergarten</code>. Exact-match on the path (query strings ignored).',
 					'To (path or full URL)'    => 'Where to send the visitor: another path on this site (<code>/the-biergarten/</code>) or a full external URL. Leave the destination out only for 410s.',
-					'Type'                     => '<strong>301 Permanent</strong> — the page moved for good; passes SEO value, browsers cache it (the usual choice). <strong>302 Temporary</strong> — short-term detour you\'ll undo. <strong>410 Gone</strong> — the page is intentionally dead with no replacement; tells Google to drop it from the index faster than a 404.',
+					'Type'                     => '<strong>301 Permanent</strong> — the page moved for good; passes SEO value, browsers cache it (the usual choice). <strong>302 Temporary</strong> — short-term detour you\'ll undo. <strong>307 Temporary</strong> — like 302 but browsers never cache it, so the target can be re-pointed later (what Short Links use). <strong>410 Gone</strong> — the page is intentionally dead with no replacement; tells Google to drop it from the index faster than a 404.',
 					'Hits'                     => 'How many times each redirect has fired — proof of which old URLs are still circulating out there.',
 					'404 log'                  => 'Every broken URL hit recently, with count, last-seen, and referrer (where the bad link lives). Click <strong>→ Redirect</strong> on a row to pre-fill the form and fix it in one step; ✕ dismisses noise (bot scans for wp-login variants etc. are normal and ignorable).',
 				),
@@ -198,7 +199,7 @@ if ( gasf_site_enabled( 'gasf_site_enable_redirects' ) ) {
 			<table class="form-table" role="presentation">
 				<tr><th scope="row"><label for="gr_from">From (path on this site)</label></th><td><input type="text" id="gr_from" name="from" class="regular-text code" placeholder="/old-page"></td></tr>
 				<tr><th scope="row"><label for="gr_to">To (path or full URL)</label></th><td><input type="text" id="gr_to" name="to" class="large-text code" placeholder="/new-page or https://…"></td></tr>
-				<tr><th scope="row">Type</th><td><select name="code"><option value="301">301 Permanent</option><option value="302">302 Temporary</option><option value="410">410 Gone (dead, no target)</option></select></td></tr>
+				<tr><th scope="row">Type</th><td><select name="code"><option value="301">301 Permanent</option><option value="302">302 Temporary</option><option value="307">307 Temporary (re-pointable, never cached)</option><option value="410">410 Gone (dead, no target)</option></select></td></tr>
 			</table>
 			<p><button name="gasf_redir_action" value="add" class="button button-primary">Add redirect</button></p>
 		</form>

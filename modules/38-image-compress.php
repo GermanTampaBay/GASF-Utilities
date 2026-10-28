@@ -31,8 +31,8 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 if ( gasf_site_enabled( 'gasf_site_enable_imgcompress' ) ) {
 
-	define( 'GASF_IMGC_META', '_gasf_imgc' );          // per-attachment result (its absence = candidate)
-	define( 'GASF_IMGC_MAX_NAME', 60 );                // max total filename length incl. "-compressed.webp"
+	if ( ! defined( 'GASF_IMGC_META' ) )     { define( 'GASF_IMGC_META', '_gasf_imgc' ); } // per-attachment result (its absence = candidate)
+	if ( ! defined( 'GASF_IMGC_MAX_NAME' ) ) { define( 'GASF_IMGC_MAX_NAME', 60 ); }       // max total filename length incl. "-compressed.webp"
 
 	function gasf_imgc_settings() {
 		return wp_parse_args( (array) get_option( 'gasf_imgc_settings', array() ), array(
