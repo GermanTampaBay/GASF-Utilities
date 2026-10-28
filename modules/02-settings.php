@@ -58,6 +58,7 @@ function gasf_settings_registry() {
 			array( 'gate' => 'gasf_site_enable_aiseo', 'label' => 'Event SEO (AI)', 'desc' => 'Claude writes meta descriptions for events that lack one. Uses the site-wide Anthropic API key below.', 'tab' => 'aiseo' ),
 			array( 'gate' => 'gasf_site_enable_shortlinks', 'label' => 'Short Links', 'desc' => 'Branded short URLs (<code>/join</code>, <code>/75th</code>…) with click counts.', 'tab' => 'shortlinks' ),
 			array( 'gate' => 'gasf_site_enable_redirects', 'label' => 'Redirects &amp; 404 log', 'desc' => '301/302/410 manager plus the live 404 monitor.', 'tab' => 'redirects' ),
+			array( 'gate' => 'gasf_site_enable_ghours', 'label' => 'Google Business Profile hours', 'desc' => 'Edits the club\'s opening hours on Google Maps / Search (weekly schedule + holiday overrides) through the Business Profile API. OAuth connection lives on its tab.', 'tab' => 'ghours' ),
 		),
 		'Calendars' => array(
 			array( 'gate' => 'gasf_site_enable_gcalprint', 'label' => 'Internal Calendar (print)', 'desc' => 'Secret-link printable month view of the internal Google Calendar. (The ICS&rarr;Google sync itself lives in GASF-Events &rarr; Feeds.)', 'tab' => 'gcal-print' ),
@@ -70,13 +71,16 @@ function gasf_settings_registry() {
 			array( 'gate' => 'gasf_site_enable_recentposts', 'label' => 'Recent posts rail', 'desc' => 'The <code>[gasf_recent_posts]</code> "Latest News" card list on the home-page right rail — surfaces the FB-imported blog posts. Purges the page cache when a post publishes.' ),
 		),
 		'Site hardening & performance' => array(
-			array( 'gate' => 'gasf_site_enable_restenum', 'label' => 'REST user-enumeration block', 'desc' => 'Blocks REST API user listing / author enumeration.' ),
+			array( 'gate' => 'gasf_site_enable_restenum', 'label' => 'User-enumeration block', 'desc' => 'Closes the three ways a scanner harvests login names: the REST <code>/wp/v2/users</code> endpoints, <code>?author=N</code> lookups (404 for visitors; logged-in users are unaffected), and the users sitemap.' ),
 			array( 'gate' => 'gasf_site_enable_secheaders', 'label' => 'Security headers', 'desc' => 'Sends HSTS, <code>nosniff</code>, frame-ancestors/X-Frame-Options, and a Referrer-Policy. Replaced the removed HTTP Headers plugin. HSTS starts at one day on purpose &mdash; raise it with the <code>gasf_hsts_max_age</code> filter once it has run a while.' ),
 			array( 'gate' => 'gasf_site_enable_schema', 'label' => 'Schema JSON-LD', 'desc' => 'Organization + festival Event structured data in <code>&lt;head&gt;</code>.' ),
 			array( 'gate' => 'gasf_site_enable_assetdiet', 'label' => 'Asset diet', 'desc' => 'Drops jQuery Migrate, scopes dFlip to its page, self-hosts theme fonts.' ),
 			array( 'gate' => 'gasf_site_enable_perf', 'label' => 'Performance (LCP &amp; images)', 'desc' => 'Hero preload + right-sizing, image CDN preconnect — the mobile-LCP fixes.' ),
-			array( 'gate' => 'gasf_site_enable_imgcompress', 'label' => 'Image compressor', 'desc' => 'Converts oversized JPEG/PNG uploads to WebP on this server (no quota, no size limit) and rewrites all references. On-demand + optional 4-hourly cron.', 'tab' => 'images' ),
 			array( 'gate' => 'gasf_site_enable_deferjs', 'label' => 'Defer JavaScript', 'desc' => 'Part of the Performance module: adds <code>defer</code> to front-end scripts. Toggle off first if a slider/menu misbehaves.' ),
+		),
+		'Media tools' => array(
+			array( 'gate' => 'gasf_site_enable_imgcompress', 'label' => 'Image compressor', 'desc' => 'Converts oversized JPEG/PNG uploads to WebP on this server (no quota, no size limit) and rewrites all references. On-demand + optional 4-hourly cron (the cron switch is on the Images tab).', 'tab' => 'images' ),
+			array( 'gate' => 'gasf_site_enable_pdf2png', 'label' => 'PDF &rarr; PNG', 'desc' => 'Admin tool: upload a PDF and every page becomes a PNG in the Media Library (Imagick/Ghostscript on this server).', 'tab' => 'pdf2png' ),
 		),
 	);
 	// The MEC-importer-era gates (gasf_mec_enable_cron/defaults/window/recurrence/
@@ -202,15 +206,21 @@ function gasf_settings_tab() {
  * can never clear its own recurring cron — the orphan fires forever with no
  * handler (the same ghost-cron class as the retired gasf_calsync_cron).
  * This file is ungated and always loads, so it clears any gated module's
- * cron whenever that module's gate is off. (38-image-compress reconciles
- * its own cron against its 'cron' setting and isn't listed here.)
+ * cron whenever that module's gate is off.
+ *
+ * Every module that calls wp_schedule_event() must be listed here — a
+ * module's own reconciliation (38-image-compress checks its 'cron' setting)
+ * only runs while the module loads, which is exactly never once its gate is
+ * off. Grep for wp_schedule_event when adding a cron.
  */
 add_action( 'init', function () {
 	$map = array(
-		'gasf_site_enable_instagram' => 'gasf_ig_cron',
-		'gasf_site_enable_reviews'   => 'gasf_reviews_cron',
-		'gasf_site_enable_fbhealth'  => 'gasf_fbh_cron',
-		'gasf_site_enable_aiseo'     => 'gasf_aiseo_cron',
+		'gasf_site_enable_instagram'   => 'gasf_ig_cron',
+		'gasf_site_enable_reviews'     => 'gasf_reviews_cron',
+		'gasf_site_enable_fbhealth'    => 'gasf_fbh_cron',
+		'gasf_site_enable_aiseo'       => 'gasf_aiseo_cron',
+		'gasf_site_enable_fbshare'     => 'gasf_fbs_cron',
+		'gasf_site_enable_imgcompress' => 'gasf_imgc_cron',
 	);
 	foreach ( $map as $gate => $hook ) {
 		if ( function_exists( 'gasf_site_enabled' ) && ! gasf_site_enabled( $gate ) && wp_next_scheduled( $hook ) ) {

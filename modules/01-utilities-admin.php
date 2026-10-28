@@ -125,7 +125,7 @@ function gasf_utilities_overview_tab() {
 	echo '<h3>Runs automatically (no tab)</h3><ul style="list-style:disc;margin-left:22px">';
 	echo '<li><strong>Shortcodes</strong> — <code>[gas_parking]</code>, <code>[world_cup_schedule]</code>, <code>[bundesliga_table]</code>, <code>[bundesliga_scorers]</code>, <code>[bundesliga_top_scorers]</code>, <code>[gasf_instagram]</code>, <code>[gasf_reviews]</code>. (Event lists, the Welton blurb &amp; the home-page hero are native GASF-Events shortcodes: <code>[gasf_events]</code>, <code>[gasf_upcoming_dates]</code>, <code>[gasf_dinner_events]</code>, <code>[gasf_bayern_events]</code>, <code>[gasf_welton_status]</code>, <code>[gas_hero]</code>.)</li>';
 	echo '<li><strong>Schema JSON-LD</strong> — Organization + festival Event markup (migrated from the retired HFCM plugin).</li>';
-	echo '<li><strong>Site hardening</strong> — REST user-listing &amp; author-enumeration blocks, misc content 301s.</li>';
+	echo '<li><strong>Site hardening</strong> — user-enumeration block (REST users endpoints, <code>?author=N</code>, users sitemap) and the security headers.</li>';
 	echo '</ul>';
 
 	echo '<p style="color:#666;margin-top:18px">Git-backed (repo <code>GermanTampaBay/GASF-Utilities</code>); deploy = <code>git pull</code> in <code>/home4/germanta/gasf-muplugin</code>. Never edit these files on the server. Feature gates are <code>gasf_site_enable_*</code> / <code>gasf_mec_enable_*</code> options — toggle them on the <a href="' . $tab( 'settings' ) . '">Settings tab</a> (or <code>wp option update &lt;gate&gt; 0</code>). Related but separate: the <strong>GASF-Events</strong> plugin (events calendar, Facebook feed, Eventbrite publishing — see Events &rarr; Feeds and All Events).</p>';
