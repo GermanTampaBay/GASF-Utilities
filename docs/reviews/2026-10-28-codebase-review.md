@@ -4,6 +4,15 @@ Scope: every file in the repo (`gasf-mec-importer.php`, `deploy/`, all 28 module
 the 404 template, README, .gitignore) — 7,500 lines. All files pass `php -l`.
 No code was changed in this review; each item cites `file:line` on commit `c0a53aa`.
 
+**Status (same day, v2.7.0 on this branch):** fixed 1.1, 1.2, 1.3 (full
+author-enumeration block implemented), 2.1 (`gasf_mec_enabled()` is a
+deprecated alias for one release), 2.2, 2.3, 2.4 (new `modules/03-claude.php`;
+the model is now a site-wide dropdown fed by Anthropic's Models API), 2.5
+(`gasf_util_lock()` in the main file — note that `add_option()` was never
+atomic, so both old locks were weaker than their comments claimed), 5.2, 5.7,
+and the false claims in 3.1's hardening line. The version constant (1.7) now
+tracks the header. Everything else below is still open.
+
 Overall: the code is well above average for a WordPress plugin. Inputs are
 nonced and sanitized, output is escaped, secrets are autoload-off, the
 concurrency bugs that bit in the past have been fixed properly. The problems are

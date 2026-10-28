@@ -18,7 +18,7 @@
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enable_seo' ) : true ) {
+if ( gasf_site_enabled( 'gasf_site_enable_seo' ) ) {
 
 	if ( ! defined( 'GASF_SEO_TYPES' ) ) { define( 'GASF_SEO_TYPES', array( 'post', 'page', 'gasf_event' ) ); }
 

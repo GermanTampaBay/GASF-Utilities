@@ -20,7 +20,7 @@
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enable_ghours' ) : true ) {
+if ( gasf_site_enabled( 'gasf_site_enable_ghours' ) ) {
 
 	define( 'GASF_GH_INFO', 'https://mybusinessbusinessinformation.googleapis.com/v1' );
 	define( 'GASF_GH_ACCT', 'https://mybusinessaccountmanagement.googleapis.com/v1' );

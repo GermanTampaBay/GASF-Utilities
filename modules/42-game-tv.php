@@ -28,7 +28,7 @@
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-if ( gasf_mec_enabled( 'gasf_site_enable_gametv' ) ) {
+if ( gasf_site_enabled( 'gasf_site_enable_gametv' ) ) {
 
 	/* ---------------------------------------------------------------------
 	 * Vocabulary shared by the admin UI, the sanitizer, and the REST route.

@@ -14,7 +14,7 @@
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enable_redirects' ) : true ) {
+if ( gasf_site_enabled( 'gasf_site_enable_redirects' ) ) {
 
 	function gasf_redirects_get() { $r = get_option( 'gasf_redirects', array() ); return is_array( $r ) ? $r : array(); }
 	function gasf_redirects_save( $r ) { update_option( 'gasf_redirects', array_values( $r ), false ); }

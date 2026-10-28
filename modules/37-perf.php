@@ -22,7 +22,7 @@
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 /* ---------------- A) LCP & images ---------------- */
-if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enable_perf' ) : true ) {
+if ( gasf_site_enabled( 'gasf_site_enable_perf' ) ) {
 
 	/** Resolve the hero entry the [gas_hero] shortcode will render (front page only). */
 	function gasf_perf_hero_entry() {
@@ -78,7 +78,7 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 }
 
 /* ---------------- B) Defer JavaScript ---------------- */
-if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enable_deferjs' ) : true ) {
+if ( gasf_site_enabled( 'gasf_site_enable_deferjs' ) ) {
 
 	add_filter( 'script_loader_tag', function ( $tag, $handle ) {
 		if ( is_admin() ) { return $tag; }

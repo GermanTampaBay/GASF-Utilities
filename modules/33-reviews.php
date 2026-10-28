@@ -15,7 +15,7 @@
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enable_reviews' ) : true ) {
+if ( gasf_site_enabled( 'gasf_site_enable_reviews' ) ) {
 
 	function gasf_reviews_config() {
 		return wp_parse_args( (array) get_option( 'gasf_reviews_config', array() ), array(

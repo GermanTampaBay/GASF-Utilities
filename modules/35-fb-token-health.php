@@ -23,7 +23,7 @@
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enable_fbhealth' ) : true ) {
+if ( gasf_site_enabled( 'gasf_site_enable_fbhealth' ) ) {
 
 	/** Warn this many days before the data-access window lapses. */
 	if ( ! defined( 'GASF_FBH_WARN_DAYS' ) ) { define( 'GASF_FBH_WARN_DAYS', 5 ); }

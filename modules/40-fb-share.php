@@ -24,7 +24,7 @@
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enable_fbshare' ) : true ) {
+if ( gasf_site_enabled( 'gasf_site_enable_fbshare' ) ) {
 
 	if ( ! defined( 'GASF_FBS_GRAPH' ) ) { define( 'GASF_FBS_GRAPH', 'https://graph.facebook.com/v19.0/' ); }
 
@@ -34,7 +34,7 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 		return wp_parse_args( (array) get_option( 'gasf_fbshare', array() ), array(
 			'tag'      => '#gasfweb',  // trigger hashtag (whole word, case-insensitive)
 			'status'   => 'draft',     // 'draft' | 'publish'
-			'ai_title' => '1',         // Claude Haiku writes the post title (needs site-wide Anthropic key)
+			'ai_title' => '1',         // Claude writes the post title (needs the site-wide Anthropic key)
 			'category' => 0,           // term_id, 0 = site default
 			'author'   => 0,           // user id, 0 = first admin found at import time
 			'link'     => '1',         // append "Originally posted on Facebook" attribution
@@ -194,47 +194,26 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 
 	/* ============================ AI title ============================ */
 
-	/** Anthropic key, resolved like module 34: site-wide first, aiseo legacy fallback. */
-	function gasf_fbs_anthropic_key() {
-		$key = (string) get_option( 'gasf_anthropic_key', '' );
-		if ( '' === $key ) {
-			$aiseo = (array) get_option( 'gasf_aiseo_config', array() );
-			$key   = (string) ( $aiseo['key'] ?? '' );
-		}
-		return $key;
-	}
-
 	/**
-	 * Ask Claude Haiku for a headline (same key module 34 uses). Returns the
-	 * title or '' on any failure, so the caller can always fall back to the
-	 * first-line heuristic.
+	 * Ask Claude for a headline, through the shared client (site-wide key +
+	 * model, Settings tab). Returns the title or '' on any failure, so the
+	 * caller can always fall back to the first-line heuristic.
 	 */
 	function gasf_fbs_ai_title( $message ) {
-		$key = gasf_fbs_anthropic_key();
 		$message = trim( (string) $message );
-		if ( '' === $key || '' === $message ) { return ''; }
-		$r = wp_remote_post( 'https://api.anthropic.com/v1/messages', array(
-			'timeout' => 30,
-			'headers' => array(
-				'x-api-key'         => $key,
-				'anthropic-version' => '2023-06-01',
-				'content-type'      => 'application/json',
-			),
-			'body'    => wp_json_encode( array(
-				'model'      => 'claude-haiku-4-5-20251001',
-				'max_tokens' => 100,
-				'messages'   => array( array( 'role' => 'user', 'content' =>
-					"Write a blog-post headline for the German-American Society's website, summarizing this Facebook post. " .
-					"If you name the club, call it the German-American Society -- never German-American Society of Tampa Bay, which is not its name. " .
-					"Under 70 characters. Same language as the post (English titles may keep German words like Biergarten or Stammtisch). " .
-					"No hashtags, no quotes, no trailing period. Reply with the headline only.\n\n" .
-					mb_substr( $message, 0, 4000 )
-				) ),
-			) ),
-		) );
-		if ( is_wp_error( $r ) || 200 !== (int) wp_remote_retrieve_response_code( $r ) ) { return ''; }
-		$b = json_decode( wp_remote_retrieve_body( $r ), true );
-		$t = gasf_fix_club_name( trim( (string) ( $b['content'][0]['text'] ?? '' ) ) );
+		if ( '' === gasf_anthropic_key() || '' === $message ) { return ''; }
+		$t = gasf_claude_text(
+			"Write a blog-post headline for the German-American Society's website, summarizing this Facebook post. " .
+			"If you name the club, call it the German-American Society -- never German-American Society of Tampa Bay, which is not its name. " .
+			"Under 70 characters. Same language as the post (English titles may keep German words like Biergarten or Stammtisch). " .
+			"No hashtags, no quotes, no trailing period. Reply with the headline only.\n\n" .
+			mb_substr( $message, 0, 4000 ),
+			100
+		);
+		if ( is_wp_error( $t ) ) {
+			if ( function_exists( 'gasf_mec_log' ) ) { gasf_mec_log( 'fbshare: AI title failed: ' . $t->get_error_message() ); }
+			return '';
+		}
 		$t = trim( $t, "\"'“”‘’ \t\r\n" );
 		if ( '' === $t || mb_strlen( $t ) > 110 || false !== strpos( $t, "\n" ) ) { return ''; } // refuse rambling output
 		return $t;
@@ -248,7 +227,7 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 		$message = gasf_fbs_strip_tag( (string) ( $raw['message'] ?? '' ), $c['tag'] );
 		$link    = (string) ( $raw['permalink_url'] ?? '' );
 
-		// Title: Claude Haiku headline when enabled + key present; otherwise (or on
+		// Title: Claude headline when enabled + key present; otherwise (or on
 		// any AI failure) fall back to the first line of the message.
 		$title = ( '1' === $c['ai_title'] ) ? gasf_fbs_ai_title( $message ) : '';
 		$body  = $message;
@@ -341,25 +320,11 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 		// One scan at a time. The hourly cron and the admin "Scan now" button
 		// can genuinely overlap, and the dedupe is check-then-insert — two
 		// concurrent scans both pass gasf_fbs_existing_post() for the same FB
-		// post and both import it. add_option is an INSERT against the
-		// option_name UNIQUE key, so exactly one concurrent caller wins; the
-		// stale-break is compare-and-delete so two breakers cannot each clear
-		// the other's fresh lock. (Same pattern as the Email CRM sync lock.)
-		global $wpdb;
-		$held = get_option( 'gasf_fbs_scan_lock' );
-		if ( $held && ( time() - (int) $held ) < 5 * MINUTE_IN_SECONDS ) {
-			$st['msg'] = 'another scan is already running';
-			return $st;
-		}
-		if ( $held ) {
-			$wpdb->query( $wpdb->prepare(
-				"DELETE FROM {$wpdb->options} WHERE option_name = %s AND option_value = %s",
-				'gasf_fbs_scan_lock', (string) $held
-			) );
-			wp_cache_delete( 'gasf_fbs_scan_lock', 'options' );
-			wp_cache_delete( 'alloptions', 'options' );
-		}
-		if ( ! add_option( 'gasf_fbs_scan_lock', (string) time(), '', false ) ) {
+		// post and both import it. Shared lock (gasf-mec-importer.php): a raw
+		// INSERT IGNORE on the option row, so exactly one caller wins; a lock
+		// untouched for five minutes is broken with a compare-and-delete.
+		$lock = gasf_util_lock( 'gasf_fbs_scan_lock', 5 * MINUTE_IN_SECONDS );
+		if ( ! $lock ) {
 			$st['msg'] = 'another scan is already running';
 			return $st;
 		}
@@ -392,7 +357,7 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 			$c['last'] = $st; gasf_fbs_save( $c );
 			return $st;
 		} finally {
-			delete_option( 'gasf_fbs_scan_lock' );
+			gasf_util_unlock( 'gasf_fbs_scan_lock', $lock );
 		}
 	}
 
@@ -447,7 +412,7 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 				'fields' => array(
 					'Trigger hashtag' => 'The tag that marks a Facebook post for import. Pick something that would never be typed organically — <code>#share</code> shows up in normal posts ("please #share!") and would import things you didn\'t mean to.',
 					'New post status' => '<strong>Draft</strong> = imported posts wait for a human to hit Publish (recommended while trialing). <strong>Publish</strong> = fully automatic.',
-					'AI title'        => 'Claude Haiku reads the post and writes a proper headline (uses the site-wide Anthropic key from the Settings tab; costs a fraction of a cent per import). If the key is missing or the call fails, the first line of the Facebook post is used instead.',
+					'AI title'        => 'Claude reads the post and writes a proper headline (uses the site-wide Anthropic key and model from the Settings tab; costs a fraction of a cent per import). If the key is missing or the call fails, the first line of the Facebook post is used instead.',
 					'Category'        => 'Category assigned to every imported post.',
 					'Author'          => 'WordPress user shown as the post author.',
 					'Attribution link'=> 'Every imported post ends with a small line showing the original Facebook post date; this toggle controls whether that date links back to the Facebook post.',
@@ -477,7 +442,7 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 					<label><input type="radio" name="status" value="draft" <?php checked( 'draft', $c['status'] ); ?>> Draft (review before publishing)</label><br>
 					<label><input type="radio" name="status" value="publish" <?php checked( 'publish', $c['status'] ); ?>> Publish immediately</label>
 				</td></tr>
-				<tr><th scope="row">AI title</th><td><label><input type="checkbox" name="ai_title" value="1" <?php checked( '1', $c['ai_title'] ); ?>> Let Claude Haiku write the headline</label><?php if ( ! gasf_fbs_anthropic_key() ) { echo ' <span style="color:#b32d2e">(no Anthropic key found — falls back to first line)</span>'; } ?></td></tr>
+				<tr><th scope="row">AI title</th><td><label><input type="checkbox" name="ai_title" value="1" <?php checked( '1', $c['ai_title'] ); ?>> Let Claude write the headline</label> <?php echo gasf_anthropic_key() ? '<span class="description">(model <code>' . esc_html( gasf_anthropic_model() ) . '</code>, Settings tab)</span>' : '<span style="color:#b32d2e">(no Anthropic key found — falls back to first line)</span>'; ?></td></tr>
 				<tr><th scope="row">Category</th><td><?php wp_dropdown_categories( array( 'name' => 'category', 'selected' => (int) $c['category'], 'show_option_none' => '— site default —', 'option_none_value' => 0, 'hide_empty' => 0 ) ); ?></td></tr>
 				<tr><th scope="row">Author</th><td><?php wp_dropdown_users( array( 'name' => 'author', 'selected' => (int) $c['author'], 'show_option_none' => '— first administrator —', 'option_none_value' => 0, 'capability' => 'edit_posts' ) ); ?></td></tr>
 				<tr><th scope="row">Date link</th><td><label><input type="checkbox" name="link" value="1" <?php checked( '1', $c['link'] ); ?>> Footer date links back to the original Facebook post</label></td></tr>

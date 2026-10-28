@@ -7,7 +7,7 @@
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-if ( gasf_mec_enabled( 'gasf_mec_enable_wc_schedule' ) ) {
+if ( gasf_site_enabled( 'gasf_mec_enable_wc_schedule' ) ) {
 
 	function gasf_wc_schedule_flag( $name ) {
 		$has_usa = stripos( $name, 'USA' ) !== false || stripos( $name, 'United States' ) !== false;

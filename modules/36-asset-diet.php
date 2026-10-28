@@ -17,7 +17,7 @@
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enable_assetdiet' ) : true ) {
+if ( gasf_site_enabled( 'gasf_site_enable_assetdiet' ) ) {
 
 	/* 1. jQuery Migrate — front end only. */
 	add_action( 'wp_default_scripts', function ( $scripts ) {

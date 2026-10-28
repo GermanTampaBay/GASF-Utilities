@@ -23,7 +23,7 @@
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enable_instagram' ) : true ) {
+if ( gasf_site_enabled( 'gasf_site_enable_instagram' ) ) {
 
 	define( 'GASF_IG_GRAPH', 'https://graph.instagram.com/v21.0' );
 	define( 'GASF_IG_DIR', 'gasf-ig' ); // under uploads/

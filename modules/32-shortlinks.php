@@ -16,7 +16,7 @@
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enable_shortlinks' ) : true ) {
+if ( gasf_site_enabled( 'gasf_site_enable_shortlinks' ) ) {
 
 	function gasf_sl_get() { $r = get_option( 'gasf_shortlinks', array() ); return is_array( $r ) ? $r : array(); }
 	function gasf_sl_save( $r ) { update_option( 'gasf_shortlinks', array_values( $r ), false ); }

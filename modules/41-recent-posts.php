@@ -21,7 +21,7 @@
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enable_recentposts' ) : true ) {
+if ( gasf_site_enabled( 'gasf_site_enable_recentposts' ) ) {
 
 	add_shortcode( 'gasf_recent_posts', 'gasf_rp_shortcode' );
 	function gasf_rp_shortcode( $atts ) {

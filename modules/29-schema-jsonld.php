@@ -16,7 +16,7 @@
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enable_schema' ) : true ) {
+if ( gasf_site_enabled( 'gasf_site_enable_schema' ) ) {
 
 	add_action( 'wp_head', 'gasf_schema_output', 20 );
 

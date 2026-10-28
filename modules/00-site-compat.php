@@ -1,9 +1,9 @@
 <?php
 /**
- * Site compatibility shim — provides the gate helper that the migrated
- * GASF_Site modules (rest-enum, bundesliga, print button, redirects, parking)
- * rely on, now that they live in this unified "GASF Utilities" plugin.
- * Guarded so it can never collide if the old gasf-site.php loader is present.
+ * Site compatibility shim — small helpers every module may rely on, loaded
+ * first by the glob. The gate helper gasf_site_enabled() itself now lives in
+ * gasf-mec-importer.php (defined before any module loads); GASF_SITE_VERSION
+ * stays for anything outside this repo that checks it.
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
@@ -30,12 +30,5 @@ if ( ! function_exists( 'gasf_fix_club_name' ) ) {
 			'German-American Society',
 			(string) $text
 		);
-	}
-}
-
-if ( ! function_exists( 'gasf_site_enabled' ) ) {
-	function gasf_site_enabled( $option, $default = '1' ) {
-		$v = get_option( $option, $default );
-		return ! ( $v === '0' || $v === 0 || $v === false || $v === 'false' );
 	}
 }

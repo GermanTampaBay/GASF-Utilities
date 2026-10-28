@@ -10,50 +10,25 @@
  * then serves it.
  *
  * Runs on demand (admin button) and a small daily cron backfill. The API key
- * lives server-side (autoload off) and is never emitted to the front end.
+ * and model are the site-wide ones (Settings tab), through the shared client
+ * in modules/03-claude.php.
  *
  * Gate: gasf_site_enable_aiseo (default ON).
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enable_aiseo' ) : true ) {
+if ( gasf_site_enabled( 'gasf_site_enable_aiseo' ) ) {
 
+	/**
+	 * Module settings. 'key' and 'model' are the site-wide values resolved by
+	 * modules/03-claude.php (which still honours this option's pre-2.3 key and
+	 * pre-2.7 model as fallbacks); only 'batch' is this module's own.
+	 */
 	function gasf_aiseo_cfg() {
-		$c = wp_parse_args( (array) get_option( 'gasf_aiseo_config', array() ), array(
-			'key'   => '',
-			'model' => 'claude-haiku-4-5-20251001',
-			'batch' => 12,
-		) );
-		// The site-wide key (Settings tab, option gasf_anthropic_key) wins; the
-		// old per-module key stays as a fallback for installs that never set it.
-		$g = (string) get_option( 'gasf_anthropic_key', '' );
-		if ( '' !== $g ) { $c['key'] = $g; }
+		$c = wp_parse_args( (array) get_option( 'gasf_aiseo_config', array() ), array( 'batch' => 12 ) );
+		$c['key']   = gasf_anthropic_key();
+		$c['model'] = gasf_anthropic_model();
 		return $c;
-	}
-
-	/** Call the Anthropic Messages API; return generated text or WP_Error. */
-	function gasf_aiseo_call( $key, $model, $prompt ) {
-		if ( ! $key ) { return new WP_Error( 'nokey', 'No Anthropic API key set.' ); }
-		$r = wp_remote_post( 'https://api.anthropic.com/v1/messages', array(
-			'timeout' => 30,
-			'headers' => array(
-				'x-api-key'         => $key,
-				'anthropic-version' => '2023-06-01',
-				'content-type'      => 'application/json',
-			),
-			'body'    => wp_json_encode( array(
-				'model'      => $model,
-				'max_tokens' => 200,
-				'messages'   => array( array( 'role' => 'user', 'content' => $prompt ) ),
-			) ),
-		) );
-		if ( is_wp_error( $r ) ) { return $r; }
-		$code = (int) wp_remote_retrieve_response_code( $r );
-		$b    = json_decode( wp_remote_retrieve_body( $r ), true );
-		if ( $code < 200 || $code >= 300 ) {
-			return new WP_Error( 'api', 'Anthropic HTTP ' . $code . ': ' . ( $b['error']['message'] ?? substr( wp_remote_retrieve_body( $r ), 0, 140 ) ) );
-		}
-		return gasf_fix_club_name( trim( (string) ( $b['content'][0]['text'] ?? '' ) ) );
 	}
 
 	function gasf_aiseo_prompt( $title, $content ) {
@@ -128,7 +103,7 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 			if ( '' === $desc ) {
 				$pid     = (int) $wpdb->get_var( $wpdb->prepare( "SELECT ID FROM {$wpdb->posts} WHERE post_type='gasf_event' AND post_status='publish' AND post_title=%s ORDER BY ID DESC LIMIT 1", $title ) );
 				$content = $pid ? get_post( $pid )->post_content : '';
-				$desc    = gasf_aiseo_call( $cfg['key'], $cfg['model'], gasf_aiseo_prompt( $title, $content ) );
+				$desc    = gasf_claude_text( gasf_aiseo_prompt( $title, $content ), 200 );
 				if ( is_wp_error( $desc ) ) { $errors[] = $title . ': ' . $desc->get_error_message(); $desc = ''; }
 				else {
 					$desc = trim( $desc, " \"'\n\r\t" );
@@ -183,15 +158,13 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 			$act = sanitize_text_field( wp_unslash( $_POST['gasf_aiseo_action'] ) );
 			if ( 'save' === $act ) {
 				// Save to the RAW option (not gasf_aiseo_cfg(), which merges in the
-				// site-wide key) so the global key never gets copied in here.
+				// site-wide key + model) so neither gets copied in here.
 				$c = (array) get_option( 'gasf_aiseo_config', array() );
-				$c['model'] = sanitize_text_field( wp_unslash( $_POST['model'] ?? ( $c['model'] ?? '' ) ) ) ?: 'claude-haiku-4-5-20251001';
 				$c['batch'] = max( 1, min( 50, (int) ( $_POST['batch'] ?? 12 ) ) );
 				update_option( 'gasf_aiseo_config', $c, false );
 				echo '<div class="notice notice-success is-dismissible"><p>Saved.</p></div>';
 			} elseif ( 'test' === $act ) {
-				$c = gasf_aiseo_cfg();
-				$d = gasf_aiseo_call( $c['key'], $c['model'], gasf_aiseo_prompt( 'Euchre Night', 'Every third Thursday of the month. Cards, cold beer, and Gemütlichkeit. Free to play, all welcome.' ) );
+				$d = gasf_claude_text( gasf_aiseo_prompt( 'Euchre Night', 'Every third Thursday of the month. Cards, cold beer, and Gemütlichkeit. Free to play, all welcome.' ), 200 );
 				echo '<div class="notice notice-' . ( is_wp_error( $d ) ? 'error' : 'success' ) . '"><p>' . ( is_wp_error( $d ) ? esc_html( $d->get_error_message() ) : 'Sample: ' . esc_html( $d ) ) . '</p></div>';
 			} elseif ( 'run' === $act ) {
 				$res = gasf_aiseo_run( gasf_aiseo_cfg()['batch'] );
@@ -216,9 +189,9 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 				),
 				'fields' => array(
 					'Anthropic API key' => 'The <strong>site-wide</strong> Claude key — set it once on the <strong>Settings</strong> tab; this tab just shows whether one is saved.',
-					'Model'             => 'Which Claude model writes the copy. The default Haiku model is fast, cheap, and plenty for meta descriptions; use a Sonnet model for richer phrasing at higher cost.',
+					'Model'             => 'The <strong>site-wide</strong> Claude model, also chosen on the <strong>Settings</strong> tab (a dropdown of what the key can use). Haiku-class is plenty for meta descriptions.',
 					'Batch size'        => 'How many event names one click of Generate processes. Keep ≤ ~15 — each name is a live API call and too many can hit the page\'s time limit.',
-					'Save'              => 'Stores model/batch (the API key lives on the Settings tab).',
+					'Save'              => 'Stores the batch size (key and model live on the Settings tab).',
 					'Test (sample)'     => 'One throw-away API call with a sample event to confirm the key + model work. Nothing is saved to any event.',
 					'Generate next N'   => 'Processes the next batch of blank event names and writes their descriptions. Click repeatedly to drain the backlog — the counter above shows what\'s left.',
 				),
@@ -236,7 +209,7 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 		<form method="post"><?php wp_nonce_field( 'gasf_aiseo' ); ?>
 			<table class="form-table" role="presentation">
 				<tr><th scope="row">Anthropic API key</th><td><?php echo $c['key'] ? '<span style="color:#1a7f37">● saved</span>' : '<span style="color:#b3122b">○ not set</span>'; ?> — site-wide key, managed on the <a href="<?php echo esc_url( admin_url( 'admin.php?page=gasf-utilities&tab=settings' ) ); ?>">Settings tab</a>.</td></tr>
-				<tr><th scope="row">Model</th><td><input type="text" name="model" value="<?php echo esc_attr( $c['model'] ); ?>" class="regular-text code"><p class="description">Default <code>claude-haiku-4-5-20251001</code> — fast &amp; cheap for meta descriptions.</p></td></tr>
+				<tr><th scope="row">Model</th><td><code><?php echo esc_html( $c['model'] ); ?></code> — site-wide, chosen on the <a href="<?php echo esc_url( admin_url( 'admin.php?page=gasf-utilities&tab=settings' ) ); ?>">Settings tab</a>.</td></tr>
 				<tr><th scope="row">Batch size</th><td><input type="number" name="batch" value="<?php echo (int) $c['batch']; ?>" min="1" max="50" class="small-text"> event names per click <span class="description">(keep ≤ ~15 to avoid request timeouts)</span></td></tr>
 			</table>
 			<p>

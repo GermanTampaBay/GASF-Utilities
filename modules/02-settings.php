@@ -10,31 +10,16 @@
  * - Per-utility configuration stays on each utility's own tab (Instagram
  *   connection on the Instagram tab, review keys on the Reviews tab, …).
  *   Only settings that affect more than one module belong here.
- * - Global settings: the Anthropic (Claude) API key — option
- *   `gasf_anthropic_key`, read via gasf_anthropic_key(), which falls back to
- *   the legacy per-module key inside `gasf_aiseo_config` so existing installs
- *   keep working untouched.
+ * - Global settings: the Anthropic (Claude) API key and model — options
+ *   `gasf_anthropic_key` / `gasf_anthropic_model`, read through the shared
+ *   client in modules/03-claude.php (which also carries the legacy
+ *   per-module fallbacks so existing installs keep working untouched).
  *
  * Gates are evaluated when the plugin loads, so a toggle takes effect on the
  * NEXT page load; turning a utility off also removes its admin tab (this tab
  * itself is ungated and always available to turn it back on).
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
-
-/**
- * Site-wide Anthropic (Claude) API key. Set on the Settings tab; falls back
- * to the legacy AI-SEO per-module key so nothing breaks on upgrade.
- */
-if ( ! function_exists( 'gasf_anthropic_key' ) ) {
-	function gasf_anthropic_key() {
-		$k = (string) get_option( 'gasf_anthropic_key', '' );
-		if ( '' === $k ) {
-			$legacy = (array) get_option( 'gasf_aiseo_config', array() );
-			$k      = isset( $legacy['key'] ) ? (string) $legacy['key'] : '';
-		}
-		return $k;
-	}
-}
 
 /**
  * Registry of every gated utility: group => rows of
@@ -109,7 +94,7 @@ function gasf_settings_tab() {
 			foreach ( gasf_settings_registry() as $rows ) {
 				foreach ( $rows as $row ) {
 					$new = in_array( $row['gate'], $checked, true ) ? '1' : '0';
-					if ( gasf_mec_enabled( $row['gate'] ) !== ( '1' === $new ) ) { $changed++; }
+					if ( gasf_site_enabled( $row['gate'] ) !== ( '1' === $new ) ) { $changed++; }
 					update_option( $row['gate'], $new );
 				}
 			}
@@ -119,6 +104,7 @@ function gasf_settings_tab() {
 		if ( 'save_global' === $act ) {
 			if ( ! empty( $_POST['anthropic_key_clear'] ) ) {
 				delete_option( 'gasf_anthropic_key' );
+				delete_transient( 'gasf_anthropic_models' ); // the model list belonged to that key
 				// Blank the legacy fallback too, or the old key would silently resurrect.
 				$legacy = (array) get_option( 'gasf_aiseo_config', array() );
 				if ( ! empty( $legacy['key'] ) ) {
@@ -128,13 +114,28 @@ function gasf_settings_tab() {
 				echo '<div class="notice notice-success is-dismissible"><p>Anthropic API key removed.</p></div>';
 			} else {
 				$newkey = trim( sanitize_text_field( wp_unslash( $_POST['anthropic_key'] ?? '' ) ) );
+				$saved  = array();
 				if ( '' !== $newkey ) {
 					update_option( 'gasf_anthropic_key', $newkey, false ); // autoload off: admin/cron use only
-					echo '<div class="notice notice-success is-dismissible"><p>Anthropic API key saved.</p></div>';
-				} else {
-					echo '<div class="notice notice-info is-dismissible"><p>No changes — leaving the key blank keeps the saved one.</p></div>';
+					delete_transient( 'gasf_anthropic_models' );            // a new key may see different models
+					$saved[] = 'API key';
 				}
+				$newmodel = trim( sanitize_text_field( wp_unslash( $_POST['anthropic_model'] ?? '' ) ) );
+				if ( '' !== $newmodel && $newmodel !== gasf_anthropic_model() ) {
+					update_option( 'gasf_anthropic_model', $newmodel, false );
+					$saved[] = 'model → <code>' . esc_html( $newmodel ) . '</code>';
+				}
+				echo $saved
+					? '<div class="notice notice-success is-dismissible"><p>Saved: ' . implode( ', ', $saved ) . '.</p></div>'
+					: '<div class="notice notice-info is-dismissible"><p>No changes — leaving the key blank keeps the saved one.</p></div>';
 			}
+		}
+
+		if ( 'refresh_models' === $act ) {
+			$list = gasf_anthropic_models( true );
+			echo $list['live']
+				? '<div class="notice notice-success is-dismissible"><p>Model list refreshed — ' . count( $list['models'] ) . ' models available to this key.</p></div>'
+				: '<div class="notice notice-warning"><p>Could not fetch the model list: ' . esc_html( $list['error'] ) . '</p></div>';
 		}
 	}
 
@@ -145,7 +146,8 @@ function gasf_settings_tab() {
 			'needs'  => array( 'Nothing — this tab is always available, even when every other utility is off.' ),
 			'fields' => array(
 				'Utility toggles'      => 'ON = the module loads. Toggles apply from the next page load; disabling a utility also removes its admin tab (come back here to restore it). Under the hood each toggle is the module\'s existing gate option, so <code>wp option update &lt;gate&gt; 0</code> still works.',
-				'Anthropic API key'    => 'The site-wide Claude key (<code>sk-ant-…</code> from console.anthropic.com), used by Event SEO (AI) and any future AI utility. Stored server-side, never shown again — the field stays blank once saved; type only to replace, or tick "remove" to delete it.',
+				'Anthropic API key'    => 'The site-wide Claude key (<code>sk-ant-…</code> from console.anthropic.com), used by Event SEO (AI), FB &rarr; Blog titles, and any future AI utility. Stored server-side, never shown again — the field stays blank once saved; type only to replace, or tick "remove" to delete it.',
+				'Claude model'         => 'Which model every Claude-powered utility uses. The list comes live from Anthropic (what this key can use, newest first, cached 12 h) so a newly released model shows up here on its own — click <strong>Refresh model list</strong> to pull it sooner. Haiku-class models are plenty for meta descriptions and headlines and cost the least; newer generations think before answering by default, which is a little slower and dearer per call.',
 			),
 			'notes'  => 'This page manages <em>this site\'s</em> gates only — the main site and the Krampus install each keep their own switchboard (the Krampus copy runs with most main-site utilities off).',
 		) );
@@ -153,6 +155,8 @@ function gasf_settings_tab() {
 
 	/* ---------- global settings ---------- */
 	$key_set = gasf_anthropic_key() !== '';
+	$model   = gasf_anthropic_model();
+	$list    = gasf_anthropic_models();
 	?>
 	<h3 class="title">Global settings <span style="font-weight:400;color:#646970">(shared by more than one utility)</span></h3>
 	<form method="post">
@@ -164,7 +168,26 @@ function gasf_settings_tab() {
 					<?php echo $key_set ? '<span style="color:#1a7f37">● saved</span>' : '<span style="color:#b3122b">○ not set</span>'; ?>
 					<input type="text" name="anthropic_key" value="" class="regular-text code" style="margin-left:8px" placeholder="<?php echo $key_set ? 'saved — leave blank to keep' : 'sk-ant-…'; ?>" autocomplete="off">
 					<label style="margin-left:10px"><input type="checkbox" name="anthropic_key_clear" value="1"> remove saved key</label>
-					<p class="description">Used by <strong>Event SEO (AI)</strong> (and any future Claude-powered utility). Stored server-side only.</p>
+					<p class="description">Used by <strong>Event SEO (AI)</strong> and <strong>FB &rarr; Blog</strong> (and any future Claude-powered utility). Stored server-side only.</p>
+				</td>
+			</tr>
+			<tr>
+				<th scope="row">Claude model</th>
+				<td>
+					<select name="anthropic_model">
+						<?php foreach ( $list['models'] as $id => $label ) : ?>
+							<option value="<?php echo esc_attr( $id ); ?>" <?php selected( $model, $id ); ?>><?php echo esc_html( $label === $id ? $id : $label . ' — ' . $id ); ?></option>
+						<?php endforeach; ?>
+					</select>
+					<button name="gasf_settings_action" value="refresh_models" class="button" style="margin-left:8px">Refresh model list</button>
+					<p class="description">
+						<?php if ( $list['live'] ) : ?>
+							Live from Anthropic — what this key can use, newest first<?php echo $list['ts'] ? ', fetched ' . esc_html( human_time_diff( (int) $list['ts'] ) ) . ' ago' : ''; ?>. New models appear here as Anthropic releases them.
+						<?php else : ?>
+							<span style="color:#996800">Built-in list only — <?php echo esc_html( $list['error'] ); ?></span>
+						<?php endif; ?>
+						Used by every Claude-powered utility. Current: <code><?php echo esc_html( $model ); ?></code>.
+					</p>
 				</td>
 			</tr>
 		</table>
@@ -181,7 +204,7 @@ function gasf_settings_tab() {
 			<table class="widefat striped" style="max-width:960px">
 				<tbody>
 				<?php foreach ( $rows as $row ) :
-					$on = gasf_mec_enabled( $row['gate'] ); ?>
+					$on = gasf_site_enabled( $row['gate'] ); ?>
 					<tr>
 						<td style="width:60px;text-align:center">
 							<input type="checkbox" name="gate[<?php echo esc_attr( $row['gate'] ); ?>]" value="1" <?php checked( $on ); ?> title="<?php echo esc_attr( $row['gate'] ); ?>">
@@ -223,7 +246,7 @@ add_action( 'init', function () {
 		'gasf_site_enable_imgcompress' => 'gasf_imgc_cron',
 	);
 	foreach ( $map as $gate => $hook ) {
-		if ( function_exists( 'gasf_site_enabled' ) && ! gasf_site_enabled( $gate ) && wp_next_scheduled( $hook ) ) {
+		if ( ! gasf_site_enabled( $gate ) && wp_next_scheduled( $hook ) ) {
 			wp_clear_scheduled_hook( $hook );
 		}
 	}
