@@ -71,6 +71,7 @@ function gasf_settings_registry() {
 		),
 		'Site hardening & performance' => array(
 			array( 'gate' => 'gasf_site_enable_restenum', 'label' => 'REST user-enumeration block', 'desc' => 'Blocks REST API user listing / author enumeration.' ),
+			array( 'gate' => 'gasf_site_enable_secheaders', 'label' => 'Security headers', 'desc' => 'Sends HSTS, <code>nosniff</code>, frame-ancestors/X-Frame-Options, and a Referrer-Policy. Replaced the removed HTTP Headers plugin. HSTS starts at one day on purpose &mdash; raise it with the <code>gasf_hsts_max_age</code> filter once it has run a while.' ),
 			array( 'gate' => 'gasf_site_enable_schema', 'label' => 'Schema JSON-LD', 'desc' => 'Organization + festival Event structured data in <code>&lt;head&gt;</code>.' ),
 			array( 'gate' => 'gasf_site_enable_assetdiet', 'label' => 'Asset diet', 'desc' => 'Drops jQuery Migrate, scopes dFlip to its page, self-hosts theme fonts.' ),
 			array( 'gate' => 'gasf_site_enable_perf', 'label' => 'Performance (LCP &amp; images)', 'desc' => 'Hero preload + right-sizing, image CDN preconnect — the mobile-LCP fixes.' ),
