@@ -232,7 +232,7 @@ function gasf_settings_tab() {
  * cron whenever that module's gate is off.
  *
  * Every module that calls wp_schedule_event() must be listed here — a
- * module's own reconciliation (38-image-compress checks its 'cron' setting)
+ * module's own reconciliation (the image compressor checks its 'cron' setting)
  * only runs while the module loads, which is exactly never once its gate is
  * off. Grep for wp_schedule_event when adding a cron.
  */

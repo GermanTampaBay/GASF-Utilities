@@ -25,7 +25,8 @@ add_action( 'admin_menu', function () {
 	add_menu_page( 'GASF Utilities', 'GASF Utilities', 'manage_options', 'gasf-utilities', 'gasf_utilities_render', 'dashicons-admin-tools', 26 );
 }, 9 );
 
-/* register the built-in tabs (modules register theirs on admin_menu too) */
+/* register the built-in tabs (modules register theirs on admin_menu too;
+ * the priority argument is only a fallback — see gasf_utilities_render) */
 add_action( 'admin_menu', function () {
 	gasf_utilities_add_tab( 'overview', 'Overview', 'gasf_utilities_overview_tab', 1 );
 }, 10 );
@@ -73,7 +74,19 @@ function gasf_utilities_render() {
 	if ( ! current_user_can( 'manage_options' ) ) { return; }
 	global $gasf_util_tabs;
 	$tabs = is_array( $gasf_util_tabs ) ? $gasf_util_tabs : array();
-	uasort( $tabs, function ( $a, $b ) { return $a['priority'] <=> $b['priority']; } );
+	// Tab order = the Settings registry's order (Overview, Settings, then each
+	// group in turn), so the bar reads like the switchboard. A tab the registry
+	// does not know falls back to the priority it registered with, at the end.
+	$rank = array( 'overview' => 0, 'settings' => 1 );
+	if ( function_exists( 'gasf_settings_registry' ) ) {
+		$i = 10;
+		foreach ( gasf_settings_registry() as $rows ) {
+			foreach ( $rows as $row ) { if ( ! empty( $row['tab'] ) ) { $rank[ $row['tab'] ] = $i++; } }
+		}
+	}
+	uksort( $tabs, function ( $ka, $kb ) use ( $rank, $tabs ) {
+		return ( $rank[ $ka ] ?? 1000 + $tabs[ $ka ]['priority'] ) <=> ( $rank[ $kb ] ?? 1000 + $tabs[ $kb ]['priority'] );
+	} );
 	$first   = $tabs ? array_key_first( $tabs ) : '';
 	$req      = isset( $_GET['tab'] ) ? sanitize_key( wp_unslash( $_GET['tab'] ) ) : '';
 	$current = ( $req && isset( $tabs[ $req ] ) ) ? $req : $first;
@@ -97,39 +110,36 @@ function gasf_utilities_render() {
 	echo '</div></div>';
 }
 
-/* ---------- Overview tab ---------- */
+/* ---------- Overview tab ----------
+ * Generated from gasf_settings_registry() (modules/02-settings.php), which
+ * is the one list of what this plugin contains. Until 2.8 this was prose
+ * written by hand, and it was six releases behind: 9 of 14 tabs linked. */
 function gasf_utilities_overview_tab() {
-	$tab = function ( $slug ) { return esc_url( admin_url( 'admin.php?page=gasf-utilities&tab=' . $slug ) ); };
-	echo '<p>All custom germantampabay.com functionality lives in this one must-use plugin — every tab above is one self-contained utility. Each tab opens with a collapsible <strong>&#128214; About this utility</strong> panel explaining what it does, what it needs to run, and what every field is for. This Overview is the map. The <a href="' . $tab( 'settings' ) . '"><strong>Settings</strong></a> tab is the switchboard: turn any utility on/off and manage site-wide settings (e.g. the Anthropic API key).</p>';
+	global $gasf_util_tabs;
+	$tabs = is_array( $gasf_util_tabs ) ? $gasf_util_tabs : array();
+	$url  = function ( $slug ) { return esc_url( admin_url( 'admin.php?page=gasf-utilities&tab=' . $slug ) ); };
 
-	// Home-page Heroes + Recurring Heroes moved to the GASF-Events plugin
-	// (Events → Heroes / Recurring Heroes). See the note at the bottom of this page.
+	echo '<p>All custom germantampabay.com functionality lives in this one must-use plugin — every tab above is one self-contained utility, and each opens with a collapsible <strong>&#128214; About this utility</strong> panel explaining what it does, what it needs, and what every field is for. The <a href="' . $url( 'settings' ) . '"><strong>Settings</strong></a> tab is the switchboard: turn any utility on or off and manage the site-wide settings (the Anthropic key and model).</p>';
 
-	echo '<h3>Search &amp; links</h3><ul style="list-style:disc;margin-left:22px">';
-	echo '<li><a href="' . $tab( 'seo' ) . '"><strong>SEO</strong></a> — the native replacement for Yoast: titles, meta descriptions, canonical/robots, OpenGraph/Twitter cards, JSON-LD, sitemap redirects, plus the per-page "SEO (GASF)" editor box.</li>';
-	echo '<li><a href="' . $tab( 'aiseo' ) . '"><strong>Event SEO (AI)</strong></a> — Claude writes a meta description for every event name that lacks one (all "Biergarten" occurrences share one). Fills blanks only.</li>';
-	echo '<li><a href="' . $tab( 'shortlinks' ) . '"><strong>Short Links</strong></a> — branded short URLs (<code>/join</code>, <code>/75th</code>…) with click counts, replacing URL Shortify. Works on all three domains.</li>';
-	echo '<li><a href="' . $tab( 'redirects' ) . '"><strong>Redirects</strong></a> — 301/302/410 redirect manager + a live 404 log with one-click "create redirect" fixes.</li>';
+	if ( ! function_exists( 'gasf_settings_registry' ) ) {
+		echo '<p><em>The Settings module is not loaded, so the utility list cannot be shown.</em></p>';
+		return;
+	}
+	foreach ( gasf_settings_registry() as $group => $rows ) {
+		echo '<h3>' . wp_kses_post( $group ) . '</h3><ul style="list-style:disc;margin-left:22px">';
+		foreach ( $rows as $row ) {
+			$on    = gasf_site_enabled( $row['gate'] );
+			$slug  = $row['tab'] ?? '';
+			$label = '<strong>' . wp_kses_post( $row['label'] ) . '</strong>';
+			if ( $slug && $on && isset( $tabs[ $slug ] ) ) { $label = '<a href="' . $url( $slug ) . '">' . $label . '</a>'; }
+			echo '<li>' . $label . ( $on ? '' : ' <span style="color:#b32d2e;font-size:11px;font-weight:600;letter-spacing:.4px">OFF</span>' ) . ' — ' . wp_kses_post( $row['desc'] ) . '</li>';
+		}
+		echo '</ul>';
+	}
+
+	echo '<h3>In the GASF-Events plugin, not here</h3><ul style="list-style:disc;margin-left:22px">';
+	echo '<li>The events calendar, its feeds (ICS/Facebook &rarr; site calendar and/or Google Calendar), Eventbrite publishing, the home-page heroes, and the event shortcodes <code>[gasf_events]</code>, <code>[gasf_upcoming_dates]</code>, <code>[gasf_dinner_events]</code>, <code>[gasf_bayern_events]</code>, <code>[gasf_welton_status]</code>, <code>[gas_hero]</code> — see Events &rarr; Feeds, Heroes and All Events.</li>';
 	echo '</ul>';
 
-	echo '<h3>Calendars</h3><ul style="list-style:disc;margin-left:22px">';
-	echo '<li><a href="' . $tab( 'gcal-print' ) . '"><strong>Internal Calendar</strong></a> — a secret-link printable month view of the internal Google Calendar (includes hand-added private events) for the bulletin board. The calendar syncing itself (any ICS/Facebook source &rarr; site calendar and/or Google Calendar, with filters, title prefixes and colors) lives in the <strong>GASF-Events</strong> plugin: Events &rarr; Feeds.</li>';
-	echo '</ul>';
-
-	echo '<h3>Social &amp; reputation</h3><ul style="list-style:disc;margin-left:22px">';
-	echo '<li><a href="' . $tab( 'instagram' ) . '"><strong>Instagram</strong></a> — the native feed behind <code>[gasf_instagram]</code> (grid/masonry/carousel + lightbox), replacing Smash Balloon\'s display. Self-refreshing token.</li>';
-	echo '<li><a href="' . $tab( 'reviews' ) . '"><strong>Reviews</strong></a> — the <code>[gasf_reviews]</code> wall: live Google + TripAdvisor reviews plus hand-curated entries (Facebook).</li>';
-	echo '<li><a href="' . $tab( 'fbhealth' ) . '"><strong>FB Token</strong></a> — watchdog for the GASF-Events Facebook feed token: daily live probe, auto-heal, email alert before it can silently die.</li>';
-	echo '</ul>';
-
-	echo '<h3>Runs automatically (no tab)</h3><ul style="list-style:disc;margin-left:22px">';
-	echo '<li><strong>Shortcodes</strong> — <code>[gas_parking]</code>, <code>[world_cup_schedule]</code>, <code>[bundesliga_table]</code>, <code>[bundesliga_scorers]</code>, <code>[bundesliga_top_scorers]</code>, <code>[gasf_instagram]</code>, <code>[gasf_reviews]</code>. (Event lists, the Welton blurb &amp; the home-page hero are native GASF-Events shortcodes: <code>[gasf_events]</code>, <code>[gasf_upcoming_dates]</code>, <code>[gasf_dinner_events]</code>, <code>[gasf_bayern_events]</code>, <code>[gasf_welton_status]</code>, <code>[gas_hero]</code>.)</li>';
-	echo '<li><strong>Schema JSON-LD</strong> — Organization + festival Event markup (migrated from the retired HFCM plugin).</li>';
-	echo '<li><strong>Site hardening</strong> — user-enumeration block (REST users endpoints, <code>?author=N</code>, users sitemap) and the security headers.</li>';
-	echo '</ul>';
-
-	echo '<p style="color:#666;margin-top:18px">Git-backed (repo <code>GermanTampaBay/GASF-Utilities</code>); deploy = <code>git pull</code> in <code>/home4/germanta/gasf-muplugin</code>. Never edit these files on the server. Feature gates are <code>gasf_site_enable_*</code> / <code>gasf_mec_enable_*</code> options — toggle them on the <a href="' . $tab( 'settings' ) . '">Settings tab</a> (or <code>wp option update &lt;gate&gt; 0</code>). Related but separate: the <strong>GASF-Events</strong> plugin (events calendar, Facebook feed, Eventbrite publishing — see Events &rarr; Feeds and All Events).</p>';
+	echo '<p style="color:#666;margin-top:18px">Git-backed (repo <code>GermanTampaBay/GASF-Utilities</code>); deploy = <code>git pull</code> in <code>/home4/germanta/gasf-muplugin</code>. Never edit these files on the server. Every row above is a gate option (<code>gasf_site_enable_*</code>) — toggle on the <a href="' . $url( 'settings' ) . '">Settings tab</a> or with <code>wp option update &lt;gate&gt; 0</code>.</p>';
 }
-
-// (The old "Event Calendars" tab — gasf_utilities_events_tab — was removed in
-// v1.3.0 along with the MEC importer modules; the Settings tab shows gate state.)

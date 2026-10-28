@@ -4,14 +4,21 @@ Scope: every file in the repo (`gasf-mec-importer.php`, `deploy/`, all 28 module
 the 404 template, README, .gitignore) — 7,500 lines. All files pass `php -l`.
 No code was changed in this review; each item cites `file:line` on commit `c0a53aa`.
 
-**Status (same day, v2.7.0 on this branch):** fixed 1.1, 1.2, 1.3 (full
-author-enumeration block implemented), 2.1 (`gasf_mec_enabled()` is a
-deprecated alias for one release), 2.2, 2.3, 2.4 (new `modules/03-claude.php`;
-the model is now a site-wide dropdown fed by Anthropic's Models API), 2.5
-(`gasf_util_lock()` in the main file — note that `add_option()` was never
-atomic, so both old locks were weaker than their comments claimed), 5.2, 5.7,
-and the false claims in 3.1's hardening line. The version constant (1.7) now
-tracks the header. Everything else below is still open.
+**Status (same day, on this branch):** v2.7.0 fixed 1.1–1.3, 2.1–2.5 and
+the model id (§6, now a dropdown). v2.8.0 did the rest: 1.4/4.3 (festival
+dates come from the calendar), 1.5, 1.6, 2.6–2.11, 3.1–3.8 (the Overview is
+generated from the registry, the tab bar follows it, the hidden FB→Blog switch
+is a checkbox), 4.1 (state options split from config, with one-time migration),
+4.2 (modules renamed `12-parking`, `16-world-cup-schedule`, `44-pdf-to-png`;
+README states the load-order rule), 4.4–4.9, and every §5 item. The Yoast
+sweep (2.8) runs exactly once more on the first admin load and is then dead —
+delete `gasf_seo_import_from_yoast()` once both sites carry the
+`gasf_seo_yoast_migrated` option. **Left as it was, on purpose:** 3.10 (the
+parking block's default map) — removing the default breaks the five pages
+that rely on it until each passes `map=` explicitly; that is a content edit on
+the live site, not a code change. 1.7's unused `GASF_SITE_VERSION` also stays,
+in case anything outside this repo checks it. Line numbers below refer to
+`c0a53aa`, before any of this.
 
 Overall: the code is well above average for a WordPress plugin. Inputs are
 nonced and sanitized, output is escaped, secrets are autoload-off, the

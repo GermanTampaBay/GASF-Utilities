@@ -1,6 +1,6 @@
 <?php
 /**
- * PDF → PNG — modules/38-pdf-to-png.php
+ * PDF → PNG — modules/44-pdf-to-png.php
  *
  * Admin tool: upload a PDF (flyer, program, poster…) and every page is
  * rasterized to a PNG attachment in the Media Library, ready to drop into
