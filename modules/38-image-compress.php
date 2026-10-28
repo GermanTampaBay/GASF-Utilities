@@ -29,10 +29,10 @@
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enable_imgcompress' ) : true ) {
+if ( gasf_site_enabled( 'gasf_site_enable_imgcompress' ) ) {
 
-	define( 'GASF_IMGC_META', '_gasf_imgc' );          // per-attachment result (its absence = candidate)
-	define( 'GASF_IMGC_MAX_NAME', 60 );                // max total filename length incl. "-compressed.webp"
+	if ( ! defined( 'GASF_IMGC_META' ) )     { define( 'GASF_IMGC_META', '_gasf_imgc' ); } // per-attachment result (its absence = candidate)
+	if ( ! defined( 'GASF_IMGC_MAX_NAME' ) ) { define( 'GASF_IMGC_MAX_NAME', 60 ); }       // max total filename length incl. "-compressed.webp"
 
 	function gasf_imgc_settings() {
 		return wp_parse_args( (array) get_option( 'gasf_imgc_settings', array() ), array(
@@ -554,56 +554,16 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 	 * fresh set_time_limit, exceptions are caught per image, and the loop
 	 * pauses gracefully when the request's wall-clock budget runs low —
 	 * the next click (or cron tick) simply resumes where it left off.
+	 *
+	 * One run at a time: a cron tick and somebody clicking the button can
+	 * start together, and two processes rewriting the same image files is how
+	 * an attachment ends up pointing at a half-written WebP. The lock is the
+	 * shared gasf_util_lock() (gasf-mec-importer.php), touched once per image
+	 * so a long CLI batch never looks stale; a lock untouched for ten minutes
+	 * is broken.
 	 */
-	/**
-	 * Take the batch lock, or fail.
-	 *
-	 * add_option, not get-then-set. The old pair was check-then-act with a
-	 * database round trip in the middle: two runs starting together — a cron
-	 * tick and somebody clicking the button — both saw no lock and both
-	 * proceeded, and two processes rewriting the same image files is how an
-	 * attachment ends up pointing at a half-written WebP. add_option is atomic
-	 * on the UNIQUE option_name index, so exactly one caller can create the row.
-	 *
-	 * Same mechanism as the photo intake's lock, deliberately: two locks in one
-	 * codebase that behave differently is one of them being wrong.
-	 *
-	 * @return string token, or '' if somebody else holds it
-	 */
-	function gasf_imgc_lock() {
-		$token = wp_generate_password( 12, false );
-
-		if ( add_option( 'gasf_imgc_lock', array( 'token' => $token, 'at' => time() ), '', false ) ) {
-			return $token;
-		}
-
-		// Held. Break it only if it is far older than any live run could be —
-		// the heartbeat below refreshes 'at' every image, so a working batch
-		// never looks stale however long it legitimately takes.
-		$held = (array) get_option( 'gasf_imgc_lock' );
-		if ( ! empty( $held['at'] ) && ( time() - (int) $held['at'] ) < 10 * MINUTE_IN_SECONDS ) { return ''; }
-
-		gasf_imgc_log_add( 'Breaking a stale lock — the run holding it has not touched an image in over ten minutes' );
-		delete_option( 'gasf_imgc_lock' );
-		return add_option( 'gasf_imgc_lock', array( 'token' => $token, 'at' => time() ), '', false ) ? $token : '';
-	}
-
-	/** Keep the lock alive while long work is genuinely still running. */
-	function gasf_imgc_lock_touch( $token ) {
-		$held = (array) get_option( 'gasf_imgc_lock' );
-		if ( ! empty( $held['token'] ) && $held['token'] === $token ) {
-			update_option( 'gasf_imgc_lock', array( 'token' => $token, 'at' => time() ), false );
-		}
-	}
-
-	/** Release, but only our own — a lock we broke as stale may since be somebody's. */
-	function gasf_imgc_unlock( $token ) {
-		$held = (array) get_option( 'gasf_imgc_lock' );
-		if ( ! empty( $held['token'] ) && $held['token'] === $token ) { delete_option( 'gasf_imgc_lock' ); }
-	}
-
 	function gasf_imgc_run_batch() {
-		$lock = gasf_imgc_lock();
+		$lock = gasf_util_lock( 'gasf_imgc_lock', 10 * MINUTE_IN_SECONDS );
 		if ( ! $lock ) {
 			gasf_imgc_log_add( 'Run skipped — another run holds the lock' );
 			return array( 'compressed' => 0, 'other' => 0, 'saved' => 0, 'lines' => array( 'already running' ) );
@@ -629,7 +589,7 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 			// only good for 600, so it expired mid-run and a second process
 			// could start on the same queue. Refreshed per image, the lock
 			// lasts exactly as long as work is actually happening.
-			gasf_imgc_lock_touch( $lock );
+			gasf_util_lock_touch( 'gasf_imgc_lock', $lock );
 
 			$name = basename( (string) get_attached_file( $id ) );
 			gasf_imgc_log_add( sprintf( '%s — processing (%s)', $name, size_format( $size ) ) );
@@ -665,7 +625,7 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 			wp_cache_flush();
 		}
 		update_option( 'gasf_imgc_last', array( 'ts' => time() ) + $stats, false );
-		gasf_imgc_unlock( $lock );
+		gasf_util_unlock( 'gasf_imgc_lock', $lock );
 		return $stats;
 	}
 

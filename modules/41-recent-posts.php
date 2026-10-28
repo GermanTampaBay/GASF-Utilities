@@ -21,7 +21,7 @@
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enable_recentposts' ) : true ) {
+if ( gasf_site_enabled( 'gasf_site_enable_recentposts' ) ) {
 
 	add_shortcode( 'gasf_recent_posts', 'gasf_rp_shortcode' );
 	function gasf_rp_shortcode( $atts ) {
@@ -52,7 +52,6 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 				. '<span class="gasf-rp__d">' . esc_html( get_the_date( 'F j, Y', $p->ID ) ) . '</span>'
 				. '</span></a>';
 		}
-		wp_reset_postdata();
 
 		$all_url = '';
 		$blog    = (int) get_option( 'page_for_posts' );

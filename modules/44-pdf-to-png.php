@@ -1,6 +1,6 @@
 <?php
 /**
- * PDF → PNG — modules/38-pdf-to-png.php
+ * PDF → PNG — modules/44-pdf-to-png.php
  *
  * Admin tool: upload a PDF (flyer, program, poster…) and every page is
  * rasterized to a PNG attachment in the Media Library, ready to drop into
@@ -11,7 +11,7 @@
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enable_pdf2png' ) : true ) {
+if ( gasf_site_enabled( 'gasf_site_enable_pdf2png' ) ) {
 
 	if ( ! defined( 'GASF_PDF2PNG_MAX_PAGES' ) ) { define( 'GASF_PDF2PNG_MAX_PAGES', 40 ); }
 	if ( ! defined( 'GASF_PDF2PNG_MAX_BYTES' ) ) { define( 'GASF_PDF2PNG_MAX_BYTES', 30 * 1024 * 1024 ); }

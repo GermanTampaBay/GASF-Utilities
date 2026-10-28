@@ -53,7 +53,7 @@
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enable_secheaders' ) : true ) {
+if ( gasf_site_enabled( 'gasf_site_enable_secheaders' ) ) {
 
 	add_action( 'send_headers', 'gasf_security_headers', 1 );
 

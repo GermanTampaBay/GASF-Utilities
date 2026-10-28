@@ -27,7 +27,7 @@
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enable_gcalprint' ) : true ) {
+if ( gasf_site_enabled( 'gasf_site_enable_gcalprint' ) ) {
 
 	if ( ! defined( 'GASF_GCALPRINT_KEY_OPTION' ) ) { define( 'GASF_GCALPRINT_KEY_OPTION', 'gasf_gcal_print_key' ); }
 

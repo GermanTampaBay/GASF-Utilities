@@ -4,12 +4,16 @@
  *
  * A native replacement for Yoast: document title, meta description, canonical,
  * robots, Open Graph + Twitter cards, and WebSite JSON-LD — plus a per-page
- * SEO editor box and a one-click import of Yoast's titles/descriptions into
- * our own meta (`_gasf_seo_*`) so nothing is lost when Yoast is removed.
+ * SEO editor box. All per-page values live in our own meta (`_gasf_seo_*`).
  *
- * Cutover-safe: every front-end hook DEFERS while Yoast is still active, so
- * this can be deployed alongside Yoast and takes over automatically once Yoast
- * is deactivated/deleted. Organization schema lives in modules/29-schema-jsonld.php.
+ * Yoast: every front-end hook still DEFERS while Yoast is active (a safety net
+ * against double tags if it were ever reactivated). The one-time copy of
+ * Yoast's per-page meta into ours ran long ago; the admin_init hook below
+ * re-runs it exactly once more per install (flag option
+ * `gasf_seo_yoast_migrated`) in case anything was edited in between, after
+ * which the `_yoast_*` rows are never read again. Delete that hook and
+ * gasf_seo_import_from_yoast() once the flag is set on both sites. Organization schema lives in
+ * modules/29-schema-jsonld.php.
  *
  * Sitemaps: handled by WordPress core (/wp-sitemap.xml) once Yoast is gone;
  * the old /sitemap_index.xml is 301'd to it so Search Console keeps working.
@@ -18,7 +22,7 @@
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enable_seo' ) : true ) {
+if ( gasf_site_enabled( 'gasf_site_enable_seo' ) ) {
 
 	if ( ! defined( 'GASF_SEO_TYPES' ) ) { define( 'GASF_SEO_TYPES', array( 'post', 'page', 'gasf_event' ) ); }
 
@@ -154,7 +158,7 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 			'%%term_title%%' => ( is_category() || is_tag() || is_tax() ) ? single_term_title( '', false ) : '',
 			'%%name%%'       => is_author() ? (string) get_the_author_meta( 'display_name', get_queried_object_id() ) : '',
 			'%%page%%'       => gasf_seo_page_bit(),
-			'%%excerpt%%'    => is_singular() ? gasf_seo_excerpt( get_queried_object_id() ) : '',
+			'%%excerpt%%'    => is_singular() ? gasf_seo_clip( gasf_seo_excerpt( get_queried_object_id() ) ) : '',
 		);
 		$out = strtr( (string) $tpl, $rep );
 		$out = preg_replace( '/%%[a-z0-9_-]+%%/i', '', $out );      // drop unknown vars
@@ -330,29 +334,24 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 		return $def ?: '';
 	}
 
-	/** Read our meta, falling back to Yoast's (until the import copies it over). */
+	/** Read one of our per-page SEO fields. */
 	function gasf_seo_meta( $post_id, $field ) {
 		$map = array(
-			'title'     => array( '_gasf_seo_title', '_yoast_wpseo_title' ),
-			'desc'      => array( '_gasf_seo_desc', '_yoast_wpseo_metadesc' ),
-			'canonical' => array( '_gasf_seo_canonical', '_yoast_wpseo_canonical' ),
-			'og_image'  => array( '_gasf_seo_og_image', '_yoast_wpseo_opengraph-image' ),
+			'title'     => '_gasf_seo_title',
+			'desc'      => '_gasf_seo_desc',
+			'canonical' => '_gasf_seo_canonical',
+			'og_image'  => '_gasf_seo_og_image',
 		);
-		foreach ( $map[ $field ] ?? array() as $key ) {
-			$v = (string) get_post_meta( $post_id, $key, true );
-			if ( '' !== $v ) { return $v; }
-		}
-		return '';
+		return isset( $map[ $field ] ) ? (string) get_post_meta( $post_id, $map[ $field ], true ) : '';
 	}
 
+	/** Plain-text excerpt (or content) — uncapped; gasf_seo_clip() is the one place length is enforced. */
 	function gasf_seo_excerpt( $id ) {
 		$p = get_post( $id );
 		if ( ! $p ) { return ''; }
 		$t = has_excerpt( $id ) ? $p->post_excerpt : $p->post_content;
 		$t = wp_strip_all_tags( strip_shortcodes( (string) $t ) );
-		$t = trim( preg_replace( '/\s+/', ' ', $t ) );
-		if ( mb_strlen( $t ) > 160 ) { $t = rtrim( mb_substr( $t, 0, 157 ) ) . '…'; }
-		return $t;
+		return trim( preg_replace( '/\s+/', ' ', $t ) );
 	}
 
 	/* ============================ post editor box ============================ */
@@ -371,6 +370,12 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 		echo '<p><label><strong>Meta description</strong><br><textarea name="gasf_seo_desc" rows="3" class="widefat" placeholder="Falls back to the excerpt">' . esc_textarea( $d ) . '</textarea></label><span class="description">~155 characters is ideal.</span></p>';
 		echo '<p><label><input type="checkbox" name="gasf_seo_noindex" value="1" ' . checked( $n, true, false ) . '> Ask search engines <strong>not</strong> to index this page</label></p>';
 		echo '<p class="description">Supports <code>%%title%%</code>, <code>%%sitename%%</code>, <code>%%sep%%</code>, <code>%%excerpt%%</code>.</p>';
+		$canon = gasf_seo_meta( $post->ID, 'canonical' );
+		$ogimg = gasf_seo_meta( $post->ID, 'og_image' );
+		echo '<details style="margin:10px 0"' . ( ( $canon || $ogimg ) ? ' open' : '' ) . '><summary style="cursor:pointer;color:#2271b1">Advanced: canonical URL &amp; share image</summary>';
+		echo '<p><label><strong>Canonical URL</strong> <span class="description">— only if this page duplicates another; leave blank for the normal URL</span><br><input type="url" name="gasf_seo_canonical" value="' . esc_attr( $canon ) . '" class="widefat code" placeholder="' . esc_attr( get_permalink( $post ) ) . '"></label></p>';
+		echo '<p><label><strong>Share image (Open Graph)</strong> <span class="description">— overrides the featured image for Facebook/WhatsApp previews; ≥1200×630 px</span><br><input type="url" name="gasf_seo_og_image" value="' . esc_attr( $ogimg ) . '" class="widefat code" placeholder="falls back to the featured image, then the site default"></label></p>';
+		echo '</details>';
 		$kw = get_post_meta( $post->ID, '_gasf_seo_keyphrases', true );
 		echo '<hr style="margin:14px 0"><p><label><strong>Focus keyphrase(s)</strong> <span class="description">— comma-separated; terms you want this page to rank for</span><br><input type="text" id="gasf_seo_kw" name="gasf_seo_keyphrases" value="' . esc_attr( $kw ) . '" class="widefat" placeholder="e.g. german festival tampa, oktoberfest pinellas park"></label></p>';
 		echo '<div id="gasf_seo_analysis" style="font-size:13px;line-height:1.8"></div>';
@@ -416,8 +421,13 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 				});
 				box.innerHTML=out;
 			}
-			$(document).on('input','#gasf_seo_kw, [name=gasf_seo_title], [name=gasf_seo_desc], #title', analyze);
-			setInterval(analyze, 2000);
+			// Re-run on edits only (this used to poll every two seconds, forever,
+			// on every edit screen). Classic editor: the fields plus TinyMCE's
+			// own change events; block editor: the data store subscription.
+			var timer=null; function later(){ clearTimeout(timer); timer=setTimeout(analyze,400); }
+			$(document).on('input change','#gasf_seo_kw, [name=gasf_seo_title], [name=gasf_seo_desc], #title, #content, #editable-post-name', later);
+			if ( window.tinymce ) { tinymce.on('AddEditor', function(e){ e.editor.on('change keyup SetContent', later); }); $.each(tinymce.editors||[], function(_,ed){ ed.on('change keyup SetContent', later); }); }
+			if ( window.wp && wp.data && wp.data.subscribe ) { var last=''; wp.data.subscribe(function(){ try { var c=wp.data.select('core/editor').getEditedPostContent(); if(c!==last){ last=c; later(); } } catch(x){} }); }
 			$(analyze);
 		})();
 		</script>
@@ -438,6 +448,8 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 		$set( '_gasf_seo_title', sanitize_text_field( wp_unslash( $_POST['gasf_seo_title'] ?? '' ) ) );
 		$set( '_gasf_seo_desc', sanitize_textarea_field( wp_unslash( $_POST['gasf_seo_desc'] ?? '' ) ) );
 		$set( '_gasf_seo_keyphrases', sanitize_text_field( wp_unslash( $_POST['gasf_seo_keyphrases'] ?? '' ) ) );
+		$set( '_gasf_seo_canonical', esc_url_raw( wp_unslash( $_POST['gasf_seo_canonical'] ?? '' ) ) );
+		$set( '_gasf_seo_og_image', esc_url_raw( wp_unslash( $_POST['gasf_seo_og_image'] ?? '' ) ) );
 		if ( ! empty( $_POST['gasf_seo_noindex'] ) ) { update_post_meta( $post_id, '_gasf_seo_noindex', 1 ); } else { delete_post_meta( $post_id, '_gasf_seo_noindex' ); }
 	} );
 
@@ -448,7 +460,20 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 		}
 	} );
 
-	/** Copy Yoast titles/descriptions into our meta + seed settings from Yoast config. */
+	/**
+	 * One-shot: copy any Yoast per-page meta our rows don't have yet, then set
+	 * the flag so this never runs again. Idempotent and cheap (a few hundred
+	 * rows); runs on the first admin page load after the 2.8 upgrade. Delete
+	 * this and gasf_seo_import_from_yoast() once both sites carry the flag.
+	 */
+	add_action( 'admin_init', function () {
+		if ( get_option( 'gasf_seo_yoast_migrated' ) || ! current_user_can( 'manage_options' ) ) { return; }
+		$n = gasf_seo_import_from_yoast();
+		update_option( 'gasf_seo_yoast_migrated', gmdate( 'c' ) . ' copied=' . (int) $n, false );
+		gasf_mec_log( 'seo: final Yoast meta sweep copied ' . (int) $n . ' value(s); _yoast_* is no longer read' );
+	} );
+
+	/** Copy Yoast titles/descriptions into our meta + seed settings from Yoast config (never overwrites ours). */
 	function gasf_seo_import_from_yoast() {
 		global $wpdb;
 		$pairs = array(
@@ -487,15 +512,13 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 
 		if ( isset( $_POST['gasf_seo_action'] ) && check_admin_referer( 'gasf_seo_admin' ) ) {
 			$act = sanitize_text_field( wp_unslash( $_POST['gasf_seo_action'] ) );
-			if ( 'import' === $act ) {
-				$n = gasf_seo_import_from_yoast();
-				echo '<div class="notice notice-success is-dismissible"><p>Imported ' . (int) $n . ' SEO values from Yoast, and seeded settings.</p></div>';
-			} elseif ( 'save' === $act ) {
+			if ( 'save' === $act ) {
 				update_option( 'gasf_seo_settings', array(
 					'sep'          => sanitize_text_field( wp_unslash( $_POST['sep'] ?? '–' ) ) ?: '–',
 					'title_home'   => sanitize_text_field( wp_unslash( $_POST['title_home'] ?? '' ) ),
 					'desc_home'    => sanitize_textarea_field( wp_unslash( $_POST['desc_home'] ?? '' ) ),
 					'title_single' => sanitize_text_field( wp_unslash( $_POST['title_single'] ?? '' ) ),
+					'title_term'   => sanitize_text_field( wp_unslash( $_POST['title_term'] ?? '' ) ),
 					'og_image'     => esc_url_raw( wp_unslash( $_POST['og_image'] ?? '' ) ),
 					'twitter'      => sanitize_text_field( wp_unslash( $_POST['twitter'] ?? '' ) ),
 				), false );
@@ -512,7 +535,7 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 		<?php
 		if ( function_exists( 'gasf_utilities_doc_panel' ) ) {
 			gasf_utilities_doc_panel( array(
-				'what'   => 'The site\'s SEO engine — the native replacement for Yoast. On every page it outputs the title tag, meta description, canonical URL, robots directives, Open Graph + Twitter share cards, and WebSite/Breadcrumb JSON-LD. Per-page values are edited in the <strong>"SEO (GASF)"</strong> box when editing that page (title, description, noindex, focus keyphrases with a live checklist); this tab holds the site-wide defaults that fill in everything you haven\'t set by hand.',
+				'what'   => 'The site\'s SEO engine — the native replacement for Yoast. On every page it outputs the title tag, meta description, canonical URL, robots directives, Open Graph + Twitter share cards, and WebSite/Breadcrumb JSON-LD. Per-page values are edited in the <strong>"SEO (GASF)"</strong> box when editing that page (title, description, noindex, focus keyphrases with a live checklist, and under Advanced a canonical URL and share image); this tab holds the site-wide defaults that fill in everything you haven\'t set by hand.',
 				'needs'  => array(
 					'Nothing external — no API keys, no other plugin. (Yoast must stay deactivated or this module goes dormant to avoid double tags.)',
 				),
@@ -521,9 +544,9 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 					'Home title'                => 'The exact title tag for the home page — your single most important SEO string. Lead with what you want to rank for (e.g. "German-American Society – German Club &amp; Events in Tampa Bay").',
 					'Home meta description'     => 'The ~155-character snippet Google shows under the home-page result. Write it like ad copy: who you are, where, and why to click.',
 					'Page / post title'         => 'The template for every other page\'s title tag. Variables: <code>%%title%%</code> (page name), <code>%%sitename%%</code>, <code>%%sitedesc%%</code>, <code>%%sep%%</code> (the separator above), <code>%%page%%</code> (pagination). The default "%%title%% %%sep%% %%sitename%%" is right for most sites.',
+					'Category / tag title'      => 'The title template for category, tag and other term archives. <code>%%term_title%%</code> is the category or tag name.',
 					'Default share image (OG)'  => 'The image Facebook/WhatsApp/Slack show when a shared page has no featured or content image of its own. Should be ≥1200×630 px for full-size cards. Currently the building photo.',
 					'Twitter @handle'           => 'Attributed as the site\'s account on Twitter/X share cards. Optional — blank just omits the attribution.',
-					'Re-import from Yoast meta' => 'One-time migration tool: copies leftover Yoast titles/descriptions into this module\'s meta, never overwriting values already set here. Already ran; re-running is safe but unnecessary.',
 				),
 				'notes'  => 'Sitemap is WordPress core at <code>/wp-sitemap.xml</code> (the old Yoast <code>/sitemap_index.xml</code> 301s there). Event pages get their descriptions auto-filled by <strong>Event SEO (AI)</strong>; URL redirects live on the <strong>Redirects</strong> tab.',
 			) );
@@ -543,19 +566,13 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 				<tr><th scope="row">Home title</th><td><input type="text" name="title_home" value="<?php echo esc_attr( $s['title_home'] ); ?>" class="large-text"></td></tr>
 				<tr><th scope="row">Home meta description</th><td><textarea name="desc_home" rows="2" class="large-text"><?php echo esc_textarea( $s['desc_home'] ); ?></textarea></td></tr>
 				<tr><th scope="row">Page / post title</th><td><input type="text" name="title_single" value="<?php echo esc_attr( $s['title_single'] ); ?>" class="large-text"><p class="description">Vars: <code>%%title%%</code> <code>%%sitename%%</code> <code>%%sitedesc%%</code> <code>%%sep%%</code> <code>%%page%%</code></p></td></tr>
+				<tr><th scope="row">Category / tag title</th><td><input type="text" name="title_term" value="<?php echo esc_attr( $s['title_term'] ); ?>" class="large-text"><p class="description">Vars: <code>%%term_title%%</code> <code>%%sitename%%</code> <code>%%sep%%</code> <code>%%page%%</code></p></td></tr>
 				<tr><th scope="row">Default share image (OG)</th><td><input type="url" name="og_image" value="<?php echo esc_attr( $s['og_image'] ); ?>" class="large-text" placeholder="used when a page has no image of its own"></td></tr>
 				<tr><th scope="row">Twitter @handle</th><td><input type="text" name="twitter" value="<?php echo esc_attr( $s['twitter'] ); ?>" class="regular-text" placeholder="@germantampa"></td></tr>
 			</table>
 			<p><button name="gasf_seo_action" value="save" class="button button-primary">Save settings</button></p>
 		</form>
 
-		<details style="margin-top:20px">
-			<summary style="cursor:pointer;color:#666">Yoast migration <?php echo $yoast ? '' : '&mdash; completed &#10003;'; ?></summary>
-			<p class="description" style="max-width:640px;margin-top:8px">Your Yoast titles &amp; descriptions were already imported into this plugin&rsquo;s own meta, so nothing depends on Yoast. Re-running is safe (it never overwrites values already set here) but is normally unnecessary.</p>
-			<form method="post"><?php wp_nonce_field( 'gasf_seo_admin' ); ?>
-				<button name="gasf_seo_action" value="import" class="button">Re-import from Yoast meta</button>
-			</form>
-		</details>
 		<?php
 	}
 }

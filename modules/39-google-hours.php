@@ -20,11 +20,11 @@
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enable_ghours' ) : true ) {
+if ( gasf_site_enabled( 'gasf_site_enable_ghours' ) ) {
 
-	define( 'GASF_GH_INFO', 'https://mybusinessbusinessinformation.googleapis.com/v1' );
-	define( 'GASF_GH_ACCT', 'https://mybusinessaccountmanagement.googleapis.com/v1' );
-	define( 'GASF_GH_DAYS', 'MONDAY,TUESDAY,WEDNESDAY,THURSDAY,FRIDAY,SATURDAY,SUNDAY' );
+	if ( ! defined( 'GASF_GH_INFO' ) ) { define( 'GASF_GH_INFO', 'https://mybusinessbusinessinformation.googleapis.com/v1' ); }
+	if ( ! defined( 'GASF_GH_ACCT' ) ) { define( 'GASF_GH_ACCT', 'https://mybusinessaccountmanagement.googleapis.com/v1' ); }
+	if ( ! defined( 'GASF_GH_DAYS' ) ) { define( 'GASF_GH_DAYS', 'MONDAY,TUESDAY,WEDNESDAY,THURSDAY,FRIDAY,SATURDAY,SUNDAY' ); }
 
 	function gasf_gh_cfg() {
 		return wp_parse_args( (array) get_option( 'gasf_ghours_config', array() ), array(

@@ -2,15 +2,21 @@
 
 All custom **germantampabay.com** functionality in one update-safe plugin:
 native SEO + AI event descriptions, branded short links, redirects + 404 log,
-native Instagram feed, reviews wall, Facebook token watchdog, performance and
-hardening tweaks, and a stack of content shortcodes. (Home-page heroes moved to
-the **GASF-Events** plugin — Events → Heroes / Recurring Heroes.)
+native Instagram feed, reviews wall, Facebook token watchdog, the FB → Blog
+importer, recent-posts rail, image compressor, PDF → PNG, Google Business
+Profile hours, the Bierstube kiosk's game tiles, security headers, performance
+and hardening tweaks, and the content shortcodes (parking, World Cup schedule,
+Bundesliga tables). The GASF Utilities → Overview tab lists every one, grouped,
+with its on/off state. (Events, feeds and home-page heroes are the
+**GASF-Events** plugin; the email CRM is **GASF-CRM**.)
 
 ## How it's put together
 
-- `gasf-mec-importer.php` — thin loader: helpers (`gasf_mec_enabled()`,
-  `gasf_mec_log()`), a glob that requires every `modules/*.php`, and the
-  GitHub auto-update hooks. *The filename is historical (the plugin began as
+- `gasf-mec-importer.php` — thin loader: shared helpers (`gasf_site_enabled()`,
+  `gasf_mec_log()`, the `gasf_util_lock()` family), a glob that requires every
+  `modules/*.php` in filename order (the numeric prefix IS the load order —
+  a module may only call helpers from lower-numbered files), and the GitHub
+  auto-update hooks. *The filename is historical (the plugin began as
   the MEC importer fixes); renaming it would break the mu-plugin shim on the
   main site and the plugin path on the Krampus install, so it stays.*
 - `modules/*.php` — one self-contained utility per file. Each module
@@ -18,9 +24,15 @@ the **GASF-Events** plugin — Events → Heroes / Recurring Heroes.)
   default ON, `'0'` = off) and, if it has a UI, registers a tab on the single
   **GASF Utilities** admin page via `gasf_utilities_add_tab()`.
 - **Settings tab** (`modules/02-settings.php`) — the switchboard: an on/off
-  toggle for every gate plus site-wide settings shared by multiple modules
-  (e.g. the Anthropic API key, option `gasf_anthropic_key`). CLI equivalent:
-  `wp option update <gate> 0`.
+  toggle for every gate (its registry must list every gate and every cron a
+  module schedules) plus site-wide settings shared by multiple modules: the
+  Anthropic API key and model (`gasf_anthropic_key` / `gasf_anthropic_model`).
+  CLI equivalent: `wp option update <gate> 0`.
+- **Claude client** (`modules/03-claude.php`) — the only code that calls
+  Anthropic: `gasf_anthropic_key()`, `gasf_anthropic_model()`,
+  `gasf_anthropic_models()` (live list for the Settings dropdown, cached 12 h)
+  and `gasf_claude_text()`. New AI utilities call these; nothing else should
+  build an Anthropic request.
 
 ## Where it runs
 

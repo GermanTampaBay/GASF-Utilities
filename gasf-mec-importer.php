@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: GASF Utilities
- * Description: All custom germantampabay.com functionality in one update-safe plugin: SEO + AI event descriptions, short links, redirects, Instagram feed, reviews wall, Facebook token watchdog, the shared-mailbox email CRM, performance and hardening tweaks, and more. Each module is individually gated — see the GASF Utilities → Settings tab. (Home-page heroes moved to the GASF-Events plugin.)
- * Version:     2.6.0
+ * Description: All custom germantampabay.com functionality in one update-safe plugin: SEO + AI event descriptions, short links, redirects, Instagram feed, reviews wall, Facebook token watchdog, FB → Blog importer, image compressor, PDF → PNG, Google Business hours, kiosk game tiles, performance and hardening tweaks, and the content shortcodes. Each module is individually gated — see the GASF Utilities → Settings tab. (Events, heroes and the email CRM live in GASF-Events / GASF-CRM.)
+ * Version:     2.8.0
  * Author:      GASF
  * License:     GPL-2.0-or-later
  * Update URI:  https://github.com/GermanTampaBay/GASF-Utilities
@@ -24,16 +24,21 @@
  *
  * All functionality lives in modules/*.php, loaded by the glob at the bottom.
  * Every module self-gates on a wp_option (gasf_site_enable_* /
- * gasf_mec_enable_*, default ON, '0' = off) — toggle them in
- * wp-admin > GASF Utilities > Settings (modules/02-settings.php), or via
- * `wp option update <gate> 0`.
+ * gasf_mec_enable_*, default ON, '0' = off) via gasf_site_enabled() — toggle
+ * them in wp-admin > GASF Utilities > Settings (modules/02-settings.php), or
+ * via `wp option update <gate> 0`.
+ *
+ * Shared helpers defined here, before any module loads: gasf_site_enabled(),
+ * gasf_mec_log(), and the gasf_util_lock() family. The Claude client
+ * (gasf_anthropic_key / gasf_anthropic_model / gasf_claude_text) is
+ * modules/03-claude.php.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'GASF_MEC_VERSION', '1.19.0' );
+define( 'GASF_MEC_VERSION', '2.8.0' );
 
 /**
  * owner/repo on GitHub, for the auto-updater below.
@@ -59,10 +64,24 @@ define( 'GASF_MEC_LOG_MAX', 1048576 ); // 1 MB, then rotate to .1
 
 /**
  * Feature gate: true unless the option is explicitly '0'/0/false.
+ *
+ * Guarded because the retired gasf-site.php loader defined the same name;
+ * if a stray copy is ever activated, its definition wins and nothing fatals.
+ */
+if ( ! function_exists( 'gasf_site_enabled' ) ) {
+	function gasf_site_enabled( $option, $default = '1' ) {
+		$v = get_option( $option, $default );
+		return ! ( $v === '0' || $v === 0 || $v === false || $v === 'false' );
+	}
+}
+
+/**
+ * @deprecated 2.7.0 — identical to gasf_site_enabled(); kept one release for
+ * any caller outside this repo (GASF-Events / GASF-CRM). Grep those, then
+ * delete this.
  */
 function gasf_mec_enabled( $option, $default = '1' ) {
-	$v = get_option( $option, $default );
-	return ! ( $v === '0' || $v === 0 || $v === false || $v === 'false' );
+	return gasf_site_enabled( $option, $default );
 }
 
 /**
@@ -74,6 +93,89 @@ function gasf_mec_log( $msg ) {
 		@rename( $f, $f . '.1' );
 	}
 	@file_put_contents( $f, '[' . date( 'Y-m-d H:i:s' ) . '] ' . $msg . "\n", FILE_APPEND | LOCK_EX );
+}
+
+/* =========================================================================
+ * Shared batch lock.
+ *
+ * One implementation for every "don't run this twice at once" in the plugin
+ * (the image compressor's batch, the FB→Blog scan, …). It replaced two
+ * hand-rolled locks that each claimed add_option() was atomic. It is not:
+ * add_option() is INSERT … ON DUPLICATE KEY UPDATE, so two callers racing
+ * through it BOTH return true and the second silently overwrites the
+ * first's row. Core's own WP_Upgrader::create_lock() uses a raw INSERT
+ * IGNORE for exactly this reason, and so does this.
+ *
+ *   $token = gasf_util_lock( 'gasf_imgc_lock', 10 * MINUTE_IN_SECONDS );
+ *   if ( ! $token ) { return; }          // somebody else holds it
+ *   … gasf_util_lock_touch( 'gasf_imgc_lock', $token ); per unit of work …
+ *   gasf_util_unlock( 'gasf_imgc_lock', $token );
+ *
+ * A lock whose holder stopped touching it for longer than $stale_after is
+ * broken with a compare-and-delete, so two breakers cannot each clear the
+ * other's fresh lock. Touch and unlock are compare-and-swap on the token:
+ * a caller only ever releases its own lock, never one it broke and lost.
+ * Every query bypasses the option cache — the row is written and read raw
+ * so a stale cached copy can never report a lock that isn't there.
+ * ========================================================================= */
+
+/** Serialized row for a lock — the exact bytes stored, used in every compare. */
+function gasf_util_lock_row( $token, $at ) {
+	return serialize( array( 'token' => (string) $token, 'at' => (int) $at ) );
+}
+
+/** Raw read of the lock row, as the stored string, or '' when absent. */
+function gasf_util_lock_read( $name ) {
+	global $wpdb;
+	return (string) $wpdb->get_var( $wpdb->prepare( "SELECT option_value FROM {$wpdb->options} WHERE option_name = %s LIMIT 1", $name ) );
+}
+
+/**
+ * Take the lock. Returns the token on success, '' when another run holds it.
+ *
+ * @param string $name        Option name for the lock row (one per job).
+ * @param int    $stale_after Seconds without a touch before the lock is broken.
+ */
+function gasf_util_lock( $name, $stale_after = 600 ) {
+	global $wpdb;
+	$token = wp_generate_password( 12, false );
+	$row   = gasf_util_lock_row( $token, time() );
+	$try   = function () use ( $wpdb, $name, $row ) {
+		$n = $wpdb->query( $wpdb->prepare( "INSERT IGNORE INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, 'no')", $name, $row ) );
+		wp_cache_delete( $name, 'options' );
+		return 1 === (int) $n;
+	};
+	if ( $try() ) { return $token; }
+
+	$held = gasf_util_lock_read( $name );
+	$data = maybe_unserialize( $held );
+	// Pre-2.7 FB→Blog locks stored a bare timestamp string; read either shape.
+	$at = is_array( $data ) ? (int) ( $data['at'] ?? 0 ) : (int) $data;
+	if ( $at && ( time() - $at ) < max( 1, (int) $stale_after ) ) { return ''; }
+
+	gasf_mec_log( "lock {$name}: breaking a stale lock (untouched for " . ( $at ? time() - $at : '?' ) . 's)' );
+	$wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->options} WHERE option_name = %s AND option_value = %s", $name, $held ) );
+	return $try() ? $token : '';
+}
+
+/** Heartbeat: refresh 'at' on OUR lock so a long, live run never looks stale. */
+function gasf_util_lock_touch( $name, $token ) {
+	global $wpdb;
+	$cur = gasf_util_lock_read( $name );
+	$d   = maybe_unserialize( $cur );
+	if ( ! is_array( $d ) || ( $d['token'] ?? '' ) !== (string) $token ) { return false; }
+	return (bool) $wpdb->query( $wpdb->prepare( "UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND option_value = %s", gasf_util_lock_row( $token, time() ), $name, $cur ) );
+}
+
+/** Release, but only our own — a lock we broke as stale may since be somebody's. */
+function gasf_util_unlock( $name, $token ) {
+	global $wpdb;
+	$cur = gasf_util_lock_read( $name );
+	$d   = maybe_unserialize( $cur );
+	if ( ! is_array( $d ) || ( $d['token'] ?? '' ) !== (string) $token ) { return false; }
+	$n = $wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->options} WHERE option_name = %s AND option_value = %s", $name, $cur ) );
+	wp_cache_delete( $name, 'options' );
+	return (bool) $n;
 }
 
 /* === MODULE LOADER: each file in modules/ self-gates via its gate option === */

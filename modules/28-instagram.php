@@ -23,10 +23,10 @@
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enable_instagram' ) : true ) {
+if ( gasf_site_enabled( 'gasf_site_enable_instagram' ) ) {
 
-	define( 'GASF_IG_GRAPH', 'https://graph.instagram.com/v21.0' );
-	define( 'GASF_IG_DIR', 'gasf-ig' ); // under uploads/
+	if ( ! defined( 'GASF_IG_GRAPH' ) ) { define( 'GASF_IG_GRAPH', 'https://graph.instagram.com/v21.0' ); }
+	if ( ! defined( 'GASF_IG_DIR' ) )   { define( 'GASF_IG_DIR', 'gasf-ig' ); } // under uploads/
 
 	/* ============================ token ============================ */
 
@@ -122,18 +122,17 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 		if ( is_wp_error( $r ) || wp_remote_retrieve_response_code( $r ) !== 200 ) { return $remote_url; }
 		$body = wp_remote_retrieve_body( $r );
 		if ( ! $body ) { return $remote_url; }
-		if ( ! function_exists( 'WP_Filesystem' ) ) { require_once ABSPATH . 'wp-admin/includes/file.php'; }
 		file_put_contents( $path, $body ); // phpcs:ignore -- cache dir, not user content
 		return file_exists( $path ) ? $url : $remote_url;
 	}
 
 	/**
-	 * Prune sideloaded images no longer referenced by the current cache. IG CDN
-	 * URLs carry rotating signatures, so the same photo re-downloads under a new
-	 * md5 name on each refresh — without this the uploads/gasf-ig dir grows
-	 * forever. A file is kept if its name appears anywhere in the current cache
-	 * blob, or if it's newer than the grace window (a file just written but not
-	 * yet in the saved cache). Returns the number deleted.
+	 * Prune sideloaded images no longer referenced by the current cache — a
+	 * post deleted on Instagram, or a leftover from before files were keyed on
+	 * the media id (when every refresh re-downloaded under a new md5 name).
+	 * A file is kept if its name appears anywhere in the current cache blob,
+	 * or if it's newer than the grace window (a file just written but not yet
+	 * in the saved cache). Returns the number deleted.
 	 */
 	function gasf_ig_prune_cache( $grace_days = 2 ) {
 		$c = gasf_ig_cache_dir();

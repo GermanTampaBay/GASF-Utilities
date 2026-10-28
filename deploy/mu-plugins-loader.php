@@ -1,7 +1,7 @@
 <?php
 /**
- * Plugin Name: GASF MEC Importer Fixes (loader)
- * Description: Loads the GASF Utilities mu-plugin from the git working copy at /home4/germanta/gasf-muplugin (repo: github.com/GermanTampaBay/GASF-Utilities). Deploy updates with `git pull` in that directory. Replaces Code Snippets #17-#21.
+ * Plugin Name: GASF Utilities (loader)
+ * Description: Loads the GASF Utilities mu-plugin from the git working copy at /home4/germanta/gasf-muplugin (repo: github.com/GermanTampaBay/GASF-Utilities). Deploy updates with `git pull` in that directory. (The file keeps its historical name gasf-mec-importer.php so nothing on the server needs re-pointing.)
  * Version:     1.0.0
  * Author:      GASF
  *

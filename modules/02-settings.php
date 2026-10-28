@@ -10,31 +10,16 @@
  * - Per-utility configuration stays on each utility's own tab (Instagram
  *   connection on the Instagram tab, review keys on the Reviews tab, …).
  *   Only settings that affect more than one module belong here.
- * - Global settings: the Anthropic (Claude) API key — option
- *   `gasf_anthropic_key`, read via gasf_anthropic_key(), which falls back to
- *   the legacy per-module key inside `gasf_aiseo_config` so existing installs
- *   keep working untouched.
+ * - Global settings: the Anthropic (Claude) API key and model — options
+ *   `gasf_anthropic_key` / `gasf_anthropic_model`, read through the shared
+ *   client in modules/03-claude.php (which also carries the legacy
+ *   per-module fallbacks so existing installs keep working untouched).
  *
  * Gates are evaluated when the plugin loads, so a toggle takes effect on the
  * NEXT page load; turning a utility off also removes its admin tab (this tab
  * itself is ungated and always available to turn it back on).
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
-
-/**
- * Site-wide Anthropic (Claude) API key. Set on the Settings tab; falls back
- * to the legacy AI-SEO per-module key so nothing breaks on upgrade.
- */
-if ( ! function_exists( 'gasf_anthropic_key' ) ) {
-	function gasf_anthropic_key() {
-		$k = (string) get_option( 'gasf_anthropic_key', '' );
-		if ( '' === $k ) {
-			$legacy = (array) get_option( 'gasf_aiseo_config', array() );
-			$k      = isset( $legacy['key'] ) ? (string) $legacy['key'] : '';
-		}
-		return $k;
-	}
-}
 
 /**
  * Registry of every gated utility: group => rows of
@@ -58,6 +43,7 @@ function gasf_settings_registry() {
 			array( 'gate' => 'gasf_site_enable_aiseo', 'label' => 'Event SEO (AI)', 'desc' => 'Claude writes meta descriptions for events that lack one. Uses the site-wide Anthropic API key below.', 'tab' => 'aiseo' ),
 			array( 'gate' => 'gasf_site_enable_shortlinks', 'label' => 'Short Links', 'desc' => 'Branded short URLs (<code>/join</code>, <code>/75th</code>…) with click counts.', 'tab' => 'shortlinks' ),
 			array( 'gate' => 'gasf_site_enable_redirects', 'label' => 'Redirects &amp; 404 log', 'desc' => '301/302/410 manager plus the live 404 monitor.', 'tab' => 'redirects' ),
+			array( 'gate' => 'gasf_site_enable_ghours', 'label' => 'Google Business Profile hours', 'desc' => 'Edits the club\'s opening hours on Google Maps / Search (weekly schedule + holiday overrides) through the Business Profile API. OAuth connection lives on its tab.', 'tab' => 'ghours' ),
 		),
 		'Calendars' => array(
 			array( 'gate' => 'gasf_site_enable_gcalprint', 'label' => 'Internal Calendar (print)', 'desc' => 'Secret-link printable month view of the internal Google Calendar. (The ICS&rarr;Google sync itself lives in GASF-Events &rarr; Feeds.)', 'tab' => 'gcal-print' ),
@@ -70,13 +56,16 @@ function gasf_settings_registry() {
 			array( 'gate' => 'gasf_site_enable_recentposts', 'label' => 'Recent posts rail', 'desc' => 'The <code>[gasf_recent_posts]</code> "Latest News" card list on the home-page right rail — surfaces the FB-imported blog posts. Purges the page cache when a post publishes.' ),
 		),
 		'Site hardening & performance' => array(
-			array( 'gate' => 'gasf_site_enable_restenum', 'label' => 'REST user-enumeration block', 'desc' => 'Blocks REST API user listing / author enumeration.' ),
+			array( 'gate' => 'gasf_site_enable_restenum', 'label' => 'User-enumeration block', 'desc' => 'Closes the three ways a scanner harvests login names: the REST <code>/wp/v2/users</code> endpoints, <code>?author=N</code> lookups (404 for visitors; logged-in users are unaffected), and the users sitemap.' ),
 			array( 'gate' => 'gasf_site_enable_secheaders', 'label' => 'Security headers', 'desc' => 'Sends HSTS, <code>nosniff</code>, frame-ancestors/X-Frame-Options, and a Referrer-Policy. Replaced the removed HTTP Headers plugin. HSTS starts at one day on purpose &mdash; raise it with the <code>gasf_hsts_max_age</code> filter once it has run a while.' ),
 			array( 'gate' => 'gasf_site_enable_schema', 'label' => 'Schema JSON-LD', 'desc' => 'Organization + festival Event structured data in <code>&lt;head&gt;</code>.' ),
 			array( 'gate' => 'gasf_site_enable_assetdiet', 'label' => 'Asset diet', 'desc' => 'Drops jQuery Migrate, scopes dFlip to its page, self-hosts theme fonts.' ),
 			array( 'gate' => 'gasf_site_enable_perf', 'label' => 'Performance (LCP &amp; images)', 'desc' => 'Hero preload + right-sizing, image CDN preconnect — the mobile-LCP fixes.' ),
-			array( 'gate' => 'gasf_site_enable_imgcompress', 'label' => 'Image compressor', 'desc' => 'Converts oversized JPEG/PNG uploads to WebP on this server (no quota, no size limit) and rewrites all references. On-demand + optional 4-hourly cron.', 'tab' => 'images' ),
 			array( 'gate' => 'gasf_site_enable_deferjs', 'label' => 'Defer JavaScript', 'desc' => 'Part of the Performance module: adds <code>defer</code> to front-end scripts. Toggle off first if a slider/menu misbehaves.' ),
+		),
+		'Media tools' => array(
+			array( 'gate' => 'gasf_site_enable_imgcompress', 'label' => 'Image compressor', 'desc' => 'Converts oversized JPEG/PNG uploads to WebP on this server (no quota, no size limit) and rewrites all references. On-demand + optional 4-hourly cron (the cron switch is on the Images tab).', 'tab' => 'images' ),
+			array( 'gate' => 'gasf_site_enable_pdf2png', 'label' => 'PDF &rarr; PNG', 'desc' => 'Admin tool: upload a PDF and every page becomes a PNG in the Media Library (Imagick/Ghostscript on this server).', 'tab' => 'pdf2png' ),
 		),
 	);
 	// The MEC-importer-era gates (gasf_mec_enable_cron/defaults/window/recurrence/
@@ -105,7 +94,7 @@ function gasf_settings_tab() {
 			foreach ( gasf_settings_registry() as $rows ) {
 				foreach ( $rows as $row ) {
 					$new = in_array( $row['gate'], $checked, true ) ? '1' : '0';
-					if ( gasf_mec_enabled( $row['gate'] ) !== ( '1' === $new ) ) { $changed++; }
+					if ( gasf_site_enabled( $row['gate'] ) !== ( '1' === $new ) ) { $changed++; }
 					update_option( $row['gate'], $new );
 				}
 			}
@@ -115,6 +104,7 @@ function gasf_settings_tab() {
 		if ( 'save_global' === $act ) {
 			if ( ! empty( $_POST['anthropic_key_clear'] ) ) {
 				delete_option( 'gasf_anthropic_key' );
+				delete_transient( 'gasf_anthropic_models' ); // the model list belonged to that key
 				// Blank the legacy fallback too, or the old key would silently resurrect.
 				$legacy = (array) get_option( 'gasf_aiseo_config', array() );
 				if ( ! empty( $legacy['key'] ) ) {
@@ -124,13 +114,28 @@ function gasf_settings_tab() {
 				echo '<div class="notice notice-success is-dismissible"><p>Anthropic API key removed.</p></div>';
 			} else {
 				$newkey = trim( sanitize_text_field( wp_unslash( $_POST['anthropic_key'] ?? '' ) ) );
+				$saved  = array();
 				if ( '' !== $newkey ) {
 					update_option( 'gasf_anthropic_key', $newkey, false ); // autoload off: admin/cron use only
-					echo '<div class="notice notice-success is-dismissible"><p>Anthropic API key saved.</p></div>';
-				} else {
-					echo '<div class="notice notice-info is-dismissible"><p>No changes — leaving the key blank keeps the saved one.</p></div>';
+					delete_transient( 'gasf_anthropic_models' );            // a new key may see different models
+					$saved[] = 'API key';
 				}
+				$newmodel = trim( sanitize_text_field( wp_unslash( $_POST['anthropic_model'] ?? '' ) ) );
+				if ( '' !== $newmodel && $newmodel !== gasf_anthropic_model() ) {
+					update_option( 'gasf_anthropic_model', $newmodel, false );
+					$saved[] = 'model → <code>' . esc_html( $newmodel ) . '</code>';
+				}
+				echo $saved
+					? '<div class="notice notice-success is-dismissible"><p>Saved: ' . implode( ', ', $saved ) . '.</p></div>'
+					: '<div class="notice notice-info is-dismissible"><p>No changes — leaving the key blank keeps the saved one.</p></div>';
 			}
+		}
+
+		if ( 'refresh_models' === $act ) {
+			$list = gasf_anthropic_models( true );
+			echo $list['live']
+				? '<div class="notice notice-success is-dismissible"><p>Model list refreshed — ' . count( $list['models'] ) . ' models available to this key.</p></div>'
+				: '<div class="notice notice-warning"><p>Could not fetch the model list: ' . esc_html( $list['error'] ) . '</p></div>';
 		}
 	}
 
@@ -141,7 +146,8 @@ function gasf_settings_tab() {
 			'needs'  => array( 'Nothing — this tab is always available, even when every other utility is off.' ),
 			'fields' => array(
 				'Utility toggles'      => 'ON = the module loads. Toggles apply from the next page load; disabling a utility also removes its admin tab (come back here to restore it). Under the hood each toggle is the module\'s existing gate option, so <code>wp option update &lt;gate&gt; 0</code> still works.',
-				'Anthropic API key'    => 'The site-wide Claude key (<code>sk-ant-…</code> from console.anthropic.com), used by Event SEO (AI) and any future AI utility. Stored server-side, never shown again — the field stays blank once saved; type only to replace, or tick "remove" to delete it.',
+				'Anthropic API key'    => 'The site-wide Claude key (<code>sk-ant-…</code> from console.anthropic.com), used by Event SEO (AI), FB &rarr; Blog titles, and any future AI utility. Stored server-side, never shown again — the field stays blank once saved; type only to replace, or tick "remove" to delete it.',
+				'Claude model'         => 'Which model every Claude-powered utility uses. The list comes live from Anthropic (what this key can use, newest first, cached 12 h) so a newly released model shows up here on its own — click <strong>Refresh model list</strong> to pull it sooner. Haiku-class models are plenty for meta descriptions and headlines and cost the least; newer generations think before answering by default, which is a little slower and dearer per call.',
 			),
 			'notes'  => 'This page manages <em>this site\'s</em> gates only — the main site and the Krampus install each keep their own switchboard (the Krampus copy runs with most main-site utilities off).',
 		) );
@@ -149,6 +155,8 @@ function gasf_settings_tab() {
 
 	/* ---------- global settings ---------- */
 	$key_set = gasf_anthropic_key() !== '';
+	$model   = gasf_anthropic_model();
+	$list    = gasf_anthropic_models();
 	?>
 	<h3 class="title">Global settings <span style="font-weight:400;color:#646970">(shared by more than one utility)</span></h3>
 	<form method="post">
@@ -160,7 +168,26 @@ function gasf_settings_tab() {
 					<?php echo $key_set ? '<span style="color:#1a7f37">● saved</span>' : '<span style="color:#b3122b">○ not set</span>'; ?>
 					<input type="text" name="anthropic_key" value="" class="regular-text code" style="margin-left:8px" placeholder="<?php echo $key_set ? 'saved — leave blank to keep' : 'sk-ant-…'; ?>" autocomplete="off">
 					<label style="margin-left:10px"><input type="checkbox" name="anthropic_key_clear" value="1"> remove saved key</label>
-					<p class="description">Used by <strong>Event SEO (AI)</strong> (and any future Claude-powered utility). Stored server-side only.</p>
+					<p class="description">Used by <strong>Event SEO (AI)</strong> and <strong>FB &rarr; Blog</strong> (and any future Claude-powered utility). Stored server-side only.</p>
+				</td>
+			</tr>
+			<tr>
+				<th scope="row">Claude model</th>
+				<td>
+					<select name="anthropic_model">
+						<?php foreach ( $list['models'] as $id => $label ) : ?>
+							<option value="<?php echo esc_attr( $id ); ?>" <?php selected( $model, $id ); ?>><?php echo esc_html( $label === $id ? $id : $label . ' — ' . $id ); ?></option>
+						<?php endforeach; ?>
+					</select>
+					<button name="gasf_settings_action" value="refresh_models" class="button" style="margin-left:8px">Refresh model list</button>
+					<p class="description">
+						<?php if ( $list['live'] ) : ?>
+							Live from Anthropic — what this key can use, newest first<?php echo $list['ts'] ? ', fetched ' . esc_html( human_time_diff( (int) $list['ts'] ) ) . ' ago' : ''; ?>. New models appear here as Anthropic releases them.
+						<?php else : ?>
+							<span style="color:#996800">Built-in list only — <?php echo esc_html( $list['error'] ); ?></span>
+						<?php endif; ?>
+						Used by every Claude-powered utility. Current: <code><?php echo esc_html( $model ); ?></code>.
+					</p>
 				</td>
 			</tr>
 		</table>
@@ -177,7 +204,7 @@ function gasf_settings_tab() {
 			<table class="widefat striped" style="max-width:960px">
 				<tbody>
 				<?php foreach ( $rows as $row ) :
-					$on = gasf_mec_enabled( $row['gate'] ); ?>
+					$on = gasf_site_enabled( $row['gate'] ); ?>
 					<tr>
 						<td style="width:60px;text-align:center">
 							<input type="checkbox" name="gate[<?php echo esc_attr( $row['gate'] ); ?>]" value="1" <?php checked( $on ); ?> title="<?php echo esc_attr( $row['gate'] ); ?>">
@@ -202,18 +229,24 @@ function gasf_settings_tab() {
  * can never clear its own recurring cron — the orphan fires forever with no
  * handler (the same ghost-cron class as the retired gasf_calsync_cron).
  * This file is ungated and always loads, so it clears any gated module's
- * cron whenever that module's gate is off. (38-image-compress reconciles
- * its own cron against its 'cron' setting and isn't listed here.)
+ * cron whenever that module's gate is off.
+ *
+ * Every module that calls wp_schedule_event() must be listed here — a
+ * module's own reconciliation (the image compressor checks its 'cron' setting)
+ * only runs while the module loads, which is exactly never once its gate is
+ * off. Grep for wp_schedule_event when adding a cron.
  */
 add_action( 'init', function () {
 	$map = array(
-		'gasf_site_enable_instagram' => 'gasf_ig_cron',
-		'gasf_site_enable_reviews'   => 'gasf_reviews_cron',
-		'gasf_site_enable_fbhealth'  => 'gasf_fbh_cron',
-		'gasf_site_enable_aiseo'     => 'gasf_aiseo_cron',
+		'gasf_site_enable_instagram'   => 'gasf_ig_cron',
+		'gasf_site_enable_reviews'     => 'gasf_reviews_cron',
+		'gasf_site_enable_fbhealth'    => 'gasf_fbh_cron',
+		'gasf_site_enable_aiseo'       => 'gasf_aiseo_cron',
+		'gasf_site_enable_fbshare'     => 'gasf_fbs_cron',
+		'gasf_site_enable_imgcompress' => 'gasf_imgc_cron',
 	);
 	foreach ( $map as $gate => $hook ) {
-		if ( function_exists( 'gasf_site_enabled' ) && ! gasf_site_enabled( $gate ) && wp_next_scheduled( $hook ) ) {
+		if ( ! gasf_site_enabled( $gate ) && wp_next_scheduled( $hook ) ) {
 			wp_clear_scheduled_hook( $hook );
 		}
 	}

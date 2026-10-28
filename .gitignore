@@ -1,6 +1,3 @@
-# Local test scaffolding (server-path-specific; run from the dev clone, not shipped)
-/sweep-test.php
-
 # Service-account key — must NEVER be committed (lives outside checkout anyway)
 *key*.json
 *-key.json

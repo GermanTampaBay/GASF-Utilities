@@ -19,32 +19,53 @@
  *   - Admin tab shows live status and lets you paste refreshed credentials.
  *
  * Credentials live in option `gasf_fb_health` (autoload off, never emitted to
- * the front end). Gate: gasf_site_enable_fbhealth (default ON).
+ * the front end); the probe's results, alert throttle and warning dedupe live
+ * in `gasf_fb_health_state`, so a daily check never rewrites the credentials
+ * row. Gate: gasf_site_enable_fbhealth (default ON).
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enable_fbhealth' ) : true ) {
+if ( gasf_site_enabled( 'gasf_site_enable_fbhealth' ) ) {
 
 	/** Warn this many days before the data-access window lapses. */
 	if ( ! defined( 'GASF_FBH_WARN_DAYS' ) ) { define( 'GASF_FBH_WARN_DAYS', 5 ); }
 	if ( ! defined( 'GASF_FBH_GRAPH' ) )     { define( 'GASF_FBH_GRAPH', 'https://graph.facebook.com/v19.0/' ); }
+	/** The German-American Society Facebook Page (numeric id) — default + fallback for a blanked field. */
+	if ( ! defined( 'GASF_FBH_PAGE_ID' ) )   { define( 'GASF_FBH_PAGE_ID', '156837460875' ); }
 
 	function gasf_fbh_cfg() {
 		$c = wp_parse_args( (array) get_option( 'gasf_fb_health', array() ), array(
 			'app_id'     => '',
 			'app_secret' => '',
 			'user_token' => '',
-			'page_id'    => '156837460875',
+			'page_id'    => GASF_FBH_PAGE_ID,
 			'email'      => '',
-			'last'       => array(),
-			'alert'      => array(), // { key, ts } failure-alert throttle
-			'warn_key'   => '',      // data-access warning dedupe (per window)
 		) );
 		if ( '' === $c['email'] ) { $c['email'] = get_option( 'admin_email' ); }
 		return $c;
 	}
 
-	function gasf_fbh_save( $c ) { update_option( 'gasf_fb_health', $c, false ); }
+	/** Save credentials/settings only — never the probe state. */
+	function gasf_fbh_save( $c ) {
+		unset( $c['last'], $c['alert'], $c['warn_key'] );
+		update_option( 'gasf_fb_health', $c, false );
+	}
+
+	/**
+	 * Runtime state (option gasf_fb_health_state): the last probe result, the
+	 * failure-alert throttle { key, ts } and the data-access warning dedupe.
+	 * Until 2.8 these sat inside the credentials option. Reads the pre-2.8
+	 * keys out of it once, until the first state save.
+	 */
+	function gasf_fbh_state() {
+		$st = get_option( 'gasf_fb_health_state', null );
+		if ( ! is_array( $st ) ) {
+			$legacy = (array) get_option( 'gasf_fb_health', array() );
+			$st     = array( 'last' => $legacy['last'] ?? array(), 'alert' => $legacy['alert'] ?? array(), 'warn_key' => $legacy['warn_key'] ?? '' );
+		}
+		return wp_parse_args( $st, array( 'last' => array(), 'alert' => array(), 'warn_key' => '' ) );
+	}
+	function gasf_fbh_state_save( $st ) { update_option( 'gasf_fb_health_state', $st, false ); }
 
 	function gasf_fbh_app_token( $c ) {
 		return ( $c['app_id'] && $c['app_secret'] ) ? $c['app_id'] . '|' . $c['app_secret'] : '';
@@ -130,7 +151,8 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 	 * also passes true; a silent status read passes false.
 	 */
 	function gasf_fbh_check( $auto = true ) {
-		$c = gasf_fbh_cfg();
+		$c     = gasf_fbh_cfg();
+		$state = gasf_fbh_state();
 		list( $idx, $feed ) = gasf_fbh_find_feed();
 		$now  = time();
 		$st   = array( 'ts' => $now, 'ok' => false, 'msg' => '', 'valid' => null,
@@ -138,7 +160,7 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 
 		if ( null === $idx ) {
 			$st['msg'] = 'No Facebook feed configured in GASF-Events.';
-			$c['last'] = $st; gasf_fbh_save( $c );
+			$state['last'] = $st; gasf_fbh_state_save( $state );
 			return $st;
 		}
 
@@ -173,7 +195,7 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 		if ( $auto ) {
 			if ( ! $ok ) {
 				$key   = 'fail:' . substr( md5( $msg ), 0, 8 );
-				$prev  = (array) $c['alert'];
+				$prev  = (array) $state['alert'];
 				$stale = ( ( $prev['key'] ?? '' ) !== $key ) || ( $now - (int) ( $prev['ts'] ?? 0 ) > DAY_IN_SECONDS );
 				if ( $stale ) {
 					gasf_fbh_email( $c,
@@ -187,15 +209,15 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 						"2. Paste that short-lived user token into the 'New user token' box and Save —\n" .
 						"   this module exchanges it, re-derives the Page token, and re-enables the feed.\n"
 					);
-					$c['alert'] = array( 'key' => $key, 'ts' => $now );
+					$state['alert'] = array( 'key' => $key, 'ts' => $now );
 				}
 			} else {
-				$c['alert'] = array(); // recovered → reset failure throttle
+				$state['alert'] = array(); // recovered → reset failure throttle
 				// Early warning: data-access window about to lapse (only re-auth fixes it).
 				$de = (int) $st['data_expires_at'];
 				if ( $de > 0 && $de - $now < GASF_FBH_WARN_DAYS * DAY_IN_SECONDS ) {
 					$wk = 'warn:' . gmdate( 'Y-m-d', $de );
-					if ( $c['warn_key'] !== $wk ) {
+					if ( $state['warn_key'] !== $wk ) {
 						$days = max( 0, (int) floor( ( $de - $now ) / DAY_IN_SECONDS ) );
 						gasf_fbh_email( $c,
 							'[GASF] Facebook feed token needs a refresh soon',
@@ -204,16 +226,16 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 							admin_url( 'admin.php?page=gasf-utilities&tab=fbhealth' ) . "\n\n" .
 							"Tip: putting the Meta app in Live mode with Advanced Access extends this window to ~90 days so this is far less frequent.\n"
 						);
-						$c['warn_key'] = $wk;
+						$state['warn_key'] = $wk;
 					}
 				} elseif ( $de > 0 && $de - $now >= GASF_FBH_WARN_DAYS * DAY_IN_SECONDS ) {
-					$c['warn_key'] = ''; // window refreshed → arm the next warning
+					$state['warn_key'] = ''; // window refreshed → arm the next warning
 				}
 			}
 		}
 
-		$c['last'] = $st;
-		gasf_fbh_save( $c );
+		$state['last'] = $st;
+		gasf_fbh_state_save( $state );
 		return $st;
 	}
 
@@ -236,7 +258,7 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 			$c   = gasf_fbh_cfg();
 			if ( 'save' === $act ) {
 				$c['app_id']  = trim( sanitize_text_field( wp_unslash( $_POST['app_id'] ?? $c['app_id'] ) ) );
-				$c['page_id'] = trim( sanitize_text_field( wp_unslash( $_POST['page_id'] ?? $c['page_id'] ) ) ) ?: '156837460875';
+				$c['page_id'] = trim( sanitize_text_field( wp_unslash( $_POST['page_id'] ?? $c['page_id'] ) ) ) ?: GASF_FBH_PAGE_ID;
 				$c['email']   = sanitize_email( wp_unslash( $_POST['email'] ?? $c['email'] ) ) ?: $c['email'];
 				$sec = trim( (string) wp_unslash( $_POST['app_secret'] ?? '' ) );
 				if ( '' !== $sec ) { $c['app_secret'] = $sec; }
@@ -275,7 +297,7 @@ if ( function_exists( 'gasf_site_enabled' ) ? gasf_site_enabled( 'gasf_site_enab
 		}
 
 		$c   = gasf_fbh_cfg();
-		$st  = (array) $c['last'];
+		$st  = (array) gasf_fbh_state()['last'];
 		list( $idx, $feed ) = gasf_fbh_find_feed();
 		$now = time();
 		$fmt = function ( $ts ) { return $ts ? esc_html( gmdate( 'M j, Y', (int) $ts ) ) : '—'; };
