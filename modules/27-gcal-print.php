@@ -59,13 +59,13 @@ if ( gasf_site_enabled( 'gasf_site_enable_gcalprint' ) ) {
 	/* ---------- routing ---------- */
 	add_action( 'init', function () {
 		gasf_gcalprint_key(); // ensure it exists
-		add_rewrite_rule( '^internal-calendar/print/?$', 'index.php?gasf_gcal_print=current', 'top' );
-		add_rewrite_rule( '^internal-calendar/print/([0-9]{4})-([0-9]{2})/?$', 'index.php?gasf_gcal_print=$matches[1]-$matches[2]', 'top' );
-		if ( ! get_option( 'gasf_gcal_print_rw_v1' ) ) {
-			flush_rewrite_rules( false );
-			update_option( 'gasf_gcal_print_rw_v1', '1' );
-		}
 	} );
+	// Until 2.9 these flushed once behind a gasf_gcal_print_rw_v1 flag, which
+	// lost the rules for good if anything flushed while this module was gated
+	// off. gasf_util_rewrite() checks the stored rules instead. The old flag
+	// option is now unused and harmless.
+	gasf_util_rewrite( '^internal-calendar/print/?$', 'index.php?gasf_gcal_print=current' );
+	gasf_util_rewrite( '^internal-calendar/print/([0-9]{4})-([0-9]{2})/?$', 'index.php?gasf_gcal_print=$matches[1]-$matches[2]' );
 	add_filter( 'query_vars', function ( $v ) { $v[] = 'gasf_gcal_print'; return $v; } );
 
 	add_action( 'template_redirect', 'gasf_gcalprint_maybe_render' );

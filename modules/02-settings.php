@@ -66,6 +66,7 @@ function gasf_settings_registry() {
 		'Media tools' => array(
 			array( 'gate' => 'gasf_site_enable_imgcompress', 'label' => 'Image compressor', 'desc' => 'Converts oversized JPEG/PNG uploads to WebP on this server (no quota, no size limit) and rewrites all references. On-demand + optional 4-hourly cron (the cron switch is on the Images tab).', 'tab' => 'images' ),
 			array( 'gate' => 'gasf_site_enable_pdf2png', 'label' => 'PDF &rarr; PNG', 'desc' => 'Admin tool: upload a PDF and every page becomes a PNG in the Media Library (Imagick/Ghostscript on this server).', 'tab' => 'pdf2png' ),
+			array( 'gate' => 'gasf_site_enable_pdfreview', 'label' => 'PDF Review', 'desc' => 'Upload a PDF, get one private link; reviewers (no account) zoom, page through it, pin comments anywhere on a page and reply to each other. Every comment listed with its page number. Served at <code>/review/&lt;token&gt;/</code>.', 'tab' => 'pdfreview' ),
 		),
 	);
 	// The MEC-importer-era gates (gasf_mec_enable_cron/defaults/window/recurrence/
