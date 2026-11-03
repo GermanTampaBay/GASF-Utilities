@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: GASF Utilities
- * Description: All custom germantampabay.com functionality in one update-safe plugin: SEO + AI event descriptions, short links, redirects, Instagram feed, reviews wall, Facebook token watchdog, FB → Blog importer, image compressor, PDF → PNG, Google Business hours, kiosk game tiles, performance and hardening tweaks, and the content shortcodes. Each module is individually gated — see the GASF Utilities → Settings tab. (Events, heroes and the email CRM live in GASF-Events / GASF-CRM.)
- * Version:     2.8.0
+ * Description: All custom germantampabay.com functionality in one update-safe plugin: SEO + AI event descriptions, short links, redirects, Instagram feed, reviews wall, Facebook token watchdog, FB → Blog importer, image compressor, PDF → PNG, PDF review links, Google Business hours, kiosk game tiles, performance and hardening tweaks, and the content shortcodes. Each module is individually gated — see the GASF Utilities → Settings tab. (Events, heroes and the email CRM live in GASF-Events / GASF-CRM.)
+ * Version:     2.9.0
  * Author:      GASF
  * License:     GPL-2.0-or-later
  * Update URI:  https://github.com/GermanTampaBay/GASF-Utilities
@@ -29,7 +29,7 @@
  * via `wp option update <gate> 0`.
  *
  * Shared helpers defined here, before any module loads: gasf_site_enabled(),
- * gasf_mec_log(), and the gasf_util_lock() family. The Claude client
+ * gasf_mec_log(), the gasf_util_lock() family, and gasf_util_rewrite(). The Claude client
  * (gasf_anthropic_key / gasf_anthropic_model / gasf_claude_text) is
  * modules/03-claude.php.
  */
@@ -38,7 +38,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'GASF_MEC_VERSION', '2.8.0' );
+define( 'GASF_MEC_VERSION', '2.9.0' );
 
 /**
  * owner/repo on GitHub, for the auto-updater below.
@@ -176,6 +176,39 @@ function gasf_util_unlock( $name, $token ) {
 	$n = $wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->options} WHERE option_name = %s AND option_value = %s", $name, $cur ) );
 	wp_cache_delete( $name, 'options' );
 	return (bool) $n;
+}
+
+/* =========================================================================
+ * Rewrite rules that survive a module being gated off and on again.
+ *
+ *   gasf_util_rewrite( '^review/([A-Za-z0-9]{32})/?$', 'index.php?gasf_review=$matches[1]' );
+ *
+ * The pattern this replaces — add the rule on init, flush once, then set a
+ * "flushed" flag option — breaks silently the first time the module is
+ * switched off: anything that flushes while it is off (saving Permalinks,
+ * any plugin activation) drops the rule, the flag still says "done", and the
+ * URL 404s after the module comes back until somebody happens to flush again.
+ *
+ * Instead, check the stored rules themselves: if ours is missing, flush. That
+ * happens once, after which the rule is there and the check is one array
+ * lookup on an option WordPress has already loaded. It runs on wp_loaded,
+ * not init, so every plugin has registered its rules first — a flush in the
+ * middle of init would rebuild the table without the rules of anything that
+ * registers later in init.
+ *
+ * Plain permalinks store no rules ('' rather than an array), so nothing is
+ * flushed there; modules give those sites a ?query_var= fallback URL.
+ * ========================================================================= */
+function gasf_util_rewrite( $regex, $query ) {
+	add_action( 'init', function () use ( $regex, $query ) {
+		add_rewrite_rule( $regex, $query, 'top' );
+	} );
+	add_action( 'wp_loaded', function () use ( $regex ) {
+		$rules = get_option( 'rewrite_rules' );
+		if ( is_array( $rules ) && ! isset( $rules[ $regex ] ) ) {
+			flush_rewrite_rules( false );
+		}
+	} );
 }
 
 /* === MODULE LOADER: each file in modules/ self-gates via its gate option === */

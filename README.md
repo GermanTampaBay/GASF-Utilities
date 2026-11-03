@@ -3,7 +3,8 @@
 All custom **germantampabay.com** functionality in one update-safe plugin:
 native SEO + AI event descriptions, branded short links, redirects + 404 log,
 native Instagram feed, reviews wall, Facebook token watchdog, the FB → Blog
-importer, recent-posts rail, image compressor, PDF → PNG, Google Business
+importer, recent-posts rail, image compressor, PDF → PNG, PDF review links
+(upload a PDF, share one link, reviewers pin comments on it), Google Business
 Profile hours, the Bierstube kiosk's game tiles, security headers, performance
 and hardening tweaks, and the content shortcodes (parking, World Cup schedule,
 Bundesliga tables). The GASF Utilities → Overview tab lists every one, grouped,
@@ -13,7 +14,7 @@ with its on/off state. (Events, feeds and home-page heroes are the
 ## How it's put together
 
 - `gasf-mec-importer.php` — thin loader: shared helpers (`gasf_site_enabled()`,
-  `gasf_mec_log()`, the `gasf_util_lock()` family), a glob that requires every
+  `gasf_mec_log()`, the `gasf_util_lock()` family, `gasf_util_rewrite()`), a glob that requires every
   `modules/*.php` in filename order (the numeric prefix IS the load order —
   a module may only call helpers from lower-numbered files), and the GitHub
   auto-update hooks. *The filename is historical (the plugin began as
