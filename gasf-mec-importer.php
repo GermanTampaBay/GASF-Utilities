@@ -2,7 +2,7 @@
 /**
  * Plugin Name: GASF Utilities
  * Description: All custom germantampabay.com functionality in one update-safe plugin: SEO + AI event descriptions, short links, redirects, Instagram feed, reviews wall, Facebook token watchdog, FB → Blog importer, image compressor, PDF → PNG, PDF review links, Google Business hours, kiosk game tiles, performance and hardening tweaks, and the content shortcodes. Each module is individually gated — see the GASF Utilities → Settings tab. (Events, heroes and the email CRM live in GASF-Events / GASF-CRM.)
- * Version:     2.9.0
+ * Version:     2.9.1
  * Author:      GASF
  * License:     GPL-2.0-or-later
  * Update URI:  https://github.com/GermanTampaBay/GASF-Utilities
@@ -38,7 +38,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'GASF_MEC_VERSION', '2.9.0' );
+define( 'GASF_MEC_VERSION', '2.9.1' );
 
 /**
  * owner/repo on GitHub, for the auto-updater below.

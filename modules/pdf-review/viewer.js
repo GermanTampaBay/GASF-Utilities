@@ -14,7 +14,7 @@ const NAME_KEY = 'gasf_review_name';
 
 const $ = (id) => document.getElementById(id);
 const els = {
-	app: $('app'), stage: $('stage'), sheet: $('sheet'), hint: $('hint'), list: $('list'),
+	app: $('app'), stage: $('stage'), sheet: $('sheet'), hint: $('hint'), list: $('list'), side: $('side'),
 	prev: $('prev'), next: $('next'), pageInput: $('pageInput'), pageCount: $('pageCount'),
 	zoomIn: $('zoomIn'), zoomOut: $('zoomOut'), zoomLabel: $('zoomLabel'),
 	who: $('whoBtn'), sideToggle: $('sideToggle'), sideCount: $('sideCount'),
@@ -293,11 +293,19 @@ function positionPop() {
 	const W = els.sheet.clientWidth, H = els.sheet.clientHeight;
 	const px = pop.x * W, py = pop.y * H;
 	const pw = pop.el.offsetWidth || 320, ph = pop.el.offsetHeight || 200;
+	// Keep the popover inside the part of the sheet that is actually on screen:
+	// zoomed in, the sheet is wider/taller than the stage, and on narrow screens
+	// the comment list overlays the stage's right edge. Otherwise it gets clipped.
+	const sr = els.sheet.getBoundingClientRect(), st = els.stage.getBoundingClientRect();
+	let right = st.left + els.stage.clientWidth;   // clientWidth/Height: inside the scrollbars
+	if (els.app.dataset.side !== 'closed') right = Math.min(right, els.side.getBoundingClientRect().left);
+	const x0 = Math.max(0, st.left - sr.left), x1 = Math.min(W, right - sr.left);
+	const y0 = Math.max(0, st.top - sr.top), y1 = Math.min(H, st.top + els.stage.clientHeight - sr.top);
 	let left = px + 22;
-	if (left + pw > W && px - 22 - pw >= 0) left = px - 22 - pw;
-	left = Math.max(4, Math.min(left, Math.max(4, W - pw - 4)));
+	if (left + pw > x1 && px - 22 - pw >= x0) left = px - 22 - pw;
+	left = Math.max(x0 + 4, Math.min(left, Math.max(x0 + 4, x1 - pw - 4)));
 	let top = py - 24;
-	top = Math.max(4, Math.min(top, Math.max(4, H - ph - 4)));
+	top = Math.max(y0 + 4, Math.min(top, Math.max(y0 + 4, y1 - ph - 4)));
 	pop.el.style.left = left + 'px';
 	pop.el.style.top = top + 'px';
 }
@@ -317,19 +325,54 @@ function mountPop(el, kind, x, y) {
 	positionPop();
 }
 
-function nameField() {
-	return state.name ? null : h('input', { class: 'in', name: 'author', type: 'text', maxlength: CFG.maxAuthor, placeholder: 'Your name', autocomplete: 'name', 'aria-label': 'Your name' });
+/* -------------------------------------------------------------- name dialog */
+
+let nameDlg = null;   // the "Set your name" dialog while it is open
+
+/**
+ * Ask for the reviewer's name in a small dialog, then run `then` once it is
+ * saved. Comments can't be written without a name, so the composer and the
+ * reply box both go through here first.
+ */
+function askName(then) {
+	if (nameDlg) { nameDlg.querySelector('input').focus(); return; }
+	const input = h('input', { class: 'in', type: 'text', maxlength: CFG.maxAuthor, placeholder: 'Your name', autocomplete: 'name', 'aria-label': 'Your name' });
+	input.value = state.name;
+	const save = h('button', { type: 'button', class: 'btn btn-primary' }, 'Save');
+	const close = () => { if (!nameDlg) return; nameDlg.remove(); nameDlg = null; };
+	const card = h('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'nameDlgTitle' },
+		h('div', { class: 'pop-h' }, h('span', { id: 'nameDlgTitle' }, 'Set your name'),
+			h('button', { type: 'button', class: 'x', 'aria-label': 'Close', onclick: close }, '×')),
+		h('p', { class: 'modal-p' }, 'It’s shown next to your comments so everyone knows who said what.'),
+		input,
+		h('div', { class: 'pop-f' }, h('button', { type: 'button', class: 'btn', onclick: close }, 'Cancel'), save));
+	const veil = h('div', { class: 'veil' }, card);
+	save.addEventListener('click', () => {
+		const v = input.value.trim().slice(0, CFG.maxAuthor);
+		if (!v) { input.focus(); shake(card); return; }
+		rememberName(v);
+		close();
+		if (then) then();
+	});
+	veil.addEventListener('click', (e) => { e.stopPropagation(); if (e.target === veil) close(); });
+	veil.addEventListener('keydown', (e) => {
+		e.stopPropagation();
+		if (e.key === 'Escape') close();
+		if (e.key === 'Enter') { e.preventDefault(); save.click(); }
+	});
+	nameDlg = veil;
+	document.body.append(veil);
+	input.focus();
+	input.select();
 }
 
-/** Read name + text from a popover, or shake it and return null. */
+/** Read the comment text from a popover, or shake it and return null. */
 function readForm(el) {
-	const nameIn = el.querySelector('input[name=author]');
 	const ta = el.querySelector('textarea');
-	const name = nameIn ? nameIn.value.trim() : state.name;
 	const body = ta.value.trim();
-	if (!name) { nameIn.focus(); shake(el); return null; }
+	if (!state.name) { askName(); return null; }
 	if (!body) { ta.focus(); shake(el); return null; }
-	return { name, body, website: (el.querySelector('input[name=website]') || {}).value || '' };
+	return { name: state.name, body, website: (el.querySelector('input[name=website]') || {}).value || '' };
 }
 function shake(el) { el.classList.remove('shake'); void el.offsetWidth; el.classList.add('shake'); }
 
@@ -345,12 +388,12 @@ function openComposer(spot) {
 	const el = h('div', { class: 'pop', role: 'dialog', 'aria-label': 'New comment' },
 		h('div', { class: 'pop-h' }, 'New comment', h('span', { class: 'tag' }, 'Page ' + spot.page),
 			h('button', { type: 'button', class: 'x', 'aria-label': 'Close', onclick: () => closePop() }, '×')),
-		nameField(),
 		ta,
 		h('input', { class: 'hp', type: 'text', name: 'website', tabindex: '-1', autocomplete: 'off', 'aria-hidden': 'true' }),
 		h('div', { class: 'pop-f' }, h('button', { type: 'button', class: 'btn', onclick: () => closePop() }, 'Cancel'), post),
 		h('div', { class: 'pop-note' }, 'Ctrl+Enter to post'));
 	post.addEventListener('click', async () => {
+		if (!state.name) { askName(() => post.click()); return; }
 		const f = readForm(el);
 		if (!f) return;
 		post.disabled = true;
@@ -368,7 +411,7 @@ function openComposer(spot) {
 	});
 	mountPop(el, 'new', spot.x, spot.y);
 	renderPins();
-	(el.querySelector('input[name=author]') || ta).focus({ preventScroll: true });
+	ta.focus({ preventScroll: true });
 }
 
 function pulse(id) {
@@ -403,9 +446,7 @@ function fillThread() {
 	if (!c) { closePop(true); toast('That comment was deleted.'); return; }
 	const el = pop.el;
 	const oldTa = el.querySelector('textarea');
-	const oldName = el.querySelector('input[name=author]');
 	const keep = oldTa ? oldTa.value : '';
-	const keepName = oldName ? oldName.value : '';
 	const hadFocus = oldTa && document.activeElement === oldTa;
 
 	const msg = (m) => h('div', { class: 'msg' },
@@ -423,12 +464,11 @@ function fillThread() {
 		ta.value = keep;
 		const reply = h('button', { type: 'button', class: 'btn btn-primary' }, 'Reply');
 		const resolve = h('button', { type: 'button', class: 'btn left' }, c.resolved ? 'Reopen' : 'Resolve');
-		const nf = nameField();
-		if (nf) nf.value = keepName;
-		kids.push(nf, ta,
+		kids.push(ta,
 			h('input', { class: 'hp', type: 'text', name: 'website', tabindex: '-1', autocomplete: 'off', 'aria-hidden': 'true' }),
 			h('div', { class: 'pop-f' }, resolve, reply));
 		reply.addEventListener('click', async () => {
+			if (!state.name) { askName(() => reply.click()); return; }
 			const f = readForm(el);
 			if (!f) return;
 			reply.disabled = true;
@@ -576,15 +616,12 @@ function bind() {
 		const r = els.sheet.getBoundingClientRect();
 		const x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
 		if (x < 0 || x > 1 || y < 0 || y > 1) return;
-		openComposer({ page: state.pageNum, x: Math.round(x * 1e6) / 1e6, y: Math.round(y * 1e6) / 1e6 });
+		const spot = { page: state.pageNum, x: Math.round(x * 1e6) / 1e6, y: Math.round(y * 1e6) / 1e6 };
+		if (!state.name) { askName(() => openComposer(spot)); return; }   // name first, then the comment
+		openComposer(spot);
 	});
 
-	els.who.addEventListener('click', () => {
-		const n = window.prompt('Your name, as shown on your comments:', state.name);
-		if (n === null) return;
-		const v = n.trim().slice(0, CFG.maxAuthor);
-		if (v) { rememberName(v); fillThread(); }
-	});
+	els.who.addEventListener('click', () => askName());
 	els.sideToggle.addEventListener('click', () => setSide(els.app.dataset.side !== 'open'));
 	els.showResolved.addEventListener('change', () => { state.showResolved = els.showResolved.checked; refreshAll(); });
 
