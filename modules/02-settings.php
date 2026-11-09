@@ -32,6 +32,7 @@ function gasf_settings_registry() {
 			// Home Page Hero + Recurring Heroes moved to the GASF-Events plugin
 			// (Events → Heroes / Recurring Heroes; gate on Events → Settings).
 			array( 'gate' => 'gasf_site_enable_parking', 'label' => 'Parking block', 'desc' => 'The <code>[gas_parking]</code> "Getting Here, Parking &amp; Transit" block for event pages.' ),
+			array( 'gate' => 'gasf_site_enable_tapbridge', 'label' => 'Main Hall taps from staging (temporary)', 'desc' => 'Copies the Main Hall tap list, typed on the bar tablet into the new platform on staging, into the GASF Sign tap store so <code>[gasf_on_tap bar="main-hall"]</code> shows it. Remove when staging becomes the live site.' ),
 			array( 'gate' => 'gasf_mec_enable_wc_schedule', 'label' => 'World Cup schedule', 'desc' => 'The <code>[world_cup_schedule]</code> watch-party schedule.' ),
 		),
 		'Sports shortcodes' => array(
