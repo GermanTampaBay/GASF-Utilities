@@ -13,6 +13,11 @@
  * plugin's shortcode_atts drops the attribute, but the filter sees it raw. If
  * the plugin's markup ever changes shape, the output passes through untouched.
  *
+ * Bottles and cans (GASF Sign plugin, 2026-11-16) sit inside a bar after its
+ * draft list, in a <details> of their own: the first click opens the bar's
+ * taps, a second opens its bottles. Everything between the draft list and the
+ * end of the bar goes into the bar's fold.
+ *
  * Gate: gasf_site_enable_tapcollapse (default ON).
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
@@ -26,7 +31,7 @@ if ( gasf_site_enabled( 'gasf_site_enable_tapcollapse' ) ) {
 
 		$n = 0;
 		$folded = preg_replace(
-			'~<section class="(gasf-on-tap__bar[^"]*)">(<h3 class="gasf-on-tap__title">.*?</h3>)(<ul class="gasf-on-tap__beers">.*?</ul>)</section>~s',
+			'~<section class="(gasf-on-tap__bar[^"]*)">(<h3 class="gasf-on-tap__title">.*?</h3>)(<ul class="gasf-on-tap__beers">.*?</ul>.*?)</section>~s',
 			'<details class="$1"><summary>$2<span class="gasf-on-tap__hint">'
 				. '<span class="gasf-on-tap__hint-open">Click to see list</span>'
 				. '<span class="gasf-on-tap__hint-close">Click to hide list</span>'
@@ -42,18 +47,23 @@ if ( gasf_site_enabled( 'gasf_site_enable_tapcollapse' ) ) {
 		if ( ! $styled ) {
 			$styled = true;
 			$folded = '<style id="gasf-on-tap-collapse">'
-				. '.gasf-on-tap--collapse summary{list-style:none;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:4px;'
+				. '.gasf-on-tap--collapse>details>summary{list-style:none;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:4px;'
 				. 'padding:10px 12px;border:1px solid rgba(239,159,39,.45);border-radius:10px;background:rgba(0,0,0,.18);transition:background .15s,border-color .15s}'
-				. '.gasf-on-tap--collapse summary::-webkit-details-marker{display:none}'
-				. '.gasf-on-tap--collapse summary:hover,.gasf-on-tap--collapse summary:focus-visible{background:rgba(0,0,0,.32);border-color:var(--gasf-gold,#EF9F27);outline:none}'
+				. '.gasf-on-tap--collapse>details>summary::-webkit-details-marker{display:none}'
+				. '.gasf-on-tap--collapse>details>summary:hover,.gasf-on-tap--collapse>details>summary:focus-visible{background:rgba(0,0,0,.32);border-color:var(--gasf-gold,#EF9F27);outline:none}'
 				. '.gasf-on-tap--collapse .gasf-on-tap__title{margin:0;color:var(--gasf-gold,#EF9F27)}'
 				. '.gasf-on-tap--collapse .gasf-on-tap__hint{display:inline-flex;align-items:center;gap:8px;color:rgba(255,255,255,.78);font-size:.85em;font-weight:600}'
 				// The chevron: points down while shut, turns up when open.
 				. '.gasf-on-tap--collapse .gasf-on-tap__hint::before{content:"";width:7px;height:7px;border:solid var(--gasf-gold,#EF9F27);border-width:0 2px 2px 0;transform:translateY(-2px) rotate(45deg);transition:transform .2s}'
-				. '.gasf-on-tap--collapse details[open] .gasf-on-tap__hint::before{transform:translateY(2px) rotate(-135deg)}'
-				. '.gasf-on-tap--collapse .gasf-on-tap__hint-close,.gasf-on-tap--collapse details[open] .gasf-on-tap__hint-open{display:none}'
-				. '.gasf-on-tap--collapse details[open] .gasf-on-tap__hint-close{display:inline}'
-				. '.gasf-on-tap--collapse details[open] summary{margin-bottom:6px}'
+				. '.gasf-on-tap--collapse>details[open] .gasf-on-tap__hint::before{transform:translateY(2px) rotate(-135deg)}'
+				. '.gasf-on-tap--collapse .gasf-on-tap__hint-close,.gasf-on-tap--collapse>details[open] .gasf-on-tap__hint-open{display:none}'
+				. '.gasf-on-tap--collapse>details[open] .gasf-on-tap__hint-close{display:inline}'
+				. '.gasf-on-tap--collapse>details[open]>summary{margin-bottom:6px}'
+				// Bottles & cans: a quieter second fold inside an open bar.
+				. '.gasf-on-tap__bottles{margin:6px 0 2px}'
+				. '.gasf-on-tap__bottles>summary{cursor:pointer;color:var(--gasf-gold,#EF9F27);font-weight:600;font-size:.92em}'
+				. '.gasf-on-tap__bottles>summary:focus-visible{outline:1px solid var(--gasf-gold,#EF9F27);outline-offset:2px}'
+				. '.gasf-on-tap__bottles[open]>summary{margin-bottom:4px}'
 				. '</style>' . $folded;
 		}
 		return $folded;
