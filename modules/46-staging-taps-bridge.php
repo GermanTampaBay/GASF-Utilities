@@ -54,23 +54,35 @@ if ( gasf_site_enabled( 'gasf_site_enable_tapbridge' ) ) {
 		$all = json_decode( wp_remote_retrieve_body( $r ), true );
 		if ( ! is_array( $all ) || ! array_is_list( $all ) ) { return new WP_Error( 'shape', 'staging did not answer with a list of bars' ); }
 
-		$label = 'Main Hall';
-		$beers = array();
+		$label   = 'Main Hall';
+		$beers   = array();
+		$bottles = null;   // null: staging said nothing about bottles, so leave the stored ones alone.
+		// Staging has already turned "Bitburger" into "Bitburger Premium Pils"; take the long name.
+		$names = static function ( $list ) {
+			$out = array();
+			foreach ( (array) $list as $b ) {
+				$name = is_array( $b ) ? ( $b['label'] ?? $b['name'] ?? '' ) : '';
+				if ( is_string( $name ) && '' !== $name ) { $out[] = $name; }
+			}
+			return $out;
+		};
 		foreach ( $all as $bar ) {
 			if ( ! is_array( $bar ) || GASF_TAPBRIDGE_BAR !== ( $bar['bar'] ?? null ) ) { continue; }
 			if ( is_string( $bar['label'] ?? null ) && '' !== $bar['label'] ) { $label = $bar['label']; }
-			foreach ( (array) ( $bar['beers'] ?? array() ) as $b ) {
-				// Staging has already turned "Bitburger" into "Bitburger Premium Pils"; take the long name.
-				$name = is_array( $b ) ? ( $b['label'] ?? $b['name'] ?? '' ) : '';
-				if ( is_string( $name ) && '' !== $name ) { $beers[] = $name; }
-			}
+			$beers = $names( $bar['beers'] ?? array() );
+			// Bottles and cans (2026-11-16): ticked on the hall's own page on the new platform.
+			if ( array_key_exists( 'bottles', $bar ) ) { $bottles = $names( $bar['bottles'] ); }
 		}
 
-		$report = GASF_Sign_Taps::normalize( array(
+		$body = array(
 			'bar'   => GASF_TAPBRIDGE_BAR,
 			'label' => $label,
 			'beers' => array_slice( $beers, 0, GASF_Sign_Taps::MAX_BEERS ),
-		) );
+		);
+		if ( null !== $bottles && defined( 'GASF_Sign_Taps::MAX_BOTTLES' ) ) {
+			$body['bottles'] = array_slice( $bottles, 0, GASF_Sign_Taps::MAX_BOTTLES );
+		}
+		$report = GASF_Sign_Taps::normalize( $body );
 		if ( is_string( $report ) ) { return new WP_Error( 'refused', $report ); }
 
 		// Unchanged and heard from in the last 15 minutes: leave the row alone. Re-stamped
@@ -79,6 +91,7 @@ if ( gasf_site_enabled( 'gasf_site_enable_tapbridge' ) ) {
 		if ( is_array( $stored )
 			&& ( $stored['label'] ?? null ) === $report['label']
 			&& ( $stored['beers'] ?? null ) === $report['beers']
+			&& ( ! array_key_exists( 'bottles', $report ) || ( $stored['bottles'] ?? array() ) === $report['bottles'] )
 			&& time() - (int) ( $stored['received_at'] ?? 0 ) < 900 ) {
 			return 'same';
 		}
