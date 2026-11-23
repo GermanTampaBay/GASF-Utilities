@@ -41,6 +41,7 @@ function gasf_settings_registry() {
 			array( 'gate' => 'gasf_site_enable_gametv', 'label' => 'Game TV (kiosk tiles)', 'desc' => 'Pinned game tiles for the Bierstube tablet: keyword searches over upcoming events with a default HDMI input + channel/app, per-game overrides, and the <code>/gasf-util/v1/pinned-games</code> feed the kiosk reads.', 'tab' => 'gametv' ),
 		),
 		'Search & links' => array(
+			array( 'gate' => 'gasf_site_enable_llms', 'label' => 'AI assistants (llms.txt)', 'desc' => 'Writes <code>/llms.txt</code> at the web root every hour (the club, its menu pages, coming events, and a pointer to the Krampus Verein&rsquo;s own) and adds the Krampus sitemap to robots.txt. Main install only.' ),
 			array( 'gate' => 'gasf_site_enable_seo', 'label' => 'SEO engine', 'desc' => 'Titles, meta descriptions, canonical/robots, OpenGraph/Twitter, JSON-LD, per-page SEO box — the Yoast replacement.', 'tab' => 'seo' ),
 			array( 'gate' => 'gasf_site_enable_aiseo', 'label' => 'Event SEO (AI)', 'desc' => 'Claude writes meta descriptions for events that lack one. Uses the site-wide Anthropic API key below.', 'tab' => 'aiseo' ),
 			array( 'gate' => 'gasf_site_enable_shortlinks', 'label' => 'Short Links', 'desc' => 'Branded short URLs (<code>/join</code>, <code>/75th</code>…) with click counts.', 'tab' => 'shortlinks' ),
